@@ -3,6 +3,8 @@
 **One command takes a Shortcut story or a GitHub issue to a reviewed draft PR. You sign the plan
 at the start, watch it on a live board, and merge at the end.**
 
+https://github.com/user-attachments/assets/41477f16-1996-42d5-bb66-3ca51721f699
+
 ```
 /story-loop SC-12345        # a Shortcut story
 /story-loop gh-123          # a GitHub issue (or paste its URL)
