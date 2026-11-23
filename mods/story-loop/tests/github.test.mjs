@@ -5,7 +5,8 @@ import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync } from 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { load, update } from '../skills/story-loop/scripts/loop.mjs'
-import { repo, withRun } from './helpers.mjs'
+import { repo, withRun, B } from './helpers.mjs'
+import { passProblem } from '../skills/story-loop/scripts/loop.mjs'
 
 const dir = mkdtempSync(join(tmpdir(), 'sl-fakegh-'))
 const RULES = join(dir, 'rules.json')
@@ -28,6 +29,8 @@ process.env.STORY_LOOP_GH = FAKE
 const gh = await import('../skills/story-loop/scripts/github.mjs')
 
 const SHA = 'a'.repeat(40)
+const PR = (over = {}) => JSON.stringify({ headRefOid: SHA, headRefName: B, baseRefName: 'main', isCrossRepository: false, ...over })
+const view = (over, times = 99) => ({ match: 'pr view 7 -R acme/app --json headRefOid', stdout: PR(over), times })
 const rules = list => { writeFileSync(RULES, JSON.stringify(list)); writeFileSync(LOG, '') }
 const calls = () => readFileSync(LOG, 'utf8').split('\n').filter(Boolean)
 const jsonl = rows => rows.map(r => JSON.stringify(r)).join('\n') + '\n'
@@ -40,7 +43,7 @@ const requested = (minutesAgo = 0) => ({ copilot: { state: 'requested', head: SH
 
 test('a Copilot review request is recorded and not repeated for the same commit', () => {
   const root = published()
-  rules([{ match: 'pr edit 7 --add-reviewer @copilot', times: 1 }])
+  rules([{ match: 'pr edit 7 -R acme/app --add-reviewer @copilot', times: 1 }])
   assert.match(gh.copilotRequest(root), /requested/)
   assert.equal(load(root).copilot.head, SHA)
   assert.match(gh.copilotRequest(root), /already requested/)
@@ -90,7 +93,7 @@ test('rate limits and server errors are retried until the review arrives', async
 
 test('after a timeout Copilot can be asked again', () => {
   const root = published({ copilot: { state: 'timeout', head: SHA, requested_at: '2020-01-01T00:00:00Z' } })
-  rules([{ match: 'pr edit 7 --add-reviewer @copilot', times: 1 }])
+  rules([{ match: 'pr edit 7 -R acme/app --add-reviewer @copilot', times: 1 }])
   assert.match(gh.copilotRequest(root), /^requested/)
   assert.equal(load(root).copilot.state, 'requested')
 })
@@ -108,11 +111,14 @@ test('comments are the review\'s own top-level threads across pages; replies and
   const list = gh.comments(root)
   assert.equal(list.length, 35)
   assert.ok(list.every(c => c.review === 99 && !c.reply_to))
+  // H12: the fetched set is recorded; it is what fix_comments has to account for
+  assert.deepEqual(load(root).copilot.comments.ids, many.map(c => c.id))
+  assert.equal(load(root).copilot.comments.review, 99)
 })
 
 test('required CI is evaluated on the PR head: pending and failing are not passing', () => {
   const root = published()
-  const head = { match: 'pr view 7 --json headRefOid', stdout: JSON.stringify({ headRefOid: SHA }), times: 9 }
+  const head = view()
   const protection = names => ({ match: 'protection/required_status_checks', stdout: jsonl(names.map(name => ({ name }))), times: 9 })
   const noRules = { match: 'rules/branches', stdout: '', times: 9 }
   rules([head, protection(['rspec']), noRules, { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pending' }]), code: 8 }])
@@ -140,6 +146,7 @@ test('the report is one comment: a retry edits it, and a lost answer is reconcil
   const state = join(dir, 'posted')
   // first attempt: the comment lands but gh reports a network error
   rules([
+    view(),
     { match: '^api user', stdout: 'story-bot\n', times: 9 },
     { match: 'issues/7/comments', stdout: jsonl([{ id: 1, user: 'a-human', body: 'quoting: <!-- story-loop-report -->' }]), times: 1 },
     { match: 'pr comment 7', stderr: 'ECONNRESET', code: 1, times: 1 },
@@ -147,10 +154,101 @@ test('the report is one comment: a retry edits it, and a lost answer is reconcil
     { match: 'PATCH .*issues/comments/555', stdout: '{}', times: 9 },
   ])
   assert.equal(gh.report(root, body), 555)
-  assert.deepEqual(load(root).report, { state: 'confirmed', sha: SHA, comment_id: 555 })
+  assert.deepEqual(load(root).report, { state: 'confirmed', sha: SHA, comment_id: 555, repo: 'acme/app', pr: 7 })
   assert.equal(gh.report(root, body), 555)
   assert.equal(calls().filter(c => c.startsWith('pr comment')).length, 1)
   assert.equal(calls().filter(c => c.includes('PATCH')).length, 1)
   assert.equal(existsSync(state), false)
   assert.throws(() => gh.report(root, body, ['shot.png']), /cannot carry attachments/)
+})
+
+test('H04: every gh call names the run\'s repository; a run without one is refused', async () => {
+  const root = published({ ...requested(), copilot: { ...requested().copilot, review: { id: 99, commit: SHA } } })
+  const body = join(root, 'body.md'); writeFileSync(body, 'x')
+  rules([view(), { match: 'pr edit', times: 9 }, { match: 'reviews', stdout: jsonl([{ id: 99, user: 'Copilot', commit_id: SHA, state: 'COMMENTED', submitted_at: 'y' }]), times: 9 },
+    { match: 'pulls/7/comments', stdout: '', times: 9 }, { match: 'protection', stdout: '', times: 9 }, { match: 'rules/branches', stdout: '', times: 9 },
+    { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pass' }]), times: 9 }, { match: '^api user', stdout: 'bot\n', times: 9 },
+    { match: 'issues/7/comments', stdout: jsonl([{ id: 5, user: 'bot', body: '<!-- story-loop-report -->' }]), times: 9 }, { match: 'PATCH', stdout: '{}', times: 9 }])
+  update(root, r => ({ ...r, copilot: { ...r.copilot, state: 'timeout' } })); gh.copilotRequest(root)
+  await gh.copilotWait(root, { minutes: 1, interval: 0.01 }); gh.comments(root); gh.ci(root); gh.report(root, body)
+  const all = calls().filter(c => /^(pr|api) /.test(c)) // a comment body spans lines in the log
+  assert.ok(all.length >= 9)
+  for (const call of all) {
+    assert.doesNotMatch(call, /\{owner\}|\{repo\}/, call)
+    if (call.startsWith('pr ')) assert.match(call, / -R acme\/app /, call)
+    else if (!call.startsWith('api user')) assert.match(call, /repos\/acme\/app\//, call)
+  }
+  const bare = published({ repo: null })
+  rules([])
+  assert.throws(() => gh.copilotRequest(bare), /no GitHub repository recorded/)
+  assert.equal(calls().length, 0)
+})
+
+test('H10: an unreadable required-check policy is unknown, never a pass on the visible checks', () => {
+  const root = published()
+  const green = { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pass' }]), times: 9 }
+  const noRules = { match: 'rules/branches', stdout: '', times: 9 }
+  const forbidden = { match: 'protection', stderr: 'HTTP 403: Must have admin rights', code: 1, times: 9 } // the branch fallback too: its --jq names .protection
+  rules([view(), forbidden, noRules, green])
+  assert.equal(gh.ci(root).state, 'unknown')
+  assert.equal(load(root).ci.required, null)
+  assert.match(passProblem(root, { ...load(root), stages: load(root).stages }, 'report') ?? '', /./)
+  // the rulesets endpoint unreadable is just as unknown
+  rules([view(), { match: 'protection', stdout: '', times: 9 }, { match: 'rules/branches', stderr: 'HTTP 403', code: 1, times: 9 }, green])
+  assert.equal(gh.ci(root).state, 'unknown')
+  // the branch itself lists the classic contexts to anyone who can read it
+  rules([view(), { match: 'protection/required_status_checks', stderr: 'HTTP 403: Must have admin rights', code: 1, times: 9 },
+    { match: 'branches/main --jq', stdout: jsonl([{ name: 'rspec' }, { name: 'lint' }]), times: 9 }, noRules, green])
+  assert.deepEqual([gh.ci(root).state, load(root).ci.missing], ['pending', ['lint']])
+  // or the human approves the list
+  update(root, r => ({ ...r, required_checks: ['rspec'] }))
+  rules([view(), forbidden, noRules, green])
+  assert.equal(gh.ci(root).state, 'pass')
+})
+
+test('H11: checks of a head that moved, or of another base or branch, are never recorded for the published commit', () => {
+  const other = 'b'.repeat(40)
+  const green = { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pass' }]), times: 9 }
+  const policy = [{ match: 'protection', stdout: jsonl([{ name: 'rspec' }]), times: 9 }, { match: 'rules/branches', stdout: '', times: 9 }]
+  // a collaborator pushes between reading the head and reading the checks
+  let root = published()
+  rules([view({}, 1), view({ headRefOid: other }), ...policy, green])
+  assert.throws(() => gh.ci(root), /someone else pushed/)
+  assert.deepEqual([load(root).ci.state, load(root).ci.sha], ['head_moved', other])
+  // the PR head is not what this run published at all
+  root = published()
+  rules([view({ headRefOid: other }), ...policy, green])
+  assert.throws(() => gh.ci(root), /someone else pushed/)
+  assert.equal(load(root).ci.state, 'head_moved')
+  // the base changed: the stored base's requirements are not used
+  rules([view({ baseRefName: 'release' }), ...policy, green])
+  assert.throws(() => gh.ci(root), /now targets "release", not "main"/)
+  rules([view({ headRefName: 'someone-elses' }), ...policy, green])
+  assert.throws(() => gh.ci(root), /not the story branch/)
+  rules([view({ isCrossRepository: true }), ...policy, green])
+  assert.throws(() => gh.ci(root), /fork/)
+  // and no report is posted for a head that moved after CI was collected
+  const body = join(root, 'body.md'); writeFileSync(body, 'x')
+  rules([view({ headRefOid: other }), { match: '^api user', stdout: 'bot\n', times: 9 }])
+  assert.throws(() => gh.report(root, body), /The report is not posted/)
+  assert.equal(calls().filter(c => /pr comment|PATCH/.test(c)).length, 0)
+  assert.equal(load(root).report, undefined)
+})
+
+test('H14: a report that could not be posted stays "attempted" and does not pass the report gate', () => {
+  const { dir: root, git } = repo()
+  const head = git('rev-parse', 'HEAD')
+  withRun(root, { pushed: { state: 'confirmed', sha: head }, ci: { sha: head, state: 'pass', required: [] } })
+  update(root, r => { for (const s of Object.values(r.stages)) s.status = 'passed'; r.stages.copilot_review.status = 'skipped'; r.stages.report.status = 'running'; return r })
+  for (const id of ['test_review', 'verify', 'second_review']) update(root, r => { r.stages[id].tree = git('rev-parse', 'HEAD^{tree}'); return r })
+  const body = join(root, 'body.md'); writeFileSync(body, 'x')
+  rules([view({ headRefOid: head }), { match: '^api user', stdout: 'bot\n', times: 9 }, { match: 'issues/7/comments', stdout: '', times: 9 },
+    { match: 'pr comment 7', stderr: 'HTTP 403: Resource not accessible', code: 1, times: 9 }])
+  assert.throws(() => gh.report(root, body), /HTTP 403/)
+  assert.equal(load(root).report.state, 'attempted')
+  assert.match(passProblem(root, load(root), 'report'), /was attempted, not confirmed/)
+  update(root, r => ({ ...r, report: { state: 'confirmed', sha: head } })) // confirmed, yet no comment to point at
+  assert.match(passProblem(root, load(root), 'report'), /not posted/)
+  update(root, r => ({ ...r, report: { state: 'confirmed', sha: head, comment_id: 9 } }))
+  assert.equal(passProblem(root, load(root), 'report'), null)
 })
