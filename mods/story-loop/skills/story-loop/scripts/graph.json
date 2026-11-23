@@ -1,0 +1,27 @@
+{
+  "stages": [
+    { "id": "contract", "label": "Contract", "hint": "story or issue to a signed-off plan and a draft PR" },
+    { "id": "build", "label": "Build", "hint": "split into tasks, tiered workers, test-first" },
+    { "id": "test_review", "label": "Test review", "hint": "mutants on the diff" },
+    { "id": "verify", "label": "Browser verify", "hint": "blind verifier, one check per Test Step" },
+    { "id": "second_review", "label": "Second review", "hint": "another model tries to break it" },
+    { "id": "push", "label": "Push", "hint": "story branch only" },
+    { "id": "copilot_review", "label": "Copilot review", "hint": "requested, then waited for" },
+    { "id": "fix_comments", "label": "Fix comments", "hint": "clear defects fixed, the rest parked" },
+    { "id": "report", "label": "Report", "hint": "evidence to the PR; a human merges" }
+  ],
+  "back": [
+    ["test_review", "build"],
+    ["verify", "build"],
+    ["second_review", "build"],
+    ["fix_comments", "build"],
+    ["push", "build"],
+    ["copilot_review", "build"],
+    ["report", "build"]
+  ],
+  "maxRounds": 2,
+  "models": {
+    "conductor": "fable",
+    "delegates": ["opus", "sonnet", "haiku"]
+  }
+}
