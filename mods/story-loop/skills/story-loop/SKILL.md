@@ -107,7 +107,7 @@ LOOP status            # a run exists: continue at the stage marked ">"
 LOOP acquire           # the run belongs to an earlier session: take it over first
 LOOP init SC-12345     # no run yet (after the setup check above passes)
 LOOP init gh-123       # the same for a GitHub issue; `#123` and both kinds of URL work too
-LOOP recover           # the state file is unreadable: restore the last good copy
+LOOP recover           # the state file or the notes file is unreadable: restore the last good copy
 ```
 
 Give a GitHub issue as its URL when you have it: `init` then refuses an issue
@@ -172,7 +172,15 @@ LOOP pass contract "signed off, draft PR <number>"
 
 The check list is the denominator of stage 4: the verifier reports every id
 exactly once. It can change until verify passes (`LOOP checks set` again, when
-the human agrees); after that only by going back to build.
+the human agrees); after that only by going back to build. A change while
+verify is running needs `LOOP start verify` again: results written for the old
+list do not count for the new one, even where the ids are the same.
+
+The run records its GitHub repository at `init` (the issue's, or the origin
+remote's) and every GitHub step names it explicitly. When it could not be read
+(`LOOP json` shows `"repo": null`), set it once: `LOOP put repo <owner/name>`.
+A PR from a fork is not supported: the publisher and the GitHub steps work on
+one repository.
 
 Skip start-story's hand-off question; this run is the hand-off.
 
@@ -201,16 +209,37 @@ It works in a throwaway git worktree of HEAD, so the checkout is never touched,
 even when it is killed. `node_modules` is linked into that copy; `--link` any
 other untracked file the tests need (if the unmutated baseline fails there, it
 says so). The result is recorded as this attempt's evidence, for the code tree
-it ran on; several runs on one tree add up.
+it ran on. Every mutant has an id (`file:line:hash`); several runs on one tree
+merge by id, so a second run of the same mutant replaces its first outcome.
 
-- **killed** → a test failed on a mutant that still parses: the tests see it.
-- **SURVIVED** → a missing test: have a worker write it, or state why the
-  mutant changes nothing observable.
-- **invalid / timeout / inconclusive** → says nothing about the tests; never
-  count them as kills. Look at a timeout before moving on.
-- Files the script skips (templates, styles) and mutants over `--max` are
-  listed in the output; give templates the same treatment by hand: break one
-  thing per behaviour, see which test fails.
+The scope is every changed file the script can mutate (Ruby, JS, TS; not test
+files), taken from the diff against `--base`, not from the files you name. The
+stage passes only when all of it is accounted for:
+
+- **killed** → a test failed on a mutant that was checked to still be valid
+  code: the tests see it.
+- **SURVIVED** → a missing test: have a worker write it and run the mutants
+  again. Only when the mutant changes nothing observable:
+  `LOOP mutant accept <id> "<why it is equivalent>"`. It stays a survivor in
+  the report, with your reason.
+- **UNVERIFIED** → the tests failed, but nothing could check the mutant still
+  parses (ts, tsx and jsx are checked with the project's own `typescript`
+  package; without it there is no checker). It is not a kill. Install
+  `typescript` in the project, or look at the mutant and accept it with what
+  you saw.
+- **timeout / not run (over `--max`)** → decide each: raise `--max` or
+  `--timeout` and run again, or `LOOP mutant accept <id> "<reason>"`.
+  `LOOP mutant accept <file> "<reason>"` covers the not-run mutants of one file.
+- **invalid** → did not parse; not counted, nothing to do.
+- **inconclusive** (the command could not run, or died of a signal) → fix the
+  cause and run again; the stage does not pass while one is left.
+- **A changed source file you did not pass** → run the mutants on it, or
+  `LOOP mutant accept <file> "<why it needs none>"`.
+- Changed files of a type the script cannot mutate (templates, styles) are
+  listed as `outside`; give them the same treatment by hand — break one thing
+  per behaviour, see which test fails — and name them in the report.
+- A file that is a symlink out of the disposable copy is skipped, never
+  written through.
 
 Never delete a test because of a mutation result. A test goes only when it is
 wrong or truly redundant on its own merits, and then name the test that still
@@ -232,6 +261,17 @@ sign-off.
 with no user-facing journey, agreed by the human at sign-off:
 `LOOP skip verify "human: <their reason>"`. Changed file names alone are not
 that reason; a backend change can break a page.
+
+### Start it first
+
+`LOOP start verify` before the verifier runs, on a clean checkout. It prints a
+request id that stands for this attempt, this check list and this exact code;
+the verifier writes it into its results, and results carrying another id — an
+earlier attempt, an earlier run of the same story, a slow verifier that
+finishes late — never count. Results already there under another id are moved
+to `attempts/`. Commit nothing while the browser runs: a commit or an
+uncommitted change means `LOOP start verify` again and a fresh verifier.
+`LOOP status` shows the id of the running request.
 
 ### Browser preflight
 
@@ -267,6 +307,7 @@ reports. Write its brief to `.start-story/<story>/verifier-brief.md`:
 - the checks: goal number + case label;
 - how to set up data and flags; each check sets up its own state;
 - the browser tools to use (the ones the preflight recorded);
+- the request id `LOOP start verify` printed;
 - the rules below and the output contract.
 
 Rules for every check (the lessons of the `pr-ui-review` skill; when it is
@@ -285,27 +326,35 @@ installed, add its *The captures* and *The claims* sections to the brief):
 - **Never claim a check that did not run.** A disabled control, a silent no-op
   or a missing precondition is `blocked` with the reason.
 
-Output contract — a JSON array in `.start-story/<story>/results.json`, one
+Output contract — `.start-story/<story>/results.json`: the request id and one
 object per check id from the approved list, and nothing else returned:
 
 ```json
-{ "id": "1-uk-mobile", "step": 1, "text": "<goal, verbatim>", "case": "UK · mobile", "verdict": "pass",
-  "note": "what it saw, one or two sentences", "url": "<URL it ended on>",
-  "browser": "chrome", "environment": "<base URL / deployment>", "evidence": ["step1-uk-mobile.png"] }
+{ "request": "<the id from LOOP start verify>",
+  "results": [
+    { "id": "1-uk-mobile", "step": 1, "text": "<goal, verbatim>", "case": "UK · mobile", "verdict": "pass",
+      "note": "what it saw, one or two sentences", "url": "<URL it ended on>",
+      "browser": "chrome", "environment": "<base URL / deployment>", "evidence": ["step1-uk-mobile.png"] }
+  ] }
 ```
 
 `verdict` is `pass`, `fail` or `blocked`. `case` is left out when a goal has
-one check. Every id appears exactly once; no invented ids. Hand the brief to a fresh subagent (`model: opus`) with nothing else; split a large
-matrix across several verifiers and merge their arrays into the one file.
+one check. Every id appears exactly once; no invented ids. `evidence` is always
+a list. Hand the brief to a fresh subagent (`model: opus`) with nothing else;
+split a large matrix across several verifiers and merge their `results` into
+the one file.
 
 ### Then you
 
 - Look at every screenshot yourself before believing a `pass`.
-- `LOOP pass verify "<n checks, browser>"`. The script refuses unless every
-  approved check id is reported once, is `pass`, and its screenshots are real
-  PNG/JPEG/WebP files inside the evidence folder — so this cannot be passed on
-  a claim, a subset or an old attempt (going back to build moves the old
-  results to `attempts/<n>/`).
+- `LOOP pass verify "<n checks, browser>"`. The script refuses unless the
+  results carry this attempt's request id, the code is still the committed
+  code that request named, every approved check id is reported once and is
+  `pass`, and its screenshots are complete PNG/JPEG/WebP files inside the
+  evidence folder — so this cannot be passed on a claim, a subset, an old
+  attempt or other code (going back to build moves the old results to
+  `attempts/<n>/`). What it cannot see: code that was changed while the
+  browser ran and put back before the pass. Leave the checkout alone meanwhile.
 - A `fail` → `LOOP back verify build "<goal and note>"`; after the fix a fresh
   verifier re-runs the affected checks.
 - A `blocked` you cannot fix → `LOOP block verify "<what is missing>"`.
@@ -350,8 +399,15 @@ remarks."
 
 When Codex is not set up, tell the human at sign-off which reviewer you will
 use and that they can install Codex or name another; do not stop the run for
-it. Record who reviewed: `LOOP put reviewer codex|claude|<name>` (the script
-refuses to pass the stage without it).
+it.
+
+Record the review itself, after `LOOP start second_review` and with everything
+committed: save the reviewer's full answer to a file and run
+`LOOP review codex|claude|<name> <that file>`. The script keeps the answer in
+the run folder with the attempt and the code tree it covered, and refuses to
+pass the stage on anything else: a review of an earlier attempt or of older
+code — same reviewer, same settled findings — is history, not this review.
+After any commit, review again and record again.
 
 Triage every finding against the actual code, then record all of them with
 `LOOP put findings '[{"id":"r1","source":"<reviewer>","severity":"major","introduced":true,"file":"…","text":"…","verdict":"…","note":"…"}]'`.
@@ -379,8 +435,11 @@ commit, or is rejected or parked without a note →
 
 `PUBLISH`. It refuses a dirty checkout, the wrong branch, a remote with
 several push URLs or a mirror setting, a remote that changed since the first
-publish, and an unsigned commit where the repo signs; it pushes exactly
-`<HEAD>:refs/heads/<branch>` without tags and reads the remote back. If the
+publish, any new commit that is unsigned or badly signed where the repo signs,
+and — in this stage — a commit that test review, the browser check or the
+second review did not cover (then nothing is pushed: `LOOP back push build`).
+It pushes exactly `<HEAD>:refs/heads/<branch>` without tags to the remote's
+push URL and reads that same URL back. If the
 remote moved (someone else pushed), it records a mismatch and stops: tell the
 human, never force. Run it again after a lost connection; it confirms a push
 that already landed instead of repeating it. `LOOP pass push "<sha>"`.
@@ -410,9 +469,14 @@ resumes from the recorded request.
 ## 8 · fix_comments
 
 `GH comments` prints the recorded review's top-level comments, every page,
-one JSON object per line (replies are left out). Triage each with the table
-from stage 5 (`source: "copilot"`, appended to the findings), and read the
-review body too (`gh api repos/{owner}/{repo}/pulls/<pr>/reviews/<id>`).
+one JSON object per line (replies are left out), and records their ids: that
+list is what this stage has to account for. Run it even when you expect none;
+an empty list is recorded too. Triage each with the table from stage 5 and
+append one finding per comment with `"source":"copilot"` and
+`"comment":<the comment's id>`; the script refuses to pass while a fetched
+comment has no finding. Read the review body too
+(`gh api repos/<owner>/<repo>/pulls/<pr>/reviews/<id>`, with the run's
+repository spelled out).
 
 - Any code change, however small → `LOOP back fix_comments build "<what>"`.
   Tests, mutants, the browser checks and both reviews then run on the new
@@ -420,11 +484,13 @@ review body too (`gh api repos/{owner}/{repo}/pulls/<pr>/reviews/<id>`).
   fix_comments or report on it.
 - Reply on every thread in one or two sentences — what was changed (once it
   is pushed), or why not — and say the reply is from the agent:
-  `gh api -X POST repos/{owner}/{repo}/pulls/<pr>/comments/<id>/replies -f body='…'`.
-  Copilot does not read replies; they are for the human reviewer.
+  `gh api -X POST repos/<owner>/<repo>/pulls/<pr>/comments/<id>/replies -f body='…'`.
+  Copilot does not read replies; they are for the human reviewer. The script
+  does not check the replies; they are yours to do.
 
 When every Copilot finding is `rejected` or `parked` with a note (nothing to
 change), or there are none → `LOOP pass fix_comments "<n rejected · n parked>"`.
+This stage is never skipped: with no comments it passes as it is.
 
 ## 9 · report
 
@@ -437,9 +503,18 @@ GH ci                     # records pass | pending | fail | none for the PR head
 It compares with the checks the base branch requires (branch protection and
 rulesets), so a required check GitHub has not started yet counts as pending.
 Pending → wait (run it again later, in the background); failing → read the
-failure; a code fix goes `LOOP back report build "<what>"`; `unknown` (the
-required checks cannot be read) → ask the human which checks matter. Report
-passes only on `pass`, or `none` when the base requires no checks.
+failure; a code fix goes `LOOP back report build "<what>"`. `unknown` means the
+required checks cannot be read with your token, and green visible checks prove
+nothing then: `LOOP wait report human "which checks are required on <base>?"`,
+and record their answer with `LOOP put required_checks '["rspec","lint"]'`
+(`'[]'` when they say none). Report passes only on `pass`, or `none` when the
+base requires no checks.
+
+`GH ci` also checks the PR is still the one this run opened — same branch,
+same base, head equal to the published commit — before and after it reads the
+checks. If someone else pushed, it records `head_moved` and stops: tell the
+human; their commit was reviewed by nobody here. If the human changed the base,
+it says so: `LOOP put base <new base>` and run it again.
 
 Write the report from the run state (`LOOP json`), not from memory: the final
 head, per Test Step the checks and verdicts (n of the approved m), the
@@ -453,7 +528,9 @@ GH report --body-file .start-story/<story>/report.md
 ```
 
 It creates or edits the one report comment (found again by a marker), so a
-retry never posts twice. Screenshots: only when the human says yes, add
+retry never posts twice. It refuses when the PR head is no longer the
+published commit. If it fails, the report stays `attempted` and the stage does
+not pass; run it again to reconcile. Screenshots: only when the human says yes, add
 `--attach .start-story/<story>/evidence/<file>` (current `gh` uploads them to
 GitHub, visible to whoever can see the PR; check `gh pr comment --help` lists
 `--attach`). Otherwise they stay on the board; with `pr-ui-review` installed a
@@ -463,8 +540,10 @@ Tick the passing Test Steps in the description and change nothing else in
 it; read the description first and stop if the human changed it since
 sign-off (with `deliver-story` installed, `goals.mjs apply` does both).
 
-`LOOP pass report` — refused unless the reviews' evidence covers HEAD, HEAD is
-published, required CI passed on it, and the report for it is posted. Then
+`LOOP pass report` — refused unless the reviews' evidence covers HEAD, every
+fetched Copilot comment has a finding and no finding is open, HEAD is
+published, required CI passed on it, and the report for it is confirmed on
+the PR with its comment id. Then
 tell the human, in this order: what needs their
 decision (parked findings), what was verified, and that the PR is a draft
 waiting for their review — they mark it ready, another developer approves, a

@@ -10,9 +10,10 @@ https://github.com/user-attachments/assets/41477f16-1996-42d5-bb66-3ca51721f699
 /story-loop gh-123          # a GitHub issue (or paste its URL)
 ```
 
-> Status: 0.7, experimental. The parts are tested on their own, against real
+> Status: 0.8, experimental. The parts are tested on their own, against real
 > git, local bare remotes, a fake `gh` and a fake `claude`; the whole loop has
-> not yet carried a real story. Expect rough edges and tell the author.
+> not yet carried a real story, and nothing here has run against the real
+> GitHub, Copilot or CI. Expect rough edges and tell the author.
 
 ## What happens
 
@@ -165,10 +166,13 @@ lets the run start.
 | --- | --- | --- |
 | Publish only the story branch: no force, no tags, no other refs | Raw `git push` is refused by a hook; `publish.mjs` pushes `<checked commit>:refs/heads/<branch>` to a remote with exactly one push URL, then reads it back | A disguised command (`sh -c "$(…)"`) or another tool can get past a hook that reads command text; branch protection on GitHub is the firm boundary |
 | Never merge, never mark the PR ready | The hook refuses `gh pr merge`, `gh pr ready` and the GraphQL/REST spellings, with or without `--repo` | Same as above |
-| A stage looks done only when it is | Every pass is checked against its evidence (`loop.mjs passProblem`); browser checks against the approved matrix, screenshots as real image files in the evidence folder | The agent writes the evidence files; the checks catch omissions, stale and fake files, not a deliberate forgery |
-| Old evidence never passes new code | Evidence records the code tree it covered; a later commit makes it stale; going back archives it | Equivalent code reached by a different tree counts as new |
-| No lost or crossed state | One lock around every write, atomic file replace, last good copy kept (`loop.mjs recover`); notes per run | Local processes only; not a database |
-| One conductor at a time | A lease renewed by the owning session's hooks; `acquire` takes over an expired one | Ownership is by Claude Code session id |
+| A stage looks done only when it is | Every pass is checked against its evidence (`loop.mjs passProblem`); browser checks against the approved matrix, screenshots as complete image files in the evidence folder; the last stage checks everything again | The agent writes the evidence files; the checks catch omissions, stale and fake files, not a deliberate forgery. Screenshots are checked to be whole files, not to show what they claim |
+| Old evidence never passes new code | Browser results carry a request id made before the browser ran (run, attempt, check list, code tree); a review is recorded with its attempt and tree; a later commit makes all of it stale, and the publisher refuses to push such a commit | Equivalent code reached by a different tree counts as new. Code changed while the browser ran and put back before the pass is not seen |
+| Mutation results mean something | The scope is the diff, not the files the agent names; a kill needs a mutant that was checked to parse; survivors, timeouts and mutants not run each need a recorded reason | Mutants are textual, one operator per line, at most `--max` per call; ts/tsx/jsx are checked only with the project's `typescript`; templates and styles are named, not mutated |
+| GitHub steps act on this PR only | Every `gh` call names the run's repository; the PR's branch, base and head are checked against the run before CI is read and before the report is posted | PRs from forks are refused, not supported |
+| Green CI means the required checks | Checks are recorded only for the published commit; when the required set cannot be read the result is `unknown` until you name it | The list you name is your word |
+| No lost or crossed state | One lock around every write and around `init`, `end` and `recover`; atomic file replace for state and notes, last good copy kept (`loop.mjs recover`); an unreadable notes file is an error, never an empty inbox | Local processes only; not a database |
+| One conductor at a time | A lease renewed by every hook call of the owning session, its workers' included; `acquire` takes over an expired one; after a takeover the old session's file edits are refused | Ownership is by Claude Code session id. One tool call longer than 15 minutes with nothing else running lets the lease expire. An old session's shell command that changes files is not caught |
 | Not skip the browser check or the second review on its own | Skips need the human's word (`human:` reason) | That reason is the agent's word, not proof |
 | Not rewrite the PR description to match what it built | Instructions | Instructions |
 | Explanations on the board change nothing | `claude -p --tools Read,Grep,Glob --strict-mcp-config`, killed when you close it or after 3 minutes, two at a time | Hooks and settings of your Claude Code still apply to it |
@@ -182,7 +186,7 @@ lets the run start.
 | Guard and ownership | `scripts/hook.mjs` (PreToolUse) | see *What it will not do* |
 | Publisher | `scripts/publish.mjs` | the only push of a run |
 | GitHub steps | `scripts/github.mjs` | Copilot request and bounded wait, comments, required CI, the report comment — each recorded so a retry reconciles |
-| Mutants | `scripts/mutate.mjs` | breaks changed lines one at a time in a throwaway worktree; nothing to install |
+| Mutants | `scripts/mutate.mjs` | breaks changed lines one at a time in a throwaway worktree; nothing to install (uses the project's `typescript` when it has one) |
 | Notes | `.start-story/<story>/inbox.json`, `scripts/hook.mjs` | carries what you write on the board to the agent |
 | Setup check | `scripts/doctor.mjs` | prerequisites and their fixes |
 | Board | `board/server.mjs`, `board/index.html` | one local page, no build step, no external requests |
@@ -200,7 +204,10 @@ from [savvy-flow](https://github.com/johnnyvizz/claude-kit) (MIT).
 | A stage says *blocked* | The reason is next to it; fix it and tell the agent to continue |
 | `the run state ... is unreadable` | `node <plugin>/skills/story-loop/scripts/loop.mjs recover` restores the last good copy; pushes and PR changes wait until then |
 | `run ... belongs to session ...` | Another session owns the run; `loop.mjs acquire` in the new one (after 15 quiet minutes, or `--takeover "<why>"`) |
-| A run from 0.6 | It migrates on first use and keeps its data; stages it already passed carry no code tree, so the report stage asks for fresh evidence |
+| A run from 0.6 | It migrates on first use and keeps its data; stages it already passed carry no code tree, so they count as stale and the run goes back to build for fresh evidence |
+| A run started on 0.7 | Finish it on 0.7 or end it: browser results now need a request id (`loop.mjs start verify` again), the review is recorded with `loop.mjs review`, and mutation results need a fresh `mutate.mjs` run |
+| `the notes file ... is unreadable` | `loop.mjs recover` restores the last good copy and keeps the broken file next to it; a note typed after that copy is only in the broken file |
+| `required CI ... unknown` | Your token cannot read the base branch's required checks; tell the agent which checks are required |
 | The board is empty | No run yet in that repo; it fills once the story starts |
 | Worker cards show only the conductor | Your Claude Code version does not pass worker ids to hooks; the run is unaffected |
 | You want to stop a run for good | `node <plugin>/skills/story-loop/scripts/loop.mjs end` in the repo; the run's record stays in `.start-story/<story>/` |

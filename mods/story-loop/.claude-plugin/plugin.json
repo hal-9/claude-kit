@@ -1,6 +1,6 @@
 {
   "name": "story-loop",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "One Shortcut story or GitHub issue, ticket to reviewed draft PR: contract, workers on fixed models, mutants on the diff, blind browser verify, a second-model review and a Copilot review, behind a stage graph, a push guard and a live board.",
   "author": { "name": "hal-9" },
   "license": "MIT",
