@@ -8,6 +8,7 @@ import {
   statSync, realpathSync, openSync, readSync, closeSync,
 } from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -15,10 +16,12 @@ export const GRAPH = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.m
 export const SCHEMA = 2
 export const LEASE_MS = 15 * 60_000
 const DONE = new Set(['passed', 'skipped'])
-const PUT_KEYS = new Set(['title', 'branch', 'pr', 'base', 'tasks', 'findings', 'browser', 'reviewer'])
+const PUT_KEYS = new Set(['title', 'branch', 'pr', 'base', 'repo', 'tasks', 'findings', 'browser', 'required_checks'])
 // Which stages may be skipped, and on whose word. Everything else needs only a reason.
 const SKIP = {
   contract: 'never', build: 'never', second_review: 'never', push: 'never', report: 'never',
+  // With no Copilot comments fix_comments passes on its own; a skip would only hide open ones.
+  fix_comments: 'never',
   verify: 'human', copilot_review: 'human',
 }
 // Stages whose evidence covers one exact code tree; a later change makes it stale.
@@ -39,7 +42,7 @@ export const remoteRepo = url => String(url).trim().match(/github\.com[:/]([^/\s
 
 export function newRun(story, now = new Date().toISOString()) {
   return {
-    schema: SCHEMA, revision: 0, story, started_at: now, owner: null, stop_blocks: 0,
+    schema: SCHEMA, id: randomUUID().slice(0, 8), revision: 0, story, started_at: now, owner: null, stop_blocks: 0,
     stages: Object.fromEntries(GRAPH.stages.map(s => [s.id, { status: 'pending', rounds: 0, attempt: 1 }])),
     tasks: [], findings: [], evidence: {}, checks: null, history: [],
   }
@@ -202,19 +205,26 @@ function staleLock(lock) {
 // Every read-modify-write of .start-story goes through this one lock, so two
 // processes never lose each other's change. ponytail: one lock for the whole
 // folder; finer locks only if the board ever contends with the hooks.
-export function withLock(root, fn, wait = 10_000) {
+// Only one process at a time may break a stale lock, and it looks again once it
+// is the one: a waiter that saw the old lock can never remove its replacement.
+function breakStale(lock) {
+  const guard = `${lock}.break`
+  try { mkdirSync(guard) } catch {
+    // ponytail: a breaker that died in this short window leaves the guard behind;
+    // it is cleared by age alone, which is the one place two waiters could still collide.
+    try { if (Date.now() - statSync(guard).mtimeMs > 30_000) rmSync(guard, { recursive: true, force: true }) } catch {}
+    return
+  }
+  try { if (staleLock(lock)) rmSync(lock, { recursive: true, force: true }) } finally { rmSync(guard, { recursive: true, force: true }) }
+}
+export function withLock(root, fn, wait = Number(process.env.STORY_LOOP_LOCK_WAIT) || 10_000) {
   const { lock } = paths(root)
   const deadline = Date.now() + wait
   for (;;) {
     try { mkdirSync(lock); writeFileSync(join(lock, 'pid'), String(process.pid)); break } catch (error) {
       if (error.code !== 'EEXIST') throw error
-      // Moving it aside first means two waiters cannot both break the same stale lock.
-      if (staleLock(lock)) {
-        const aside = `${lock}.stale-${process.pid}-${Date.now()}`
-        try { renameSync(lock, aside); rmSync(aside, { recursive: true, force: true }) } catch { /* another waiter took it */ }
-        continue
-      }
       Date.now() > deadline && fail(`the run state is locked by another process (${lock}); try again`)
+      if (staleLock(lock)) breakStale(lock)
       sleep(20)
     }
   }
@@ -242,9 +252,10 @@ export function headTree(root) { try { return gitIn(root)('rev-parse', 'HEAD^{tr
 export function headCommit(root) { try { return gitIn(root)('rev-parse', 'HEAD') } catch { return null } }
 export function dirty(root) { try { return gitIn(root)('status', '--porcelain') } catch { return 'not a git checkout' } }
 
-// Stages whose evidence covers a different tree than the code now has.
+// Stages whose evidence covers a different tree than the code now has. A passed
+// stage that names no tree (a run from before 0.7) proves nothing about this code.
 export function staleStages(root, run, tree = headTree(root)) {
-  return FRESH.filter(id => run.stages[id]?.status === 'passed' && run.stages[id].tree && run.stages[id].tree !== tree)
+  return FRESH.filter(id => run.stages[id]?.status === 'passed' && run.stages[id].tree !== tree)
 }
 
 // ---- notes from the board ----------------------------------------------------
@@ -258,11 +269,24 @@ const legacyInbox = root => join(root, '.start-story', 'inbox.json')
 export function readInbox(root, run) {
   // Runs from before 0.7 kept one inbox for the whole folder.
   const file = existsSync(inboxFile(root, run)) ? inboxFile(root, run) : legacyInbox(root)
-  try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return [] }
+  let text
+  try { text = readFileSync(file, 'utf8') } catch (error) { if (error.code === 'ENOENT') return []; throw error }
+  // An unreadable inbox is never an empty one: the notes in it are the human's instructions.
+  try {
+    const notes = JSON.parse(text)
+    return Array.isArray(notes) ? notes : fail('not a list of notes')
+  } catch (error) {
+    fail(`the notes file ${file} is unreadable (${error.message}); nothing was changed. Restore the last good copy with: loop.mjs recover`)
+  }
 }
+// Crash-safe like save(): temp file, keep the previous good copy, rename over.
 export function writeInbox(root, run, notes) {
   mkdirSync(runDir(root, run), { recursive: true })
-  writeFileSync(inboxFile(root, run), JSON.stringify(notes, null, 2) + '\n')
+  const file = inboxFile(root, run)
+  const tmp = `${file}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(notes, null, 2) + '\n')
+  try { JSON.parse(readFileSync(file, 'utf8')); copyFileSync(file, `${file}.prev`) } catch { /* no good copy to keep */ }
+  renameSync(tmp, file)
 }
 
 const KINDS = { note: 'note', wrong: 'this is wrong', change: 'change request', fix: 'fix it after all' }
@@ -316,7 +340,23 @@ export function deliver(root, via) {
 
 export const resultsFile = (root, run) => join(runDir(root, run), 'results.json')
 export const evidenceDir = (root, run) => join(runDir(root, run), 'evidence')
-export const readResults = (root, run) => { try { return JSON.parse(readFileSync(resultsFile(root, run), 'utf8')) } catch { return null } }
+// The verifier writes { "request": "<id from start verify>", "results": [...] }.
+// A bare array (before 0.8) is read, but carries no request and so never passes.
+export function readResultsFile(root, run) {
+  let data
+  try { data = JSON.parse(readFileSync(resultsFile(root, run), 'utf8')) } catch { return null }
+  if (Array.isArray(data)) return { request: null, results: data }
+  return Array.isArray(data?.results) ? { request: data.request ?? null, results: data.results } : null
+}
+export const readResults = (root, run) => readResultsFile(root, run)?.results ?? null
+
+// What `start verify` hands the verifier: the run, attempt, check list and code
+// tree these results are for. Results carrying another id are not this attempt's.
+export function verifyRequest(run, tree) {
+  const attempt = run.stages.verify.attempt ?? 1
+  const checks_revision = run.checks_revision ?? 0
+  return { id: `${run.id ?? run.started_at}-a${attempt}-c${checks_revision}-${String(tree).slice(0, 12)}`, tree, attempt, checks_revision }
+}
 
 const MAGIC = [[0x89, 0x50, 0x4e, 0x47], [0xff, 0xd8, 0xff]]
 // A screenshot must be a real PNG/JPEG/WebP file inside the evidence folder.
@@ -331,6 +371,14 @@ export function imageProblem(dir, file) {
   const fd = openSync(real, 'r'); readSync(fd, head, 0, 12, 0); closeSync(fd)
   const webp = head.toString('latin1', 0, 4) === 'RIFF' && head.toString('latin1', 8, 12) === 'WEBP'
   if (!webp && !MAGIC.some(m => m.every((b, i) => head[i] === b))) return `screenshot ${file} is not a PNG, JPEG or WebP image`
+  // A capture cut off while it was written keeps its header and loses its end.
+  // ponytail: this checks the container's end marker, it does not decode pixels.
+  const tail = Buffer.alloc(64)
+  const fd2 = openSync(real, 'r'); readSync(fd2, tail, 0, 64, st.size - 64); closeSync(fd2)
+  const whole = webp ? Math.abs(head.readUInt32LE(4) + 8 - st.size) <= 1
+    : head[0] === 0x89 ? tail.subarray(-8).equals(Buffer.from('49454e44ae426082', 'hex'))
+    : tail.includes(Buffer.from([0xff, 0xd9]))
+  if (!whole) return `screenshot ${file} is cut off (its end is missing); capture it again`
   return null
 }
 
@@ -339,8 +387,14 @@ export function verifyProblem(root, run) {
   const checks = run.checks
   if (!Array.isArray(checks)) return 'no approved check list yet (loop.mjs checks set \'[{"id":…,"step":…}]\')'
   if (!checks.length) return 'the approved check list is empty: no user journey, so verify is skipped on the human\'s say-so, not passed'
-  const results = readResults(root, run)
+  const request = run.stages?.verify?.request
+  if (!request) return 'verify was not started on this attempt; loop.mjs start verify prints the request id the results must carry'
+  if (request.checks_revision !== (run.checks_revision ?? 0)) return 'the check list changed since verify started; run loop.mjs start verify again and verify against the new list'
+  const written = readResultsFile(root, run)
+  const results = written?.results
   if (!Array.isArray(results) || !results.length) return `0 of ${checks.length} checks reported; the verifier has not written ${resultsFile(root, run)}`
+  if (written.request !== request.id)
+    return `the results carry request "${written.request ?? 'none'}", not this attempt's "${request.id}"; they belong to another attempt, check list or run`
   const expected = new Set(checks.map(c => c.id))
   const seen = new Set()
   for (const r of results) {
@@ -389,6 +443,34 @@ export function findingsProblem(findings) {
   return null
 }
 
+// Every Copilot comment that was fetched must have become a finding. A fetched
+// empty list is an answer; no fetch at all is not.
+export function commentsProblem(run) {
+  if (run.stages?.copilot_review?.status === 'skipped') return null
+  const review = run.copilot?.review
+  const fetched = run.copilot?.comments
+  if (!review || fetched?.review !== review.id) return 'the Copilot review\'s comments were not fetched yet (github.mjs comments)'
+  const mapped = new Set((run.findings ?? []).filter(f => f.source === 'copilot').map(f => String(f.comment)))
+  const missing = fetched.ids.filter(id => !mapped.has(String(id)))
+  return missing.length ? `${missing.length} of ${fetched.ids.length} Copilot comments have no finding (comment ids: ${missing.join(', ')}); record each with "source":"copilot","comment":<id>` : null
+}
+
+// Mutation results count when every changed source file was mutated and every
+// mutant that did not die has a recorded reason.
+const UNRESOLVED = ['survived', 'timeout', 'skipped', 'unverified']
+export function mutantsProblem(m) {
+  const outcomes = Object.entries(m.outcomes ?? {})
+  const reasons = m.dispositions ?? {}
+  const fileOf = id => id.split(':').slice(0, -2).join(':')
+  const uncovered = (m.scope ?? []).filter(f => !(m.covered ?? []).includes(f) && !reasons[f])
+  if (uncovered.length) return `changed source files were not mutated: ${uncovered.join(', ')}; run mutate.mjs on them, or record why not: loop.mjs mutant accept <file> "<reason>"`
+  const unclear = outcomes.filter(([, o]) => o === 'infra' || o === 'inconclusive').length
+  if (unclear) return `${unclear} mutant runs were inconclusive (infrastructure or a signal); fix the cause and run mutate.mjs again`
+  if (!outcomes.some(([, o]) => o === 'killed' || o === 'survived')) return 'no valid mutant ran, so the results say nothing about the tests; with nothing to mutate, skip test_review with the reason'
+  const open = outcomes.filter(([id, o]) => UNRESOLVED.includes(o) && !reasons[id] && !(o === 'skipped' && reasons[fileOf(id)])).map(([id, o]) => `${id} (${o})`)
+  return open.length ? `${open.length} mutants need a decision: ${open.slice(0, 5).join(', ')}${open.length > 5 ? ', …' : ''}. Kill each with a test and run mutate.mjs again, or record why it stands: loop.mjs mutant accept <id> "<reason>"` : null
+}
+
 // Why `stage` may not pass yet, or null. The CLI asks this before every pass.
 export function passProblem(root, run, stage) {
   const tree = headTree(root)
@@ -416,33 +498,43 @@ export function passProblem(root, run, stage) {
       const m = run.evidence?.mutants
       if (!m) return 'no mutation results for this attempt (run mutate.mjs)'
       if (m.tree !== tree) return 'the mutation results cover older code; run mutate.mjs again'
-      if (!m.valid) return 'no valid mutant ran, so the results say nothing about the tests; with nothing to mutate, skip test_review with the reason'
-      if ((m.infra ?? 0) + (m.inconclusive ?? 0)) return `${m.infra + m.inconclusive} mutant runs were inconclusive (infrastructure or a signal); fix the cause and run mutate.mjs again`
-      return dirty(root) ? 'commit the test changes first' : null
+      return mutantsProblem(m) ?? (dirty(root) ? 'commit the test changes first' : null)
     }
-    case 'verify':
+    case 'verify': {
+      const request = run.stages.verify.request
+      if (request && request.tree !== tree) return 'the code changed since verify started; run loop.mjs start verify again so the browser tests this code'
+      if (dirty(root)) return 'the checkout has uncommitted changes; the browser must have tested committed code'
       return verifyProblem(root, run) ??
         (run.browser ? null : 'record the browser that was used (loop.mjs put browser chrome|browseros|playwright)')
+    }
     case 'second_review': {
-      if (!run.reviewer) return 'record who reviewed (loop.mjs put reviewer codex|claude|<name>)'
+      const review = run.review
+      const usage = 'loop.mjs review codex|claude|<name> <file with the reviewer\'s output>'
+      if (!review) return `record the review of this code (${usage})`
+      if (review.attempt !== (run.stages.second_review.attempt ?? 1) || review.tree !== tree)
+        return `the recorded review covered older code or an earlier attempt; review this code and record it (${usage})`
       return findingsProblem((run.findings ?? []).filter(f => f.source !== 'copilot')) ?? (dirty(root) ? 'commit first' : null)
     }
     case 'push':
+      if (stale()) return stale()
       if (run.pushed?.state !== 'confirmed') return 'nothing published yet (publish.mjs)'
       return run.pushed.sha === head ? null : `the published commit ${run.pushed.sha.slice(0, 7)} is not HEAD ${head?.slice(0, 7)}; publish again`
     case 'copilot_review':
       return run.copilot?.review?.commit && run.copilot.review.commit === run.pushed?.sha ? null
         : 'no Copilot review for the published commit yet (github.mjs copilot-wait)'
     case 'fix_comments':
-      return findingsProblem((run.findings ?? []).filter(f => f.source === 'copilot')) ?? stale() ??
+      return commentsProblem(run) ?? findingsProblem((run.findings ?? []).filter(f => f.source === 'copilot')) ?? stale() ??
         (run.pushed?.sha === head ? null : 'HEAD is not published; a code fix goes back to build')
     case 'report':
+      // The last gate looks again at everything, not at the labels earlier stages left.
       if (stale()) return stale()
+      if (commentsProblem(run) ?? findingsProblem(run.findings ?? [])) return commentsProblem(run) ?? findingsProblem(run.findings ?? [])
       if (run.pushed?.sha !== head) return 'HEAD is not the published commit'
       if (run.ci?.sha !== head) return 'no required-CI result for HEAD (github.mjs ci)'
       if (!['pass', 'none'].includes(run.ci.state)) return `required CI is ${run.ci.state} on HEAD`
       if (run.ci.state === 'none' && run.ci.required?.length !== 0) return 'no checks reported on HEAD yet and the required checks are unknown; run github.mjs ci again'
-      return run.report?.sha === head ? null : 'the report for HEAD is not posted (github.mjs report)'
+      if (run.report?.sha === head && run.report.state !== 'confirmed') return `the report was ${run.report.state}, not confirmed on the PR; run github.mjs report again to reconcile`
+      return run.report?.sha === head && run.report.comment_id ? null : 'the report for HEAD is not posted (github.mjs report)'
   }
   return null
 }
@@ -459,7 +551,8 @@ function status(run) {
   const cur = current(run)
   const rows = GRAPH.stages.map(({ id, label }) => {
     const s = run.stages[id]
-    const extra = [s.rounds ? `round ${s.rounds + 1}` : '', s.waiting_on ? `waiting on ${s.waiting_on}` : '', s.reason ?? '']
+    const extra = [s.rounds ? `round ${s.rounds + 1}` : '', s.waiting_on ? `waiting on ${s.waiting_on}` : '', s.reason ?? '',
+      s.status === 'running' && s.request ? `request ${s.request.id}` : '']
       .filter(Boolean).join(' · ')
     return `${id === cur ? '>' : ' '} ${label.padEnd(15)} ${s.status.padEnd(8)} ${extra}`
   })
@@ -480,21 +573,24 @@ function init(input) {
   const repo = issueRepo(input)
   repo && origin && repo !== origin && fail(`that issue belongs to ${repo}, but this checkout's origin is ${origin}; run from a checkout of ${repo}`)
   const p = paths(root)
-  if (existsSync(p.active)) {
-    const old = load(root)
-    old.story === story || current(old) === null || fail(`another run is active here (${old.story}); finish it or run: loop.mjs end`)
-    if (old.story === story) return console.log(status(old))
-    if (existsSync(legacyInbox(root))) writeInbox(root, old, readInbox(root, old))
-    archive(root, old)
-  }
   mkdirSync(p.dir, { recursive: true })
-  // A shared inbox from before 0.7 belongs to an old story, never to this one.
-  if (existsSync(legacyInbox(root))) renameSync(legacyInbox(root), `${legacyInbox(root)}.old-${Date.now()}`)
-  writeFileSync(p.events, '')
-  const run = { ...newRun(story), source: String(input), repo: repo ?? origin }
-  save(root, run)
-  emit(root, { kind: 'stage', text: `run started for ${story}` })
-  console.log(status(run))
+  // Check, archive and create are one step under the lock: two inits never replace each other's run.
+  console.log(status(withLock(root, () => {
+    if (existsSync(p.active)) {
+      const old = load(root)
+      old.story === story || current(old) === null || fail(`another run is active here (${old.story}); finish it or run: loop.mjs end`)
+      if (old.story === story) return old
+      if (existsSync(legacyInbox(root))) writeInbox(root, old, readInbox(root, old))
+      archive(root, old)
+    }
+    // A shared inbox from before 0.7 belongs to an old story, never to this one.
+    if (existsSync(legacyInbox(root))) renameSync(legacyInbox(root), `${legacyInbox(root)}.old-${Date.now()}`)
+    writeFileSync(p.events, '')
+    const run = { ...newRun(story), source: String(input), repo: repo ?? origin }
+    save(root, run)
+    emit(root, { kind: 'stage', text: `run started for ${story}` })
+    return run
+  })))
 }
 
 // An ended run is kept next to its evidence, never deleted.
@@ -503,9 +599,10 @@ function archive(root, run) {
   renameSync(paths(root).active, join(runDir(root, run), `run-${Date.now()}.json`))
 }
 
-// Moves the last attempt's browser results aside so they never count again.
-function archiveAttempt(root, run, attempt) {
-  const dir = join(runDir(root, run), 'attempts', String(attempt))
+// Moves browser results aside so they never count again.
+function archiveAttempt(root, run, name) {
+  let dir = join(runDir(root, run), 'attempts', String(name))
+  if (existsSync(dir)) dir += `-${Date.now()}`
   for (const from of [resultsFile(root, run), evidenceDir(root, run)]) {
     if (!existsSync(from)) continue
     mkdirSync(dir, { recursive: true })
@@ -513,15 +610,26 @@ function archiveAttempt(root, run, attempt) {
   }
 }
 
+// Puts the last good copy back in place of an unreadable file; the broken one is kept.
+function restore(file, prev) {
+  try { JSON.parse(readFileSync(file, 'utf8')); return null } catch (error) { if (error.code === 'ENOENT') return null }
+  try { JSON.parse(readFileSync(prev, 'utf8')) } catch { fail(`no readable backup at ${prev}; the broken file is still at ${file}`) }
+  const kept = `${file}.broken-${Date.now()}`
+  renameSync(file, kept)
+  copyFileSync(prev, file)
+  return kept
+}
 function recover(root) {
   const p = paths(root)
-  try { JSON.parse(readFileSync(p.active, 'utf8')); return console.log('the run state is readable; nothing to recover') } catch {}
-  try { JSON.parse(readFileSync(p.prev, 'utf8')) } catch { fail(`no readable backup at ${p.prev}; the broken state is still at ${p.active}`) }
-  const kept = `${p.active}.broken-${Date.now()}`
-  renameSync(p.active, kept)
-  copyFileSync(p.prev, p.active)
-  emit(root, { kind: 'note', text: 'run state restored from the last good copy' })
-  console.log(`restored the last good state; the broken file is kept at ${kept}`)
+  withLock(root, () => {
+    const state = restore(p.active, p.prev)
+    const inbox = inboxFile(root, load(root))
+    const notes = restore(inbox, `${inbox}.prev`)
+    if (!state && !notes) return console.log('the run state and the notes are readable; nothing to recover')
+    emit(root, { kind: 'note', text: `${[state && 'run state', notes && 'notes'].filter(Boolean).join(' and ')} restored from the last good copy` })
+    for (const kept of [state, notes].filter(Boolean)) console.log(`restored the last good copy; the broken file is kept at ${kept}`)
+    if (notes) console.log('a note typed after that copy was made is only in the broken file; read it there')
+  })
 }
 
 function main([verb, ...args]) {
@@ -548,7 +656,41 @@ function main([verb, ...args]) {
       console.log(`note ${id} done`)
     })
   }
-  if (verb === 'end') { withLock(root, () => archive(root, run)); return console.log(`run ${run.story} ended; its record is kept in ${runDir(root, run)}`) }
+  if (verb === 'end') {
+    const ended = withLock(root, () => { const now = load(root); archive(root, now); return now })
+    return console.log(`run ${ended.story} ended; its record is kept in ${runDir(root, ended)}`)
+  }
+  // The review as an artifact: who reviewed which code in which attempt, and what they said.
+  if (verb === 'review') {
+    const [reviewer, file] = args
+    reviewer && file || fail('usage: loop.mjs review codex|claude|<name> <file with the reviewer\'s output>')
+    let output = ''
+    try { output = readFileSync(resolve(file), 'utf8') } catch { fail(`cannot read the reviewer's output at ${file}`) }
+    output.trim() || fail(`${file} is empty; a review that said nothing still says so`)
+    const next = update(root, r => {
+      current(r) === 'second_review' && r.stages.second_review.status === 'running' || fail('a review is recorded while second_review is running (loop.mjs start second_review)')
+      dirty(root) && fail('commit first; a review is recorded for committed code')
+      const attempt = r.stages.second_review.attempt ?? 1
+      const kept = join(runDir(root, r), `review-${attempt}.txt`)
+      mkdirSync(runDir(root, r), { recursive: true })
+      writeFileSync(kept, output)
+      return { ...r, reviewer, review: { reviewer, attempt, tree: headTree(root), commit: headCommit(root), output: kept, at: new Date().toISOString() } }
+    })
+    emit(root, { kind: 'note', text: `review by ${reviewer} recorded for ${next.review.commit?.slice(0, 7)}` })
+    return console.log(`review by ${reviewer} recorded for ${next.review.commit?.slice(0, 7)}`)
+  }
+  // A mutant that did not die, or a changed file that was not mutated, stands only with a reason.
+  if (verb === 'mutant') {
+    const [sub, key, ...why] = args
+    sub === 'accept' && key && why.length || fail('usage: loop.mjs mutant accept <mutant id | file> "<why it stands>"')
+    update(root, r => {
+      const m = r.evidence?.mutants ?? fail('no mutation results yet (run mutate.mjs)')
+      key in (m.outcomes ?? {}) || (m.scope ?? []).includes(key) || fail(`"${key}" is neither a mutant id nor a changed source file of these results`)
+      return { ...r, evidence: { ...r.evidence, mutants: { ...m, dispositions: { ...m.dispositions, [key]: why.join(' ') } } } }
+    })
+    emit(root, { kind: 'note', text: `mutant ${key} accepted: ${why.join(' ')}` })
+    return console.log(`${key} accepted`)
+  }
   if (verb === 'checks') {
     const [sub, raw] = args
     sub === 'set' && raw || fail('usage: loop.mjs checks set \'[{"id":"1-desktop","step":1,"case":"desktop"}, …]\'')
@@ -566,12 +708,14 @@ function main([verb, ...args]) {
   }
   if (verb === 'put') {
     const [key, raw] = args
+    key === 'reviewer' && fail('a review is recorded with its output: loop.mjs review <reviewer> <file>')
     PUT_KEYS.has(key) || fail(`put takes one of: ${[...PUT_KEYS].join(', ')}`)
     let value = raw
     try { value = JSON.parse(raw) } catch { /* a bare string such as a branch name */ }
     update(root, r => {
       key === 'branch' && r.branch && r.branch !== value && r.pushed &&
         fail(`the story branch is "${r.branch}" and was published; it does not change mid-run`)
+      key === 'repo' && r.repo && r.repo !== value && fail(`this run belongs to ${r.repo}; the repository does not change mid-run`)
       return { ...r, [key]: value }
     })
     emit(root, { kind: 'note', text: `${key} updated` })
@@ -587,12 +731,20 @@ function main([verb, ...args]) {
       problem && fail(`${stage} cannot pass: ${problem}`)
     }
     const moved = move(r, verb, stage, arg, reason)
+    if (verb === 'start' && stage === 'verify') {
+      // The request exists before the browser runs; results are checked against it, never stamped afterwards.
+      dirty(root) && fail('verify starts on committed code; the checkout has uncommitted changes')
+      const request = verifyRequest(r, headTree(root) ?? fail('not a git checkout'))
+      if (readResultsFile(root, r)?.request !== request.id) archiveAttempt(root, r, `${request.attempt}-superseded`)
+      moved.stages.verify.request = request
+    }
     if (verb === 'pass') Object.assign(moved.stages[stage], passStamp(root, stage))
     if (verb === 'back') archiveAttempt(root, r, r.stages.verify.attempt ?? 1)
     return moved
   })
   emit(root, { kind: 'stage', stage, verb, to: arg, text: reason })
   console.log(status(next))
+  if (verb === 'start' && stage === 'verify') console.log(`verify request: ${next.stages.verify.request.id}  (results.json must carry it as "request")`)
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

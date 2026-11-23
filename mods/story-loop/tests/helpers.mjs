@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { newRun, save } from '../skills/story-loop/scripts/loop.mjs'
+import { newRun, save, load, FRESH } from '../skills/story-loop/scripts/loop.mjs'
 
 export const B = 'feat/sc-1-thing'
 
@@ -31,10 +31,18 @@ export function repo({ remote = false, branch = B } = {}) {
 // A run in `dir`, with the fields a contract records.
 export function withRun(dir, patch = {}) {
   mkdirSync(join(dir, '.start-story'), { recursive: true })
-  const run = { ...newRun('sc-1'), title: 'Thing', branch: B, pr: 7, base: 'main', checks: [], ...patch }
+  const run = { ...newRun('sc-1'), title: 'Thing', branch: B, pr: 7, base: 'main', repo: 'acme/app', checks: [], ...patch }
   save(dir, run)
   return run
 }
 
 // The smallest valid PNG (1x1), padded past the size floor.
 export const PNG = Buffer.concat([Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4a20000000049454e44ae426082', 'hex')])
+
+// Marks the review stages as having covered the code that is HEAD now.
+export function reviewed(dir) {
+  const tree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: dir, encoding: 'utf8' }).trim()
+  const run = load(dir)
+  for (const id of FRESH) run.stages[id].tree = tree
+  save(dir, run)
+}
