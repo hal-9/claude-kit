@@ -20,7 +20,8 @@ const HEARTBEAT_MS = 60_000
 export const PROFILES = { 'worker-haiku': 'haiku', 'worker-sonnet': 'sonnet', 'worker-opus': 'opus', 'worker-opus-max': 'opus' }
 // Commands with an effect outside this machine. With an unreadable state they are refused.
 const OUTWARD = /\bgit\b[^\n;&|]*\spush\b|\bgh\b[^\n;&|]*\b(pr|api|issue|release)\b/
-const LOOP_WRITE = /loop\.mjs["']?\s+(start|pass|skip|block|wait|back|put|checks|note|end)\b|publish\.mjs|github\.mjs|mutate\.mjs/
+const LOOP_WRITE = /loop\.mjs["']?\s+(start|pass|skip|block|wait|back|put|checks|note|end|review|mutant)\b|publish\.mjs|github\.mjs|mutate\.mjs/
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
 // Returns the reason a shell command is refused during a run, or null.
 // ponytail: this reads the command's spelling, so it stops accidents and the
@@ -88,7 +89,9 @@ function acquire(root, session, command) {
       return undefined
     }
     emit(root, { kind: 'session', phase: 'acquired', text: `session ${session} took over from ${run.owner?.session ?? 'nobody'} (${state}${takeover ? `: ${takeover}` : ''})` })
-    return { ...run, owner: { session, since: new Date().toISOString(), heartbeat: Date.now() }, stop_blocks: 0 }
+    // The session that lost the run is retired: its workers may still be running, and their edits are refused from here on.
+    const retired = [...new Set([...(run.retired ?? []), run.owner?.session])].filter(s => s && s !== session)
+    return { ...run, retired, owner: { session, since: new Date().toISOString(), heartbeat: Date.now() }, stop_blocks: 0 }
   })
   if (refused) deny(refused)
 }
@@ -138,6 +141,14 @@ function main() {
   }
   const agent = input.agent_type || 'conductor'
   const agent_id = input.agent_id || 'conductor'
+  // Any hook call of the owning session renews its lease, a worker's included:
+  // a conductor waiting on its workers is active, not gone.
+  // ponytail: one tool call running longer than the lease with no other activity still lets it expire.
+  if (ours && input.session_id && Date.now() - (run.owner.heartbeat ?? 0) > HEARTBEAT_MS) {
+    try {
+      update(root, r => ownerState(r, input.session_id) === 'ours' ? { ...r, owner: { ...r.owner, heartbeat: Date.now() } } : undefined)
+    } catch { /* a missed heartbeat is retried on the next call */ }
+  }
 
   switch (event) {
     case 'PreToolUse': {
@@ -150,21 +161,20 @@ function main() {
         if (LOOP_WRITE.test(command) && (state === 'live' || state === 'expired'))
           deny(`story-loop: run ${run.story} belongs to session ${run.owner.session}. Run loop.mjs acquire first.`)
       }
+      // ponytail: this sees the edit tools only; a file changed through a shell command is not caught.
+      if (EDIT_TOOLS.has(tool) && !ours && run.retired?.includes(input.session_id))
+        deny(`story-loop: session ${run.owner?.session} took over run ${run.story}; this session and its workers no longer change its code. Stop here and report what you had done.`)
       // Every refusal is decided before any write, so a busy lock can never turn one into an allow.
       if (tool === 'Agent' || tool === 'Task') {
         const refused = (ours || state === 'unowned') && checkAgent(ti)
         if (refused) deny(refused)
       }
-      // The first session to drive loop.mjs owns an unowned run; the owner renews its lease.
-      const claims = state === 'unowned' && tool === 'Bash' && /loop\.mjs/.test(command)
-      if (!input.agent_id && input.session_id && (claims || (ours && Date.now() - (run.owner.heartbeat ?? 0) > HEARTBEAT_MS))) {
+      // The first session to drive loop.mjs owns an unowned run.
+      if (!input.agent_id && input.session_id && state === 'unowned' && tool === 'Bash' && /loop\.mjs/.test(command)) {
         try {
-          update(root, r => {
-            const now = ownerState(r, input.session_id)
-            if (now !== 'unowned' && now !== 'ours') return undefined
-            return { ...r, owner: { session: input.session_id, since: r.owner?.since ?? new Date().toISOString(), heartbeat: Date.now() } }
-          })
-        } catch { /* a missed heartbeat is retried on the next call */ }
+          update(root, r => ownerState(r, input.session_id) === 'unowned'
+            ? { ...r, owner: { session: input.session_id, since: new Date().toISOString(), heartbeat: Date.now() } } : undefined)
+        } catch { /* claimed on the next call */ }
       }
       if (tool === 'Agent' || tool === 'Task') {
         appendFileSync(join(root, '.start-story', 'spawns.jsonl'),
@@ -190,7 +200,9 @@ function main() {
         return
       }
       if (!ours) return
-      const notes = deliver(root, 'while working')
+      // Notes that cannot be read are said out loud, never treated as no notes.
+      let notes
+      try { notes = deliver(root, 'while working') } catch (error) { notes = `story-loop: ${error.message}. Tell the human: notes they typed on the board may be waiting in that file.` }
       if (notes) console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: notes } }))
       return
     }

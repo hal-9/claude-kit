@@ -172,3 +172,43 @@ test('the session that ran init owns the new run at once', () => {
   assert.equal(load(root).owner.session, 's1')
   assert.match(fire(root, { hook_event_name: 'Stop' }).stdout, /"decision":"block"/)
 })
+
+// ---- regressions from the 0.7.0 reliability review ------------------------------
+
+test('H17: a worker\'s activity renews the lease, and after a takeover the old session\'s edits are refused', () => {
+  const stale = Date.now() - LEASE_MS + 60_000 // one quiet minute from expiring
+  const root = runDirWith(owned('s1', stale))
+  const edit = (session, agent_id) => fire(root, { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(root, 'app/a.rb') }, session_id: session, agent_id })
+  // the conductor waits on a worker; only the worker makes tool calls
+  fire(root, { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: join(root, 'a') }, agent_id: 'w1', agent_type: 'story-loop:worker-opus' })
+  assert.ok(load(root).owner.heartbeat > Date.now() - 5000, 'the worker call renewed the lease')
+  assert.equal(load(root).owner.session, 's1')
+  const refused = fire(root, bash('node loop.mjs acquire'), { }) // from s1 itself: nothing to do
+  assert.equal(refused.status, 0)
+  const other = spawnSync('node', [HOOK], { input: JSON.stringify({ cwd: root, session_id: 's2', ...bash('node loop.mjs acquire') }), encoding: 'utf8' })
+  assert.equal(other.status, 2, 'an active run is not taken silently')
+  assert.equal(edit('s1', 'w1').status, 0)
+  // the human moves the run to s2
+  spawnSync('node', [HOOK], { input: JSON.stringify({ cwd: root, session_id: 's2', ...bash('node loop.mjs acquire --takeover "human: continue here"') }), encoding: 'utf8' })
+  assert.deepEqual([load(root).owner.session, load(root).retired], ['s2', ['s1']])
+  const late = edit('s1', 'w1')
+  assert.equal(late.status, 2)
+  assert.match(late.stderr, /session s2 took over run sc-1; this session and its workers no longer change its code/)
+  assert.equal(edit('s1', undefined).status, 2, 'the old conductor too')
+  assert.equal(fire(root, { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: join(root, 'a') } }).status, 0, 'reading is still fine')
+  assert.equal(edit('s2', 'w9').status, 0)
+  assert.equal(edit('s3', undefined).status, 0, 'a session that never owned the run is not retired')
+  // taking it back un-retires it
+  fire(root, bash('node loop.mjs acquire --takeover "human: back to the first session"'))
+  assert.deepEqual([load(root).owner.session, load(root).retired], ['s1', ['s2']])
+  assert.equal(edit('s1', 'w1').status, 0)
+})
+
+test('H20: notes the hook cannot read are said to the conductor, not treated as none', () => {
+  const root = runDirWith(owned())
+  writeInbox(root, load(root), [{ id: 'n1', status: 'queued', kind: 'note', text: 'use a scope' }])
+  writeFileSync(join(root, '.start-story', 'sc-1', 'inbox.json'), '[{"id":"n1","te')
+  const out = fire(root, { hook_event_name: 'PostToolUse', tool_name: 'Read' })
+  assert.equal(out.status, 0)
+  assert.match(JSON.parse(out.stdout).hookSpecificOutput.additionalContext, /notes file .* is unreadable.*Tell the human/s)
+})
