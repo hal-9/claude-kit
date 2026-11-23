@@ -29,6 +29,11 @@ const QUESTIONS = {
 
 const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 << 20 })
 const readJson = file => { try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return null } }
+// An unreadable notes file shows on the board as what it is, never as "no notes".
+const inbox = run => {
+  if (!run) return []
+  try { return readInbox(ROOT, run) } catch (error) { return [{ id: '!', status: 'queued', kind: 'note', ts: new Date().toISOString(), text: error.message }] }
+}
 const readEvents = () => {
   try { return readFileSync(P.events, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) } catch { return [] }
 }
@@ -43,9 +48,11 @@ function mergeBase(run) {
 function changes(run) {
   if (DEMO) return DEMO_CHANGES
   try {
-    return git('diff', '--numstat', mergeBase(run)).split('\n').filter(Boolean).map(line => {
-      const [added, removed, file] = line.split('\t')
-      return { file, added: Number(added) || 0, removed: Number(removed) || 0 }
+    // -z keeps odd file names literal; --no-renames lists a rename as its real old and new path,
+    // so every entry is a path the diff endpoint can be asked for.
+    return git('diff', '--numstat', '-z', '--no-renames', mergeBase(run)).split('\0').filter(Boolean).map(entry => {
+      const [added, removed, ...file] = entry.split('\t')
+      return { file: file.join('\t'), added: Number(added) || 0, removed: Number(removed) || 0 }
     })
   } catch { return [] }
 }
@@ -54,7 +61,18 @@ const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image
 function results(run) {
   const list = run && readResults(ROOT, run)
   if (!Array.isArray(list)) return []
-  return list.map(r => ({ ...r, evidence: (r.evidence ?? []).map(file => `/evidence/${encodeURIComponent(basename(file))}`) }))
+  // The file is the verifier's, written while we read: a row of the wrong shape is shown as invalid, not trusted and not dropped.
+  return list.map((r, i) => {
+    const row = r && typeof r === 'object' && !Array.isArray(r) ? r : {}
+    const problem = row !== r ? 'this result is not an object'
+      : typeof row.id !== 'string' ? 'this result has no id'
+      : row.evidence !== undefined && !(Array.isArray(row.evidence) && row.evidence.every(f => typeof f === 'string')) ? 'evidence must be a list of screenshot file names'
+      : null
+    const evidence = problem ? [] : (row.evidence ?? []).map(file => `/evidence/${encodeURIComponent(basename(file))}`)
+    return problem
+      ? { ...row, id: typeof row.id === 'string' ? row.id : `invalid-${i + 1}`, step: Number.isInteger(row.step) ? row.step : 0, verdict: 'blocked', note: `Invalid result in results.json: ${problem}.`, evidence }
+      : { ...row, evidence }
+  })
 }
 // The run as the page sees it: the state file plus which evidence is stale for the code now.
 function view(run) {
@@ -62,7 +80,7 @@ function view(run) {
   return { ...run, stale: DEMO ? (run.stale ?? []) : staleStages(ROOT, run), head: DEMO ? 'demo' : headCommit(ROOT) }
 }
 const inboxPath = run => run ? join(runDir(ROOT, run), 'inbox.json') : ''
-const diffOf = (run, file) => DEMO ? DEMO_DIFF : git('diff', mergeBase(run), '--', file)
+const diffOf = (run, file) => DEMO ? DEMO_DIFF : git('diff', '--no-renames', mergeBase(run), '--', file)
 
 // ---- http ------------------------------------------------------------------
 
@@ -70,8 +88,10 @@ const clients = new Set()
 const send = (res, message) => res.write(`data: ${JSON.stringify(message)}\n\n`)
 const broadcast = message => { for (const res of clients) send(res, message) }
 
+// One bad file must not take the board down: the tick is skipped and tried again.
+const tick = (fn, ms) => setInterval(() => { try { fn() } catch (error) { console.error(`story-loop board: ${error.message}`) } }, ms)
 let seen = { run: '', events: 0, changes: '' }
-setInterval(() => {
+tick(() => {
   if (!clients.size) return
   const runStamp = stamp(P.active)
   if (runStamp !== seen.run) { seen.run = runStamp; broadcast({ type: 'run', run: view(readJson(P.active)) }) }
@@ -84,9 +104,9 @@ setInterval(() => {
   const inboxStamp = stamp(inboxPath(run))
   const resultsStamp = run ? stamp(resultsFile(ROOT, run)) : ''
   if (resultsStamp !== seen.results) { seen.results = resultsStamp; broadcast({ type: 'results', results: results(run) }) }
-  if (inboxStamp !== seen.inbox) { seen.inbox = inboxStamp; broadcast({ type: 'inbox', inbox: run ? readInbox(ROOT, run) : [] }) }
+  if (inboxStamp !== seen.inbox) { seen.inbox = inboxStamp; broadcast({ type: 'inbox', inbox: inbox(run) }) }
 }, 700)
-setInterval(() => {
+tick(() => {
   if (!clients.size) return
   const run = readJson(P.active)
   const list = changes(run)
@@ -186,7 +206,7 @@ createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' })
       const run = readJson(P.active)
       const events = readEvents()
-      send(res, { type: 'snapshot', seq: events.length, run: view(run), graph: GRAPH, events: events.slice(-300), changes: changes(run), inbox: run ? readInbox(ROOT, run) : [], results: results(run), demo: DEMO })
+      send(res, { type: 'snapshot', seq: events.length, run: view(run), graph: GRAPH, events: events.slice(-300), changes: changes(run), inbox: inbox(run), results: results(run), demo: DEMO })
       if (!clients.size) seen.events = events.length
       clients.add(res)
       return req.on('close', () => clients.delete(res))
@@ -313,13 +333,13 @@ if (DEMO) {
       return name
     }
     const check = (id, step, text, kase, note, evidence) => ({ id, step, text, case: kase, verdict: 'pass', note, url: 'http://127.0.0.1:3001/reading-lists', browser: 'chrome', evidence })
-    writeFileSync(resultsFile(ROOT, run), JSON.stringify([
+    writeFileSync(resultsFile(ROOT, run), JSON.stringify({ request: 'demo', results: [
       check('1-desktop', 1, 'A signed-in reader sees the reading lists overview with one tile per shelf.', 'EN · desktop', 'Five tiles rendered, no console errors.', [shot('step1-desktop.svg', 1440, 900, 'Overview · desktop')]),
       check('1-mobile', 1, 'A signed-in reader sees the reading lists overview with one tile per shelf.', 'EN · mobile', 'Tiles stack in one column, no horizontal scroll.', [shot('step1-mobile.svg', 390, 844, 'Overview · mobile')]),
       check('2-genres', 2, 'The sidebar lists the genres of the chosen shelf.', undefined, 'Six genres listed for Classics.', [shot('step2.svg', 1440, 900, 'Sidebar genres')]),
       check('3-empty', 3, 'A shelf without flows shows the empty state.', undefined, 'Empty state shown for Poetry.', [shot('step3.svg', 1440, 900, 'Empty state')]),
-    ].slice(0, count)))
+    ].slice(0, count) }))
   }
   let i = 0
-  const tick = setInterval(() => { script[i++]?.(); if (i >= script.length) clearInterval(tick) }, 1600)
+  const play = setInterval(() => { script[i++]?.(); if (i >= script.length) clearInterval(play) }, 1600)
 }
