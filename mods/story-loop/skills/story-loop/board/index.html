@@ -240,7 +240,7 @@ h3 .count { color: var(--ink-3); font-weight: 450; }
 
 /* findings */
 .fgroup { display: grid; gap: 2px; }
-.finding { display: grid; grid-template-columns: 5.5rem 1fr; gap: 3px 14px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.finding { display: grid; grid-template-columns: 7.2rem 1fr; gap: 3px 14px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px; }
 .fgroup h3 + .finding { border-top: 0; }
 .finding .chip { justify-self: start; align-self: start; margin-top: 1px; }
 .finding .f-text { color: var(--ink); }
@@ -538,6 +538,32 @@ body.no-run .stage .dot { border-style: dashed; }
 .fgroup h3 .char, .block > h3 .char { align-self: center; margin: -4px 0; }
 .idle .char { margin-bottom: 6px; }
 
+/* ---------- reliability states ---------- */
+/* stale: the stage's evidence covered older code than HEAD; never reads as done */
+.stage[data-stale] .dot { background: var(--sunk); border-style: dashed; border-color: var(--warn); color: var(--ink-3); }
+.stage[data-stale] .stage-label { color: var(--ink-3); }
+.stage[data-stale] .badge { display: grid; background: var(--warn); color: oklch(25% 0.05 60); }
+.stage[data-stale] .badge svg { display: none; }
+.stage[data-stale] .stage-sub { color: var(--warn-ink); }
+.stage-ext { font-size: 11.5px; line-height: 1.35; color: var(--ink-3); margin-top: 2px; max-width: 100%; overflow-wrap: anywhere; }
+.stage-ext:empty { display: none; }
+.stage-ext[data-tone="warn"] { color: var(--warn-ink); font-weight: 560; }
+.stage-ext[data-tone="bad"] { color: var(--bad); font-weight: 560; }
+.now-line .stale-note { color: var(--warn-ink); }
+details.history { border-top: 0; padding-top: 0; margin-top: 10px; }
+details.history .feed li { grid-template-columns: 4.6rem 1fr; }
+details.history .h-ev { display: block; font-size: 12px; color: var(--ink-3); }
+.session[data-state="away"]::before { background: var(--warn); }
+.session[data-state="none"]::before { background: transparent; border: 1.5px dashed var(--ink-3); }
+.t-case[data-verdict="missing"] { background: transparent; border: 1.5px dashed var(--line-2); }
+.t-case[data-verdict="missing"] .t-note { color: var(--ink-3); }
+.t-case[data-extra] { box-shadow: inset 0 0 0 1.5px var(--warn); }
+.t-state .chip { margin-right: 8px; vertical-align: 1px; }
+.f-text .chip { margin-right: 6px; vertical-align: 1px; font-size: 11px; }
+.entry-q { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.entry-q .chip, .quiz .old-tag { font-weight: 560; }
+.quiz .old-tag { justify-self: start; }
+
 /* ---------- narrow ---------- */
 @media (max-width: 900px) {
   .page { padding: 20px 16px 64px; }
@@ -552,6 +578,7 @@ body.no-run .stage .dot { border-style: dashed; }
   .stage-label { grid-column: 2; margin: 0; padding-top: 2px; }
   .stage-result { grid-column: 2; margin: 2px 0 0; }
   .stage-sub { grid-column: 3; grid-row: 1; margin: 4px 0 0; }
+  .stage-ext { grid-column: 2; margin: 2px 0 0; }
   .stage-round { bottom: -8px; }
   .stage::before, .stage:first-child::before { display: block; top: calc(var(--st) + 3px); bottom: 3px; left: calc(var(--st) / 2 + 4px); right: auto; width: 4px; height: auto;
     background: linear-gradient(var(--accent), var(--accent)) top / 100% var(--fill-out, 0%) no-repeat, var(--line); }
@@ -728,6 +755,10 @@ body.no-run .stage .dot { border-style: dashed; }
     <ol class="stages" id="stages"></ol>
     <div class="crew" id="crew" aria-hidden="true"></div>
     <p class="now-line" id="now" aria-live="polite"></p>
+    <details class="activity history" id="history" hidden>
+      <summary><b>Earlier attempts</b><span class="a-latest" id="history-latest"></span></summary>
+      <ol class="feed" id="history-list"></ol>
+    </details>
   </section>
 
   <div class="attention" id="attention" role="region" aria-label="Needs you" aria-live="polite"></div>
@@ -829,7 +860,7 @@ function el(tag, props, ...kids) {
   return node
 }
 
-const S = { graph: null, run: null, changes: [], demo: false, backs: [], workers: new Map(), feed: [], booted: false, inbox: [], idle: false, results: [] }
+const S = { graph: null, run: null, changes: [], demo: false, backs: [], workers: new Map(), feed: [], booted: false, inbox: [], idle: false, results: [], seq: 0 }
 const stageEls = {}
 const label = id => S.graph?.stages.find(s => s.id === id)?.label ?? id ?? ''
 const cap = t => t ? t.charAt(0).toUpperCase() + t.slice(1) : ''
@@ -893,7 +924,7 @@ const SOURCE_ROLE = { copilot: 'copilot', human: null }
 const SOURCE_NAME = { codex: 'Codex', claude: 'Claude', copilot: 'Copilot', human: 'You' }
 const STAGE_ICON = { contract: 'contract', build: 'build', test_review: 'tests', verify: 'browser', second_review: 'review', codex_review: 'review', push: 'push', copilot_review: 'copilot', fix_comments: 'comments', report: 'report' }
 const AREA_ICON = { Controllers: 'route', Queries: 'db', Views: 'eye', Helpers: 'wrench', Specs: 'tests' }
-const VERDICT_ICON = { fixed: 'check', pass: 'check', rejected: 'cross', fail: 'cross', parked: 'pause', blocked: 'pause', open: 'open' }
+const VERDICT_ICON = { fixed: 'check', pass: 'check', rejected: 'cross', fail: 'cross', parked: 'pause', blocked: 'pause', open: 'open', fix_requested: 'wrench', missing: 'open' }
 
 // Keep a worker's card character and its tiny graph twin in the same state.
 function applyAgent(w) {
@@ -1009,15 +1040,21 @@ function buildStages() {
     const dot = el('span', { class: 'dot', 'aria-hidden': 'true' }, ico(STAGE_ICON[s.id] ?? 'dot'), badge, round)
     const result = el('span', { class: 'stage-result' })
     const sub = el('span', { class: 'stage-sub' })
+    const ext = el('span', { class: 'stage-ext' })
     const state = el('span', { class: 'vh' })
     const li = el('li', { class: 'stage', title: s.hint, dataset: { id: s.id, status: 'pending' } },
-      dot, el('span', { class: 'stage-label', text: s.label }), result, sub, state)
-    stageEls[s.id] = { li, dot, sub, round, state, badge, result }
+      dot, el('span', { class: 'stage-label', text: s.label }), result, ext, sub, state)
+    stageEls[s.id] = { li, dot, sub, round, state, badge, result, ext }
     list.append(li)
   }
 }
 
 function stageSub(st) {
+  // waiting and blocked already say so in the stage result; only the attempt is added
+  const base = ['passed', 'running'].includes(st.status) ? stageTime(st) : ''
+  return st.attempt > 1 && ['passed', 'running', 'waiting', 'blocked'].includes(st.status) ? [base, `attempt ${st.attempt}`].filter(Boolean).join(' \u00b7 ') : base
+}
+function stageTime(st) {
   switch (st.status) {
     case 'passed': return st.started_at && st.ended_at ? fmtDur(Date.parse(st.ended_at) - Date.parse(st.started_at)) : 'passed'
     case 'running': return st.started_at ? fmtDur(since(st.started_at)) : 'running'
@@ -1026,6 +1063,30 @@ function stageSub(st) {
     case 'skipped': return 'skipped'
     default: return ''
   }
+}
+
+// Push, Copilot and Report: what GitHub said, as one short line under the stage.
+const shortSha = sha => sha && sha !== 'demo' ? String(sha).slice(0, 7) : ''
+function stageExt(id, run) {
+  const on = sha => shortSha(sha) ? ` ${shortSha(sha)}` : ''
+  if (id === 'push' && run?.pushed) {
+    const p = run.pushed
+    return { attempted: [`publishing${on(p.sha)}`], confirmed: [`published${on(p.sha)}`], failed: ['push failed \u2014 needs you', 'bad'],
+      uncertain: ['push unconfirmed \u2014 check the remote', 'warn'], mismatch: ['remote has another commit \u2014 needs you', 'bad'] }[p.state] ?? [p.state]
+  }
+  if (id === 'copilot_review' && run?.copilot) {
+    const c = run.copilot
+    return { requested: [`requested${c.head ? ` on${on(c.head)}` : ''}`], reviewed: [`Copilot reviewed${on(c.review?.commit)}`],
+      timeout: ['Copilot timed out \u2014 needs you', 'warn'], failed: ['Copilot request failed \u2014 needs you', 'bad'] }[c.state] ?? [c.state]
+  }
+  if (id === 'report') {
+    const ci = run?.ci && ({ pass: [`required CI passed on${on(run.ci.sha)}`], pending: [`required CI pending on${on(run.ci.sha)}`],
+      fail: [`CI failing on${on(run.ci.sha)}`, 'bad'], none: ['no required CI checks'] }[run.ci.state] ?? [`CI ${run.ci.state}`])
+    const rep = run?.report && ({ attempted: 'posting the report', confirmed: 'report posted' }[run.report.state] ?? `report ${run.report.state}`)
+    if (!ci && !rep) return null
+    return [[ci?.[0], rep].filter(Boolean).join(' \u00b7 '), ci?.[1]]
+  }
+  return null
 }
 
 function renderStages() {
@@ -1037,34 +1098,62 @@ function renderStages() {
   const statusAt = i => run?.stages?.[stages[i]?.id]?.status ?? 'pending'
   // a station is reached when it and every station before it has left "pending"
   const reached = stages.map((_, i) => { for (let j = 0; j <= i; j++) if (statusAt(j) === 'pending') return false; return true })
+  const staleSet = new Set(run?.stale ?? [])
   stages.forEach((s, i) => {
     const st = run?.stages?.[s.id] ?? { status: 'pending', rounds: 0 }
     const e = stageEls[s.id]
     e.li.dataset.status = st.status
+    // A stage being redone is not stale any more; every other stale stage stops reading as done.
+    const stale = staleSet.has(s.id) && st.status !== 'running'
+    e.li.toggleAttribute('data-stale', stale)
+    e.li.title = stale ? `${s.hint}. Stale: its evidence covered older code than the current commit.` : s.hint
+    const ext = stageExt(s.id, run)
+    e.ext.textContent = ext?.[0] ?? ''
+    if (ext?.[1]) e.ext.dataset.tone = ext[1]; else delete e.ext.dataset.tone
     if (st.waiting_on) e.li.dataset.on = st.waiting_on; else delete e.li.dataset.on
     e.li.toggleAttribute('data-reached', reached[i])
     e.li.toggleAttribute('data-out-reached', !!reached[i + 1])
     e.li.toggleAttribute('data-flow', !!curRunning && i === curIndex + 1)
     e.li.toggleAttribute('data-flow-out', !!curRunning && i === curIndex)
-    e.badge.lastChild.textContent = { blocked: '!', skipped: '\u2013', waiting: '\u2026' }[st.status] ?? ''
-    if (S.booted && e.prev && e.prev !== 'passed' && st.status === 'passed' && !reduced.matches) { e.li.classList.remove('just-passed'); void e.li.offsetWidth; e.li.classList.add('just-passed') }
+    e.badge.lastChild.textContent = stale ? '\u21bb' : { blocked: '!', skipped: '\u2013', waiting: '\u2026' }[st.status] ?? ''
+    if (S.booted && e.prev && e.prev !== 'passed' && st.status === 'passed' && !stale && !reduced.matches) { e.li.classList.remove('just-passed'); void e.li.offsetWidth; e.li.classList.add('just-passed') }
     e.prev = st.status
     const who = st.waiting_on === 'human' ? 'Needs you' : `Waiting on ${st.waiting_on === 'copilot' ? 'Copilot' : st.waiting_on}`
     const result = s.id === cur
-      ? { running: cap(s.hint), waiting: `${who}${st.reason ? `: ${st.reason}` : ''}`, blocked: cap(st.reason) || 'Blocked' }[st.status] ?? ''
-      : ['passed', 'skipped', 'blocked'].includes(st.status) ? cap(st.reason ?? '') : ''
+      ? { running: cap(s.hint), waiting: `${who}${st.reason ? `: ${st.reason}` : ''}`, blocked: blockedResult(st.reason) }[st.status] ?? ''
+      : st.status === 'blocked' ? blockedResult(st.reason) : ['passed', 'skipped'].includes(st.status) ? cap(st.reason ?? '') : ''
     e.result.textContent = result
     e.result.title = result
-    e.sub.textContent = ['passed', 'running'].includes(st.status) ? stageSub(st) : ''
+    e.sub.textContent = stale ? 'stale \u00b7 covered older code' : ['passed', 'running'].includes(st.status) || st.attempt > 1 ? stageSub(st) : ''
     e.round.textContent = st.rounds > 0 ? `round ${st.rounds + 1}` : ''
-    e.state.textContent = `: ${st.status}${st.rounds ? `, round ${st.rounds + 1}` : ''}${result ? `. ${result}` : ''}`
+    e.state.textContent = `: ${st.status}${stale ? ', stale: covered older code' : ''}${st.rounds ? `, round ${st.rounds + 1}` : ''}${result ? `. ${result}` : ''}${ext?.[0] ? `. ${ext[0]}` : ''}`
   })
+  renderHistory()
   const now = $('now')
   if (!run) { now.replaceChildren(); return }
   if (!cur) { now.replaceChildren(el('b', { text: 'All stages done.' }), 'The evidence is on the PR; a human merges.'); return }
   const st = run.stages[cur], hint = S.graph.stages.find(s => s.id === cur)?.hint
   const verb = { running: 'Now', waiting: 'Waiting', blocked: 'Blocked', pending: 'Next' }[st.status] ?? 'Now'
-  now.replaceChildren(el('b', { text: `${verb}: ${label(cur)}` }), el('span', { text: cap(st.reason || hint) }))
+  const staleNow = (run.stale ?? []).filter(id => run.stages?.[id]?.status !== 'running')
+  now.replaceChildren(el('b', { text: `${verb}: ${label(cur)}` }), el('span', { text: cap(st.status === 'blocked' ? blockSummary(st.reason) : st.reason || hint) }),
+    ...(staleNow.length ? [el('span', { class: 'stale-note', text: `Stale: ${staleNow.map(label).join(', ')} covered older code` })] : []))
+}
+
+// Earlier attempts stay inspectable, folded away under the graph.
+let historyKey = ''
+const evidenceSummary = ev => Object.entries(ev ?? {}).map(([k, v]) =>
+  k === 'mutants' ? `${v.killed} of ${v.total} mutants killed` : k === 'test_steps' ? `${v.passed} of ${v.total} test steps` : k === 'screenshots' ? `${v} screenshots` : null).filter(Boolean).join(' \u00b7 ')
+function renderHistory() {
+  const list = S.run?.history ?? []
+  const key = JSON.stringify(list)
+  if (key === historyKey) return
+  historyKey = key
+  $('history').hidden = !list.length
+  const last = list[list.length - 1]
+  $('history-latest').textContent = last ? `${list.length} \u00b7 latest: ${label(last.from)} \u2192 ${label(last.to)}` : ''
+  $('history-list').replaceChildren(...[...list].reverse().map(h => el('li', null, el('time', { datetime: h.at, text: clock(h.at) }),
+    el('span', null, `${label(h.from)} sent work back to ${label(h.to)}${h.reason ? `: ${h.reason}` : ''}`,
+      evidenceSummary(h.evidence) ? el('span', { class: 'h-ev', text: `Evidence of that attempt (kept, no longer counted): ${evidenceSummary(h.evidence)}` }) : null))))
 }
 
 // Back-edges: only arcs that really fired, kept (settled) until their target station passes again.
@@ -1145,6 +1234,7 @@ function renderHead() {
 
 function tick() {
   if (!S.run) return
+  renderSession()
   const e = $('elapsed'); if (e) e.textContent = fmtDur(since(S.run.started_at))
   for (const s of S.graph?.stages ?? []) {
     const st = S.run.stages?.[s.id]
@@ -1153,21 +1243,40 @@ function tick() {
 }
 
 // ---------- needs you ----------
+// The stop gate's reason is written for the agent; the human gets a plain sentence.
+const STOP_GATE = /^stop gate: the conductor stopped (\d+) times without moving/i
+const blockedResult = reason => STOP_GATE.test(reason ?? '') ? 'Stopped without moving; needs a restart' : cap(reason) || 'Blocked'
+const blockSummary = reason => {
+  const m = String(reason ?? '').match(STOP_GATE)
+  return m ? `The conductor stopped ${m[1]} times without moving this stage. Nothing runs until it is restarted.` : reason
+}
 function needsYou() {
   const run = S.run, out = []
   if (!run) return out
   for (const s of S.graph.stages) {
     const st = run.stages?.[s.id]
     if (st?.status === 'waiting' && st.waiting_on === 'human') out.push({ kind: `${s.label} needs you`, what: cap(st.reason || s.hint) })
-    if (st?.status === 'blocked') out.push({ kind: `${s.label} is blocked`, what: cap(st.reason) || 'No reason given.' })
+    if (st?.status === 'blocked') {
+      const gate = STOP_GATE.test(st.reason ?? '')
+      out.push({ kind: `${s.label} is blocked`, what: cap(blockSummary(st.reason)) || 'No reason given.',
+        aside: gate ? `What to do: tell the Claude session to continue the story loop, or send a note from this board. (${st.reason})`
+          : 'What to do: answer in the Claude session or send a note from this board; the conductor restarts the stage once it is unblocked.' })
+    }
   }
+  const p = run.pushed
+  if (['failed', 'mismatch', 'uncertain'].includes(p?.state)) out.push({ kind: 'Push needs you',
+    what: { failed: 'The push to GitHub failed.', mismatch: 'GitHub holds a different commit than the one pushed.', uncertain: 'The push could not be confirmed on GitHub.' }[p.state],
+    aside: [p.error, p.remote_sha && `remote ${shortSha(p.remote_sha)}`, p.sha && `pushed ${shortSha(p.sha)}`].filter(Boolean).join(' \u00b7 ') })
+  if (['timeout', 'failed'].includes(run.copilot?.state)) out.push({ kind: 'Copilot needs you',
+    what: run.copilot.state === 'timeout' ? 'Copilot did not review in time. Request it again on the PR or tell the agent to go on without it.' : 'Requesting the Copilot review failed.',
+    aside: run.copilot.error })
   for (const f of run.findings ?? []) if (f.verdict === 'parked') out.push({ kind: 'Parked finding', what: f.text, aside: [f.file && baseName(f.file), f.note].filter(Boolean).join(' · ') })
   return out
 }
 let attentionKey = ''
 function renderAttention() {
   const items = needsYou()
-  const copilot = S.graph?.stages.find(s => S.run?.stages?.[s.id]?.status === 'waiting' && S.run.stages[s.id].waiting_on === 'copilot')
+  const copilot = !['timeout', 'failed'].includes(S.run?.copilot?.state) && S.graph?.stages.find(s => S.run?.stages?.[s.id]?.status === 'waiting' && S.run.stages[s.id].waiting_on === 'copilot')
   const key = JSON.stringify([items, copilot?.id, copilot && S.run.stages[copilot.id].reason])
   if (key === attentionKey) return
   attentionKey = key
@@ -1317,7 +1426,9 @@ function renderTasks() {
     t.tier ? el('span', { class: 't-tier', text: t.tier }) : null, el('span', { class: 't-status', text: t.status }))) :
     [el('li', { class: 'muted', text: 'Tasks appear once the build stage splits the work.' })]))
 }
-const VERDICT = { fixed: 'ok', parked: 'warn', open: 'accent', rejected: '' }
+const VERDICT = { fixed: 'ok', parked: 'warn', open: 'accent', fix_requested: 'accent', rejected: '' }
+const UNSETTLED = new Set(['open', 'fix_requested'])
+const SEVERITY = { blocker: 'bad', major: 'warn', minor: '', nit: '', question: '' }
 const FF = { open: null, kind: null, draft: '', sent: {} }
 let findingsKey = ''
 function renderFindings(force) {
@@ -1328,16 +1439,16 @@ function renderFindings(force) {
   findingsKey = key
   const draft = box.querySelector('.f-form textarea')
   if (draft) FF.draft = draft.value
-  $('findings-count').textContent = all.length ? `${all.filter(f => f.verdict !== 'open').length} of ${all.length} settled` : ''
+  $('findings-count').textContent = all.length ? `${all.filter(f => !UNSETTLED.has(f.verdict)).length} of ${all.length} settled` : ''
   if (!all.length) { box.replaceChildren(el('p', { class: 'muted', text: 'No review findings yet. Findings from both reviews land here with their verdicts.' })); return }
   const groups = [...new Set(['codex', 'copilot', ...all.map(f => f.source)])].filter(s => all.some(f => f.source === s))
   box.replaceChildren(...groups.map(src => el('div', { class: 'fgroup' },
     el('h3', null, SOURCE_ROLE[src] === null ? null : makeChar(SOURCE_ROLE[src] ?? 'sceptic', 26), SOURCE_NAME[src] ?? cap(String(src))),
     all.filter(f => f.source === src).map(f => el('div', { class: 'finding', dataset: { verdict: f.verdict } },
-      el('span', { class: `chip ${VERDICT[f.verdict] ?? ''}` }, VERDICT_ICON[f.verdict] ? ico(VERDICT_ICON[f.verdict]) : null, f.verdict),
-      el('span', { class: 'f-text', text: f.text }),
+      el('span', { class: `chip ${VERDICT[f.verdict] ?? ''}` }, VERDICT_ICON[f.verdict] ? ico(VERDICT_ICON[f.verdict]) : null, String(f.verdict ?? '').replace(/_/g, ' ')),
+      el('span', { class: 'f-text' }, f.severity ? el('span', { class: `chip ${SEVERITY[f.severity] ?? ''}`, title: 'Severity' }, f.severity) : null, f.text),
       f.file ? el('span', { class: 'f-file mono', title: f.file, text: baseName(f.file) }) : null,
-      f.note ? el('span', { class: 'f-note', text: f.note }) : null,
+      f.note || f.commit ? el('span', { class: 'f-note', text: [f.note, f.verdict === 'fixed' && f.commit && `fixed in ${shortSha(f.commit) || f.commit}`].filter(Boolean).join(' \u00b7 ') }) : null,
       FF.sent[f.id] ? el('p', { class: 'confirm f-sent', text: FF.sent[f.id] }) : null,
       FF.open === f.id ? findingForm(f) : el('div', { class: 'f-actions' },
         el('button', { type: 'button', class: 'quiet', onclick: () => openFindingForm(f.id, 'wrong') }, 'This is wrong'),
@@ -1369,58 +1480,77 @@ function findingForm(f) {
 }
 
 // ---------- tested in the browser ----------
-const RANK = { fail: 0, blocked: 1, pass: 2 }
+const RANK = { fail: 0, blocked: 1, missing: 2, pass: 3 }
 const BROWSER = { chrome: 'Chrome', browseros: 'BrowserOS', playwright: 'Playwright' }
 const TT = { open: null, draft: '', sent: {} }
 const SHOTS = []
 let testedKey = ''
-const overall = cases => cases.some(c => c.verdict === 'fail') ? 'fail' : cases.some(c => c.verdict === 'blocked') ? 'blocked' : cases.every(c => c.verdict === 'pass') ? 'pass' : 'blocked'
-const VCHIP = { pass: 'ok', fail: 'bad', blocked: 'warn' }
+const overall = cases => cases.some(c => c.verdict === 'fail') ? 'fail' : cases.some(c => c.verdict === 'blocked') ? 'blocked' : cases.some(c => c.verdict === 'missing') ? 'missing' : cases.every(c => c.verdict === 'pass') ? 'pass' : 'blocked'
+const VCHIP = { pass: 'ok', fail: 'bad', blocked: 'warn', missing: '' }
+const VWORD = { missing: 'not reported' }
 const evidenceName = src => { try { return decodeURIComponent(src.split('/').pop()) } catch { return src } }
 function renderTested(force) {
   const results = (S.results ?? []).filter(r => r && typeof r === 'object')
   const verify = S.run?.stages?.verify ?? { status: 'pending' }
-  const key = JSON.stringify([results, verify.status, verify.reason, S.run?.browser, TT.open, TT.sent])
+  // The approved check list is the denominator; null means a run from before check lists.
+  const checks = Array.isArray(S.run?.checks) ? S.run.checks : null
+  const stale = (S.run?.stale ?? []).includes('verify') && verify.status !== 'running'
+  const key = JSON.stringify([results, checks, stale, verify.status, verify.reason, verify.waiting_on, S.run?.browser, TT.open, TT.sent])
   if (key === testedKey && !force) return
   testedKey = key
   const draft = $('tested').querySelector('.f-form textarea')
   if (draft) TT.draft = draft.value
   SHOTS.length = 0
 
+  const approved = new Set((checks ?? []).map(c => c.id))
+  const rows = results.map((r, i) => ({ ...r, key: r.id != null ? `id:${r.id}` : `${r.step}|${i}`, extra: !!checks && !approved.has(r.id) }))
+  const reported = new Set(rows.filter(r => !r.extra).map(r => r.id))
+  for (const c of checks ?? []) if (!reported.has(c.id)) rows.push({ ...c, key: `id:${c.id}`, verdict: 'missing' })
   const steps = new Map()
-  for (const r of results) { if (!steps.has(r.step)) steps.set(r.step, []); steps.get(r.step).push(r) }
+  for (const r of rows) { if (!steps.has(r.step)) steps.set(r.step, []); steps.get(r.step).push(r) }
   const groups = [...steps].map(([step, cases]) => ({ step, cases: [...cases].sort((a, b) => (RANK[a.verdict] ?? 1) - (RANK[b.verdict] ?? 1)), verdict: overall(cases) }))
     .sort((a, b) => RANK[a.verdict] - RANK[b.verdict] || a.step - b.step)
   const shots = results.reduce((n, r) => n + (r.evidence?.length ?? 0), 0)
   const browser = S.run?.browser ?? results.find(r => r.browser)?.browser
-  $('tested-count').textContent = groups.length
-    ? [`${groups.filter(g => g.verdict === 'pass').length} of ${groups.length} Test Steps passed`, browser && (BROWSER[browser] ?? browser), shots && `${shots} screenshot${shots === 1 ? '' : 's'}`].filter(Boolean).join(' \u00b7 ')
+  const extras = rows.filter(r => r.extra).length
+  const passed = rows.filter(r => !r.extra && r.verdict === 'pass').length
+  const tail = [browser && (BROWSER[browser] ?? browser), shots && `${shots} screenshot${shots === 1 ? '' : 's'}`, stale && 'stale']
+  $('tested-count').textContent = checks?.length
+    ? [`${reported.size} of ${checks.length} checks reported`, `${passed} passed`, extras && `${extras} not in the approved list`, ...tail].filter(Boolean).join(' · ')
+    : !checks && groups.length ? [`${groups.filter(g => g.verdict === 'pass').length} of ${groups.length} Test Steps passed`, ...tail].filter(Boolean).join(' · ')
     : ''
 
   const out = []
   const reason = verify.reason ? `: ${verify.reason}` : '.'
-  if (verify.status === 'skipped') out.push(el('p', { class: 't-state' }, el('b', { text: 'Browser verification was skipped' }), reason))
-  else if (verify.status === 'blocked') out.push(el('p', { class: 't-state' }, el('b', { text: 'Browser verification is blocked' }), reason))
+  if (stale) out.push(el('p', { class: 't-state' }, el('span', { class: 'chip warn' }, ico('pause'), 'stale'), el('b', { text: 'These checks covered older code. ' }), 'They count again once the verifier has run on the current commit.'))
+  if (checks && !checks.length) out.push(el('p', { class: 't-state' }, el('b', { text: 'No user journey in this story. ' }), 'The approved check list is empty, so there is nothing to try in a browser.'))
+  else if (verify.status === 'skipped') out.push(el('p', { class: 't-state' }, el('b', { text: 'Browser verification was skipped' }), reason))
+  else if (verify.status === 'blocked') out.push(el('p', { class: 't-state' }, el('b', { text: 'Browser verification is blocked' }), `: ${blockSummary(verify.reason) || 'no reason given'}`))
   else if (verify.status === 'waiting') out.push(el('p', { class: 't-state' }, el('b', { text: `Browser verification is waiting on ${verify.waiting_on === 'human' ? 'you' : verify.waiting_on ?? 'someone'}` }), reason))
-  else if (!groups.length) out.push(el('p', { class: 't-state', text: verify.status === 'running' ? 'The verifier is working. Checks and screenshots land here as they finish.' : 'Not tested yet. The verifier runs after the test review.' }))
+  else if (!results.length) out.push(el('p', { class: 't-state', text: verify.status === 'running' ? 'The verifier is working. Checks and screenshots land here as they finish.' : 'Not tested yet. The verifier runs after the test review.' }))
 
-  for (const g of groups) {
+  if (results.length || verify.status === 'running') for (const g of groups) {
+    const text = g.cases.find(c => c.text)?.text ?? ''
     out.push(el('section', { class: 't-step', 'aria-label': `Test Step ${g.step}` },
-      el('div', { class: 't-head' }, el('span', { class: 't-num', text: `Step ${g.step}` }), el('span', { class: 't-text', text: g.cases[0].text ?? '' }), el('span', { class: `chip ${VCHIP[g.verdict]}` }, ico(VERDICT_ICON[g.verdict] ?? 'open'), g.verdict)),
-      el('div', { class: 't-cases' }, g.cases.map((c, i) => caseRow(g.step, c, `${g.step}|${results.indexOf(c)}`)))))
+      el('div', { class: 't-head' }, el('span', { class: 't-num', text: `Step ${g.step}` }), el('span', { class: 't-text', text }), el('span', { class: `chip ${VCHIP[g.verdict]}` }, ico(VERDICT_ICON[g.verdict] ?? 'open'), VWORD[g.verdict] ?? g.verdict)),
+      el('div', { class: 't-cases' }, g.cases.map(c => caseRow(g.step, c, c.key, verify.status === 'running')))))
   }
-  const allPass = groups.length > 0 && groups.every(g => g.verdict === 'pass')
+  // All green only when every approved check passed, nothing extra, and the evidence is for this code.
+  const allPass = !stale && !extras && verify.status !== 'running' && (checks ? checks.length > 0 && passed === checks.length : groups.length > 0 && groups.every(g => g.verdict === 'pass'))
   const v = $('tested-char')
   if (allPass && !S.allPass && S.booted) setChar(v, 'done')
   else if (verify.status === 'running') setChar(v, 'working', 'read')
-  else if (!allPass) setChar(v, verify.status === 'pending' ? 'waiting' : 'idle')
+  else if (!allPass) setChar(v, verify.status === 'pending' || stale ? 'waiting' : 'idle')
   S.allPass = allPass
   const focused = $('tested').contains(document.activeElement) ? document.activeElement.dataset.shot : undefined
   $('tested').replaceChildren(...out)
   if (focused != null) document.querySelector(`[data-shot="${focused}"]`)?.focus()
 }
-function caseRow(step, c, key) {
+function caseRow(step, c, key, running) {
   const label = c.case ? `Step ${step}, ${c.case}` : `Step ${step}`
+  if (c.verdict === 'missing') return el('div', { class: 't-case', dataset: { verdict: 'missing' } },
+    el('div', { class: 't-case-head' }, c.case ? el('b', { text: c.case }) : null, el('span', { class: 'chip' }, ico('open'), 'not reported')),
+    el('p', { class: 't-note', text: running ? `Not reported yet (check ${c.id}).` : `The verifier did not report check ${c.id}.` }))
   const thumbs = (c.evidence ?? []).filter(src => typeof src === 'string' && src.startsWith('/evidence/')).map((src, i, all) => {
     const index = SHOTS.push({ src, step, c, alt: `${label}: ${all.length > 1 ? `screenshot ${i + 1} of ${all.length}` : 'end state'}` }) - 1
     const img = el('img', { src, alt: SHOTS[index].alt, loading: 'lazy', decoding: 'async' })
@@ -1428,8 +1558,9 @@ function caseRow(step, c, key) {
     return el('button', { type: 'button', class: 'thumb', dataset: { shot: String(index) }, 'aria-label': `Open ${SHOTS[index].alt}`, onclick: () => openLightbox(index) }, img)
   })
   const flagged = c.verdict === 'fail' || c.verdict === 'blocked'
-  return el('div', { class: 't-case', dataset: { verdict: c.verdict } },
-    c.case || flagged ? el('div', { class: 't-case-head' }, c.case ? el('b', { text: c.case }) : null, el('span', { class: `chip ${VCHIP[c.verdict] ?? ''}` }, ico(VERDICT_ICON[c.verdict] ?? 'open'), c.verdict)) : null,
+  return el('div', { class: 't-case', dataset: c.extra ? { verdict: c.verdict, extra: '' } : { verdict: c.verdict } },
+    c.case || flagged || c.extra ? el('div', { class: 't-case-head' }, c.case ? el('b', { text: c.case }) : null, el('span', { class: `chip ${VCHIP[c.verdict] ?? ''}` }, ico(VERDICT_ICON[c.verdict] ?? 'open'), c.verdict),
+      c.extra ? el('span', { class: 'chip warn', title: c.id ? `Check id "${c.id}"` : 'No check id' }, 'not in the approved list') : null) : null,
     c.note ? el('p', { class: 't-note', text: c.note }) : null,
     c.url ? el('span', { class: 't-url', text: c.url }) : null,
     thumbs.length ? el('div', { class: 'thumbs' }, thumbs) : null,
@@ -1497,15 +1628,26 @@ async function sendNote(payload) {
   if (!res.ok) throw new Error(text || `the server answered ${res.status}`)
   return JSON.parse(text)
 }
-const afterSend = () => S.idle
+// The agent cannot pick a note up on its own when its session is idle, away or missing.
+const agentAway = () => S.idle || ['away', 'none'].includes($('session').dataset.state)
+const afterSend = () => agentAway()
   ? 'Queued. The agent is idle, so copy the handover note under Your notes.'
   : 'Queued. The agent picks it up at its next step.'
 const KIND = { change: 'Change this', wrong: 'This is wrong', fix: 'Fix it after all', note: 'Note' }
+// Who conducts this run: the owner's lease is renewed by its hooks; 15 quiet minutes means away.
+const LEASE_MS = 15 * 60_000
 function renderSession() {
   const n = $('session')
   n.hidden = !S.run
-  n.dataset.state = S.idle ? 'idle' : 'working'
-  n.textContent = S.idle ? 'Agent idle' : 'Agent working'
+  const owner = S.run?.owner
+  const state = !owner?.session ? 'none' : Date.now() - (owner.heartbeat ?? 0) > LEASE_MS ? 'away' : S.idle ? 'idle' : 'working'
+  const text = { none: 'No conductor yet', away: 'Conductor away', idle: 'Conductor idle', working: 'Conductor working' }[state]
+  if (n.dataset.state === state && n.textContent === text) return
+  const changed = n.dataset.state !== state
+  n.dataset.state = state
+  n.textContent = text
+  if (changed && S.booted) renderNotes()
+  n.title = owner?.heartbeat ? `Session ${String(owner.session).slice(0, 8)} \u00b7 last heard ${clock(new Date(owner.heartbeat).toISOString())}` : ''
 }
 const notesSeen = new Set()
 function noteTarget(n) {
@@ -1519,23 +1661,30 @@ function noteTarget(n) {
 function renderNotes() {
   const notes = S.inbox ?? []
   $('notes').hidden = !notes.length || !S.run
+  // Open = not received yet. A copied note is only on a clipboard; the hook still delivers it.
   const queued = notes.filter(n => n.status === 'queued').length
-  $('notes-count').textContent = notes.length ? `${queued} queued \u00b7 ${notes.length} in all` : ''
+  const copied = notes.filter(n => n.status === 'copied').length
+  const open = queued + copied
+  $('notes-count').textContent = notes.length ? `${open ? `${open} not received yet` : 'all received'} \u00b7 ${notes.length} in all` : ''
   const bar = $('handover')
-  if (!queued) { bar.className = 'handover'; bar.replaceChildren() }
+  const away = agentAway()
+  if (!open) { bar.className = 'handover'; bar.replaceChildren() }
   else {
-    const btn = el('button', { type: 'button', class: S.idle ? 'primary' : null, onclick: e => copyHandover(e.currentTarget) }, 'Copy handover note')
-    bar.className = `handover${S.idle ? ' prominent' : ''}`
-    bar.replaceChildren(el('p', { text: S.idle
-      ? 'The agent is idle. Copy the note and paste it into Claude.'
-      : `The agent picks ${queued === 1 ? 'this note' : 'these notes'} up at its next step on its own. Copy only if you want to hand over now.` }), btn)
+    const btn = el('button', { type: 'button', class: away ? 'primary' : null, onclick: e => copyHandover(e.currentTarget) }, queued ? 'Copy handover note' : 'Copy again')
+    bar.className = `handover${away ? ' prominent' : ''}`
+    bar.replaceChildren(el('p', { text: away
+      ? `The agent is not picking notes up right now. Copy the note and paste it into Claude.`
+      : !queued ? `You copied ${copied === 1 ? 'a note' : 'notes'} the agent has not received yet. Its next step delivers ${copied === 1 ? 'it' : 'them'} anyway; copy again if the paste got lost.`
+      : `The agent picks ${open === 1 ? 'this note' : 'these notes'} up at its next step on its own. Copy only if you want to hand over now.` }), btn)
   }
   $('note-list').replaceChildren(...[...notes].reverse().map(n => {
     const chip = n.status === 'queued' ? el('span', { class: 'chip accent', text: 'queued' })
-      : n.status === 'delivered' ? el('span', { class: 'chip', text: 'handed to the agent' })
-      : n.status === 'done' ? el('span', { class: 'chip ok', text: 'done' })
+      : n.status === 'copied' ? el('span', { class: 'chip warn', text: 'copied \u2014 not yet received' })
+      : n.status === 'delivered' ? el('span', { class: 'chip' }, ico('check'), 'received by the agent')
+      : n.status === 'done' ? el('span', { class: 'chip ok' }, ico('check'), 'done')
       : el('span', { class: 'chip', text: n.status })
-    const aside = n.status === 'delivered' && n.via ? `Handed over (${n.via})` : n.status === 'done' && n.result ? n.result : ''
+    const aside = n.status === 'copied' ? 'You copied the handover; the agent gets it at its next step if the paste did not reach it.'
+      : n.status === 'delivered' && n.via ? `Received ${n.via}` : n.status === 'done' && n.result ? n.result : ''
     const li = el('li', { class: S.booted && !notesSeen.has(n.id) && !reduced.matches ? 'fresh' : null }, chip,
       el('div', { class: 'n-body' },
         el('span', { class: 'n-target' }, `${KIND[n.kind] ?? cap(n.kind)} \u00b7 `, el('span', { class: n.file && !n.finding ? 'mono' : null, text: noteTarget(n) })),
@@ -1552,10 +1701,10 @@ async function copyHandover(btn) {
     const res = await fetch('/api/handover', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
     const text = await res.text()
     if (!res.ok) throw new Error(text || `the server answered ${res.status}`)
-    if (!text) { out.replaceChildren(el('p', { text: 'Nothing is queued any more.' })); return }
+    if (!text) { out.replaceChildren(el('p', { text: 'Nothing is waiting any more: the agent has received every note.' })); return }
     try {
       await navigator.clipboard.writeText(text)
-      out.replaceChildren(el('p', { class: 'confirm', text: 'Copied. Paste it into Claude; these notes now count as handed to the agent.' }))
+      out.replaceChildren(el('p', { class: 'confirm', text: 'Copied. Paste it into Claude. The notes stay open until the agent has received them.' }))
     } catch {
       const ta = el('textarea', { class: 'field mono', readonly: true, rows: '10', 'aria-label': 'Handover note' })
       ta.value = text
@@ -1673,9 +1822,13 @@ function renderMd(src) {
 }
 
 // ---------- streaming ----------
+// The server reports a failed or stopped explanation as a last italic line inside a 200 body.
+const EXPLAIN_FAIL = /(?:^|\n)\s*_((?:The explanation failed|Stopped:|Could not start claude)[^\n]*?)_\s*$/
 async function stream(payload, target, signal) {
   const res = await fetch('/api/explain', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal })
+  if (res.status === 429) throw new Error('two explanations are already running. Wait for one to finish, then try again')
   if (!res.ok) throw new Error((await res.text()) || `the server answered ${res.status}`)
+  const head = res.headers.get('x-story-loop-head') || ''
   const reader = res.body.getReader(), dec = new TextDecoder()
   let text = '', queued = false
   const paint = done => {
@@ -1694,9 +1847,23 @@ async function stream(payload, target, signal) {
     if (!queued) { queued = true; requestAnimationFrame(() => paint(false)) }
   }
   text += dec.decode()
+  const failed = text.match(EXPLAIN_FAIL)
+  if (failed) text = text.slice(0, failed.index)
   await new Promise(r => requestAnimationFrame(r))
   paint(true)
-  return text
+  if (failed) { const e = new Error(failed[1].replace(/\.$/, '')); e.partial = text.trim(); throw e }
+  return { text, head }
+}
+// An answer is about the commit it was produced for; after a new commit it stays readable as history.
+function markHistorical() {
+  const head = S.run?.head
+  if (!head) return
+  for (const node of document.querySelectorAll('[data-head]')) {
+    if (!node.dataset.head || node.dataset.head === head || node.querySelector('.old-tag')) continue
+    const tag = el('span', { class: 'chip warn old-tag', title: `Answered for ${shortSha(node.dataset.head) || 'an earlier commit'}` }, 'from an earlier version of the code')
+    const q = node.querySelector('.entry-q')
+    if (q) q.append(tag); else node.prepend(tag)
+  }
 }
 
 // ---------- reader ----------
@@ -1757,18 +1924,20 @@ async function ask(question, custom) {
   const ctrl = R.ctrl = new AbortController()
   setBusy(true)
   try {
-    const answer = await stream({ file, question, text: custom }, body, ctrl.signal)
-    if (R.file === file) R.lastAnswer = answer
+    const { text, head } = await stream({ file, question, text: custom }, body, ctrl.signal)
+    // The reader may show another file by now: an answer only lands where it was asked.
+    if (entry.isConnected && R.file === file) { R.lastAnswer = text; entry.dataset.head = head; markHistorical() }
   } catch (e) {
     if (e.name === 'AbortError') body.querySelector('.caret')?.remove()
-    else body.replaceChildren(errorRow(e, () => { entry.remove(); ask(question, custom) }))
+    else if (entry.isConnected) body.replaceChildren(...(e.partial ? [renderMd(e.partial)] : []), errorRow(e, () => { entry.remove(); ask(question, custom) }))
   } finally {
     entry.removeAttribute('aria-busy')
     if (R.ctrl === ctrl) { R.ctrl = null; setBusy(false) }
   }
 }
 function errorRow(e, retry) {
-  return el('p', { class: 'err' }, el('span', { text: `Could not get an answer: ${e.message || 'the connection dropped'}.` }), el('button', { type: 'button', onclick: retry }, 'Try again'))
+  const msg = String(e.message || 'the connection dropped').replace(/[.:]\s*$/, '')
+  return el('p', { class: 'err', role: 'alert' }, el('span', { text: `Could not get an answer: ${msg.charAt(0).toLowerCase() + msg.slice(1)}.` }), el('button', { type: 'button', onclick: retry }, 'Try again'))
 }
 function renderDiff(text) {
   if (!text.trim()) return el('p', { class: 'muted', text: 'This file has no changes against the base branch.' })
@@ -1788,17 +1957,24 @@ $('ask').addEventListener('submit', e => {
 })
 
 // ---------- quiz ----------
+let quizCtrl = null
 $('quiz-go').addEventListener('click', async () => {
   const btn = $('quiz-go'), box = $('quiz-body')
   btn.disabled = true
   const raw = el('div', { class: 'prose', 'aria-busy': 'true' })
   box.replaceChildren(raw)
+  delete box.dataset.head
+  const ctrl = quizCtrl = new AbortController()
   try {
-    const text = await stream({ question: 'quiz' }, raw)
+    const { text, head } = await stream({ question: 'quiz' }, raw, ctrl.signal)
+    if (!raw.isConnected) return
     box.replaceChildren(renderQuiz(text))
+    box.dataset.head = head
+    markHistorical()
     btn.textContent = 'New questions'
-  } catch (e) { box.replaceChildren(errorRow(e, () => btn.click())) }
-  btn.disabled = false
+  } catch (e) {
+    if (e.name !== 'AbortError' && raw.isConnected) box.replaceChildren(errorRow(e, () => btn.click()))
+  } finally { if (quizCtrl === ctrl) { quizCtrl = null; btn.disabled = false } }
 })
 function toggle(btn, panel, show, hide) {
   return el('button', { type: 'button', class: 'link', 'aria-expanded': 'false', onclick: () => {
@@ -1848,9 +2024,29 @@ function renderRun() {
   S.finished = finished
   if (S.graph && JSON.stringify(visibleBacks()) !== drawnBacks) drawEdges(false)
   layoutCrew()
+  markHistorical()
 }
+// A new story (or a reset events file) must not show anything of the old one as current.
+function resetRunScoped() {
+  S.backs = []; S.workers = new Map(); S.feed = []; S.inbox = []; S.results = []; S.idle = false
+  S.finished = false; S.allPass = undefined
+  attentionKey = ''; findingsKey = ''; testedKey = ''; historyKey = ''
+  Object.assign(FF, { open: null, kind: null, draft: '', sent: {} })
+  Object.assign(TT, { open: null, draft: '', sent: {} })
+  notesSeen.clear(); evidenceSeen.clear()
+  $('handover-out').replaceChildren()
+  if ($('lightbox').open) $('lightbox').close()
+  if (!$('reader').hidden) closeReader()
+  R.ctrl?.abort(); R.lastAnswer = ''; $('thread').replaceChildren()
+  quizCtrl?.abort(); quizCtrl = null
+  $('quiz-body').replaceChildren(); delete $('quiz-body').dataset.head
+  $('quiz-go').textContent = 'Start the quiz'; $('quiz-go').disabled = false
+}
+const otherStory = run => !!S.run && !!run && run.story !== S.run.story
 function onSnapshot(m) {
   const graphChanged = JSON.stringify(m.graph) !== JSON.stringify(S.graph)
+  if (otherStory(m.run)) resetRunScoped()
+  S.seq = m.seq ?? 0
   S.graph = m.graph; S.run = m.run; S.changes = m.changes ?? []; S.demo = !!m.demo
   S.backs = []; S.workers = new Map(); S.feed = []; attentionKey = ''; findingsKey = ''
   S.inbox = m.inbox ?? []; S.idle = false; S.results = m.results ?? []; testedKey = ''
@@ -1863,19 +2059,34 @@ function onSnapshot(m) {
 }
 function connect() {
   const es = new EventSource('/events')
+  let gone = false
   es.onopen = () => { $('conn').dataset.state = 'on'; $('conn').textContent = 'Live' }
   es.onerror = () => { $('conn').dataset.state = 'off'; $('conn').textContent = 'Reconnecting' }
   es.onmessage = e => {
     let m
     try { m = JSON.parse(e.data) } catch { return }
+    if (gone) return
     if (m.type === 'snapshot') return onSnapshot(m)
     if (!S.graph) return
+    if (m.type === 'reload') {
+      // The events file was reset for a new run: start over from a fresh snapshot.
+      gone = true; es.close()
+      resetRunScoped(); renderWorkers(); renderFeed()
+      return connect()
+    }
     if (m.type === 'run') {
       const had = !!S.run
+      const switched = otherStory(m.run)
+      if (switched) resetRunScoped()
       S.run = m.run
       renderRun()
-      if (!had && S.run) { renderWorkers(); renderChanges(); requestAnimationFrame(() => drawEdges(false)) }
-    } else if (m.type === 'event') applyEvent(m.event, true)
+      if (switched || (!had && S.run)) { renderWorkers(); renderFeed(); renderChanges(); requestAnimationFrame(() => drawEdges(false)) }
+    } else if (m.type === 'event') {
+      // After a reconnect the snapshot already holds these; never show one twice.
+      if (m.seq != null && m.seq <= S.seq) return
+      if (m.seq != null) S.seq = m.seq
+      applyEvent(m.event, true)
+    }
     else if (m.type === 'changes') { S.changes = m.changes ?? []; renderChanges() }
     else if (m.type === 'inbox') { S.inbox = m.inbox ?? []; renderNotes() }
     else if (m.type === 'results') { S.results = m.results ?? []; renderTested() }
