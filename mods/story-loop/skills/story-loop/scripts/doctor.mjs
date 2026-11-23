@@ -49,10 +49,14 @@ export const CHECKS = [
     s.source === 'github' ? ok('not needed for GitHub issues') : ['.claude', '.github', '.cursor', '.pi'].some(dir => s.exists(join(s.cwd, dir, 'skills/start-story/SKILL.md')))
       ? ok() : blocker('no start-story skill found', 'Sync the shared skills into this repo (ai-hub / agent-bridge), or run story-loop from a repo that has start-story.')],
   ['.start-story/ is gitignored', 'run state, briefs and screenshots live there and must not reach the PR', s =>
-    s.run('git', ['check-ignore', '-q', '.start-story/x']).ok ? ok() : warning('not ignored', 'Add ".start-story/" to .gitignore (or to .git/info/exclude for yourself only).')],
-  ['Commits are signed', 'the repo rejects unsigned commits', s =>
-    s.run('git', ['config', '--get', 'commit.gpgsign']).out.trim() === 'true' ? ok()
-      : warning('commit.gpgsign is not true', 'Set up a signing key (see the repo\'s signed-commits guide), then: git config --global commit.gpgsign true')],
+    s.run('git', ['check-ignore', '-q', '.start-story/x']).ok ? ok() : blocker('not ignored', 'Add ".start-story/" to .gitignore (or to .git/info/exclude for yourself only).')],
+  ['Commits can be signed', 'publish.mjs refuses unsigned commits where signing is switched on', s => {
+    if (s.run('git', ['config', '--get', 'commit.gpgsign']).out.trim() !== 'true')
+      return warning('commit.gpgsign is not true', 'If this repo requires signed commits: set up a key (see the repo\'s signed-commits guide), then git config commit.gpgsign true. Otherwise ignore this.')
+    // Signs a throwaway commit object; no ref points at it and nothing leaves the machine.
+    const probe = s.run('git', ['commit-tree', '-S', 'HEAD^{tree}', '-m', 'story-loop signing probe'])
+    return probe.ok ? ok('a test signature worked') : blocker('signing is on, but signing a test commit failed', `Fix the signing setup (key, agent, pinentry): ${probe.out.trim().split('\n')[0] ?? ''}`)
+  }],
   ['A second model for the review', 'stage 5: a reviewer from another vendor catches what Claude misses in its own work', s => {
     const fallback = 'Without it the second review still runs, by a fresh Claude on another model, which is weaker. '
     if (!s.exists(CODEX)) return warning('the openai-codex plugin is not installed', fallback + 'For Codex: /plugin marketplace add openai/codex-plugin-cc, /plugin install codex@openai-codex, then /codex:setup. Any other reviewer CLI can be named at sign-off.')

@@ -44,3 +44,15 @@ test('each missing prerequisite is named with its fix', () => {
   const issues = diagnose({ ...healthy({ missing: ['start-story'], run: { 'short --version': { ok: false, out: '' } } }), source: 'github' })
   assert.deepEqual(issues.filter(r => r.status === 'blocker'), [])
 })
+
+test('unignored run files and signing that does not work are blockers, not warnings', () => {
+  const results = diagnose(healthy({ run: {
+    'git check-ignore -q .start-story/x': { ok: false, out: '' },
+    'git commit-tree -S HEAD^{tree} -m story-loop signing probe': { ok: false, out: 'error: gpg failed to sign the data\n' },
+  } }))
+  assert.equal(statusOf(results, '.start-story/'), 'blocker')
+  assert.equal(statusOf(results, 'Commits can be signed'), 'blocker')
+  assert.match(render(results), /gpg failed to sign/)
+  const unsigned = diagnose(healthy({ run: { 'git config --get commit.gpgsign': { ok: false, out: '' } } }))
+  assert.equal(statusOf(unsigned, 'Commits can be signed'), 'warning')
+})
