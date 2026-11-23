@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>story-loop explainer</title>
+<style>
+:root {
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --bg: oklch(16.5% 0.008 265);
+  --surface: oklch(20.5% 0.009 265);
+  --raised: oklch(24% 0.01 265);
+  --ink: oklch(94% 0.006 265);
+  --ink-2: oklch(78% 0.008 265);
+  --ink-3: oklch(64% 0.01 265);
+  --line: oklch(30% 0.01 265);
+  --line-2: oklch(38% 0.012 265);
+  --accent: oklch(70% 0.15 268);
+  --accent-ink: oklch(80% 0.11 268);
+  --accent-soft: oklch(28% 0.06 268);
+  --ok: oklch(76% 0.13 155);
+  --ok-soft: oklch(27% 0.05 155);
+  --warn: oklch(80% 0.14 75);
+  --warn-soft: oklch(28% 0.05 75);
+  --bad: oklch(71% 0.16 27);
+  --bad-soft: oklch(27% 0.06 27);
+  --shadow: 0 2px 4px oklch(0% 0 0 / 0.3), 0 18px 40px -16px oklch(0% 0 0 / 0.65);
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { width: 1280px; height: 720px; overflow: hidden; background: var(--bg); }
+body { font: 24px/1.35 var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased; }
+#stage { position: relative; width: 1280px; height: 720px; overflow: hidden; background: var(--bg); }
+.scene { position: absolute; inset: 0; visibility: hidden; }
+.abs { position: absolute; }
+.mono { font-family: var(--mono); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+.chip { display: inline-block; font-size: 22px; font-weight: 600; padding: 2px 14px; border-radius: 999px; background: var(--raised); color: var(--ink-2); white-space: nowrap; }
+.chip.accent { background: var(--accent-soft); color: var(--accent-ink); }
+.chip.ok { background: var(--ok-soft); color: var(--ok); }
+.chip.bad { background: var(--bad-soft); color: var(--bad); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.muted { color: var(--ink-3); }
+.big { font-size: 46px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; }
+.bar { height: 12px; border-radius: 6px; background: var(--line-2); }
+
+/* captions */
+#captions { position: absolute; left: 0; right: 0; top: 604px; height: 116px; display: grid; place-items: center; padding: 0 120px; }
+#caption { font-size: 30px; font-weight: 520; line-height: 1.3; text-align: center; color: var(--ink); max-width: 1040px; text-wrap: balance; }
+
+/* stage dots */
+#dots { position: absolute; left: 0; right: 0; top: 0; height: 64px; }
+#dots .rail { position: absolute; left: 200px; width: 880px; top: 28px; height: 2px; background: var(--line-2); }
+#dots .fill { position: absolute; left: 200px; top: 28px; height: 2px; background: var(--ink-2); }
+#dots .d { position: absolute; top: 21px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%; border: 2px solid var(--line-2); background: var(--bg); }
+#dots .d.done { background: var(--ink-2); border-color: var(--ink-2); }
+#dots .d.on { background: var(--accent); border-color: var(--accent); }
+#dots .ring { position: absolute; top: 15px; width: 28px; height: 28px; margin-left: -14px; border-radius: 50%; border: 2px solid var(--accent); }
+#dots .lbl { position: absolute; top: 40px; font-size: 22px; font-weight: 600; color: var(--accent-ink); white-space: nowrap; transform: translateX(-50%); }
+
+/* terminal */
+.term { width: 760px; padding: 0 0 26px; overflow: hidden; }
+.term .top { height: 40px; display: flex; gap: 8px; align-items: center; padding: 0 16px; border-bottom: 1px solid var(--line); }
+.term .top i, .chrome .top i { width: 12px; height: 12px; border-radius: 50%; background: var(--line-2); display: block; }
+.term .line { padding: 26px 30px 0; font: 32px/1.3 var(--mono); color: var(--ink); white-space: pre; }
+.term .line b { color: var(--accent); font-weight: 500; }
+.caret { display: inline-block; width: 16px; height: 34px; background: var(--accent); vertical-align: -6px; margin-left: 2px; }
+
+/* browser chrome */
+.chrome { overflow: hidden; }
+.chrome .top { height: 40px; display: flex; gap: 8px; align-items: center; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--raised); }
+.chrome .url { margin-left: 16px; font: 22px var(--mono); color: var(--ink-3); }
+.view { position: absolute; left: 0; right: 0; top: 40px; bottom: 0; overflow: hidden; background: var(--bg); }
+.view img { position: absolute; left: 0; top: 0; width: 1120px; height: 700px; transform-origin: 0 0; }
+
+/* lock and cross */
+.lock { position: relative; width: 30px; height: 24px; border-radius: 5px; background: var(--ink-2); margin-top: 14px; }
+.lock::before { content: ""; position: absolute; left: 6px; top: -15px; width: 18px; height: 17px; border: 4px solid var(--ink-2); border-bottom: 0; border-radius: 10px 10px 0 0; transform: translate(calc(var(--open, 0) * 9px), calc(var(--open, 0) * -5px)); }
+.lock.accent { background: var(--accent); }
+.lock.accent::before { border-color: var(--accent); }
+.cross { position: relative; width: 34px; height: 34px; }
+.cross::before, .cross::after { content: ""; position: absolute; left: 15px; top: -2px; width: 5px; height: 38px; border-radius: 3px; background: var(--bad); transform: rotate(45deg); }
+.cross::after { transform: rotate(-45deg); }
+.tick { color: var(--ok); font-weight: 700; }
+
+/* hook */
+#code { left: 80px; top: 92px; width: 690px; padding: 26px 30px; }
+#code .cl { font: 22px/1.65 var(--mono); color: var(--ink-2); white-space: pre; }
+#code .cl .k { color: var(--accent-ink); }
+#pr { left: 80px; top: 520px; }
+.q { left: 820px; width: 410px; }
+
+/* contract */
+#doc { left: 150px; top: 84px; width: 560px; height: 500px; padding: 28px 34px; }
+#doc h3 { font-size: 28px; font-weight: 650; margin-bottom: 18px; }
+.sec { margin-bottom: 18px; }
+.sec .h { font-size: 23px; font-weight: 640; color: var(--ink); margin-bottom: 8px; }
+.sec .bar { margin-bottom: 7px; }
+#stamp { left: 760px; top: 340px; padding: 18px 26px; border: 3px solid var(--accent); border-radius: 14px; color: var(--accent-ink); font-size: 32px; font-weight: 700; background: var(--bg); }
+#gate { left: 780px; top: 150px; display: flex; gap: 18px; align-items: center; font-size: 30px; font-weight: 600; }
+#gaps { left: 760px; top: 250px; }
+
+/* build */
+.task { left: 380px; width: 820px; height: 76px; display: flex; align-items: center; gap: 18px; padding: 0 22px; }
+.task .t { font-size: 26px; font-weight: 600; flex: 1; }
+.task .tests { position: relative; width: 150px; height: 34px; }
+.task .tests .chip { position: absolute; right: 0; top: 0; }
+
+/* prove */
+#mline { left: 150px; top: 120px; font: 40px/1.25 var(--mono); color: var(--ink); white-space: nowrap; }
+#mline .op { position: relative; display: inline-block; width: 64px; height: 1.25em; vertical-align: top; text-align: center; }
+#mline .op span { position: absolute; left: 0; right: 0; top: 0; }
+#mline .op .new { color: var(--warn); }
+.mt { left: 150px; width: 980px; height: 72px; display: flex; align-items: center; gap: 18px; padding: 0 22px; }
+.mt .t { font-size: 25px; flex: 1; }
+#browser { left: 140px; top: 84px; width: 700px; height: 500px; }
+.steps { position: absolute; left: 34px; top: 74px; right: 30px; }
+.step { display: flex; gap: 16px; align-items: baseline; font-size: 25px; margin-bottom: 26px; }
+.box { flex: none; width: 30px; height: 30px; border-radius: 8px; border: 2px solid var(--line-2); display: grid; place-items: center; font-size: 22px; transform: translateY(5px); }
+.box.on { border-color: var(--ok); color: var(--ok); }
+#shot { left: 900px; top: 220px; width: 240px; height: 170px; padding: 10px; }
+.mini { width: 100%; height: 100%; border-radius: 6px; background: oklch(96% 0.01 80); position: relative; overflow: hidden; }
+.mini::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 22px; background: oklch(42% 0.14 275); }
+.mini::after { content: ""; position: absolute; left: 12px; right: 12px; top: 36px; height: 96px; border-radius: 6px; background: oklch(88% 0.012 80); }
+#neversaw { left: 880px; top: 120px; width: 330px; font-size: 28px; font-weight: 600; color: var(--accent-ink); }
+
+/* reviews: mini graph + bins */
+.g { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; pointer-events: none; }
+.who { left: 90px; width: 200px; height: 64px; display: flex; align-items: center; justify-content: center; font-size: 27px; font-weight: 650; }
+.bin { top: 300px; width: 230px; height: 290px; border: 1px dashed var(--line-2); border-radius: 14px; }
+.bin .h { position: absolute; left: 0; right: 0; top: 12px; text-align: center; font-size: 24px; font-weight: 650; }
+.fc { width: 206px; height: 52px; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 560; border-radius: 10px; background: var(--raised); border: 1px solid var(--line-2); white-space: nowrap; }
+#pulse { width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: var(--accent); }
+#ringb { width: 40px; height: 40px; margin: -20px 0 0 -20px; border-radius: 50%; border: 3px solid var(--accent); }
+
+/* board + understand */
+.frame { left: 80px; top: 70px; width: 1120px; height: 520px; }
+.callout { padding: 6px 16px; border-radius: 10px; background: var(--accent); color: oklch(17% 0.02 268); font-size: 24px; font-weight: 700; white-space: nowrap; }
+.hl { border: 3px solid var(--accent); border-radius: 10px; }
+.band { background: oklch(70% 0.15 268 / 0.16); border-radius: 8px; }
+#note { left: 330px; top: 220px; width: 620px; padding: 24px 28px; }
+#note .h { font-size: 24px; font-weight: 650; margin-bottom: 14px; }
+#note .txt { font-size: 28px; min-height: 76px; padding: 12px 16px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg); }
+#agent { left: 1010px; top: 230px; width: 190px; height: 64px; display: flex; align-items: center; justify-content: center; font-size: 26px; font-weight: 650; }
+#picked { left: 980px; top: 312px; }
+
+/* limits */
+.lim { left: 230px; height: 92px; display: flex; align-items: center; gap: 30px; font-size: 38px; font-weight: 640; letter-spacing: -0.015em; }
+.lim .mark { width: 64px; display: grid; place-items: center; }
+.you { padding: 2px 12px; border-radius: 999px; border: 3px solid var(--accent); color: var(--accent-ink); font-size: 22px; font-weight: 700; }
+
+/* start */
+.pre { left: 300px; font-size: 27px; display: flex; gap: 18px; align-items: baseline; }
+#end { left: 0; right: 0; top: 190px; text-align: center; }
+#end .name { font-size: 84px; font-weight: 700; letter-spacing: -0.03em; }
+#end .name span { color: var(--accent); }
+#end .line { margin-top: 22px; font-size: 32px; color: var(--ink-2); }
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <!-- 1 hook -->
+  <section class="scene" id="s-hook">
+    <div class="abs card" id="code">
+      <div class="cl"><span class="k">def</span> genre_links(shelf)</div>
+      <div class="cl">  @genre_links ||= {}</div>
+      <div class="cl">  @genre_links[shelf.id] ||= shelf.genres</div>
+      <div class="cl"><span class="k">end</span></div>
+      <div class="cl"> </div>
+      <div class="cl"><span class="k">class</span> OverviewQuery</div>
+      <div class="cl">  <span class="k">def</span> call(reader)</div>
+      <div class="cl">    flows.where(reader:).order(:position)</div>
+      <div class="cl">  <span class="k">end</span></div>
+    </div>
+    <div class="abs" id="pr"><span class="chip accent">PR #482 &middot; +238 &minus;29</span></div>
+    <div class="abs big q" id="q1" style="top:170px">Can you trust it?</div>
+    <div class="abs big q" id="q2" style="top:330px">Do you still understand it?</div>
+  </section>
+
+  <!-- 2 command -->
+  <section class="scene" id="s-command">
+    <div class="abs card term" id="term1" style="left:260px;top:96px">
+      <div class="top"><i></i><i></i><i></i></div>
+      <div class="line"><b>&gt; </b><span id="typed1"></span><span class="caret" id="caret1"></span></div>
+    </div>
+    <div class="abs card" id="story" style="left:150px;top:330px;width:400px;padding:24px 28px">
+      <div class="mono muted" style="font-size:22px">SC-12345</div>
+      <div style="font-size:27px;font-weight:650;margin-top:6px">Reading list overview</div>
+      <div class="muted" style="font-size:22px;margin-top:8px">Shortcut story or GitHub issue</div>
+    </div>
+    <div class="abs" id="arrow1" style="left:570px;top:418px;width:150px;height:3px;background:var(--accent);transform-origin:0 50%"></div>
+    <div class="abs card" id="draft" style="left:740px;top:330px;width:390px;padding:24px 28px">
+      <div class="mono muted" style="font-size:22px">PR #482</div>
+      <div style="font-size:27px;font-weight:650;margin-top:6px">Draft pull request</div>
+      <div style="margin-top:10px"><span class="chip ok">reviewed</span></div>
+    </div>
+  </section>
+
+  <!-- 3 contract -->
+  <section class="scene" id="s-contract">
+    <div class="abs card" id="doc">
+      <h3>PR description</h3>
+      <div class="sec" id="sec0"><div class="h">What</div><div class="bar" style="width:86%"></div><div class="bar" style="width:62%"></div></div>
+      <div class="sec" id="sec1"><div class="h">Why</div><div class="bar" style="width:78%"></div></div>
+      <div class="sec" id="sec2"><div class="h">How</div><div class="bar" style="width:90%"></div><div class="bar" style="width:54%"></div></div>
+      <div class="sec" id="sec3"><div class="h">Test Steps</div><div class="bar" style="width:82%"></div><div class="bar" style="width:70%"></div></div>
+    </div>
+    <div class="abs" id="gate"><div class="lock" id="glock"></div><span id="gatetext">Build waits</span></div>
+    <div class="abs" id="gaps"><span class="chip warn">2 open questions</span></div>
+    <div class="abs" id="gapsok" style="left:760px;top:250px"><span class="chip ok">questions answered</span></div>
+    <div class="abs" id="stamp">&#10003; Signed off by you</div>
+  </section>
+
+  <!-- 4 build -->
+  <section class="scene" id="s-build">
+    <div class="abs card" id="plan" style="left:80px;top:250px;width:220px;height:92px;display:grid;place-items:center;font-size:30px;font-weight:650">Plan</div>
+    <div class="abs muted" id="tfirst" style="left:1010px;top:100px;font-size:24px;font-weight:600">test first</div>
+    <div class="abs card task" id="task0"><span class="t">Overview query</span><span class="chip accent" id="tier0">opus</span><span class="tests"><span class="chip bad" id="red0">failing</span><span class="chip ok" id="green0">passing</span></span></div>
+    <div class="abs card task" id="task1"><span class="t">Entry page view</span><span class="chip accent" id="tier1">sonnet</span><span class="tests"><span class="chip bad" id="red1">failing</span><span class="chip ok" id="green1">passing</span></span></div>
+    <div class="abs card task" id="task2"><span class="t">Sidebar genres memo</span><span class="chip accent" id="tier2">haiku</span><span class="tests"><span class="chip bad" id="red2">failing</span><span class="chip ok" id="green2">passing</span></span></div>
+  </section>
+
+  <!-- 5 prove -->
+  <section class="scene" id="s-prove">
+    <div class="abs" id="halfA" style="inset:0">
+      <div class="abs muted" id="mlabel" style="left:150px;top:80px;font-size:24px;font-weight:600">Break one line on purpose</div>
+      <div class="abs" id="mline">if genres.size <span class="op"><span class="old">&gt;</span><span class="new">&gt;=</span></span> 0</div>
+      <div class="abs card mt" id="mt0" style="top:270px"><span class="t">lists genres for a shelf</span><span class="chip ok">killed</span></div>
+      <div class="abs card mt" id="mt1" style="top:370px"><span class="t">shelf without genres</span><span class="chip warn">survived &rarr; missing test</span></div>
+    </div>
+    <div class="abs" id="halfB" style="inset:0">
+      <div class="abs card chrome" id="browser">
+        <div class="top"><i></i><i></i><i></i><span class="url">localhost:3001/reading-lists</span></div>
+        <div class="steps">
+          <div class="step"><span class="box" id="bx0"></span><span>Overview shows one tile per shelf</span></div>
+          <div class="step"><span class="box" id="bx1"></span><span>Sidebar lists the genres</span></div>
+          <div class="step"><span class="box" id="bx2"></span><span>Empty shelf shows the empty state</span></div>
+        </div>
+      </div>
+      <div class="abs" id="neversaw">An agent that never saw the code</div>
+      <div class="abs card" id="shot"><div class="mini"></div></div>
+      <div class="abs muted" id="shotlbl" style="left:900px;top:400px;font-size:22px">screenshot kept</div>
+    </div>
+  </section>
+
+  <!-- 6 reviews -->
+  <section class="scene" id="s-reviews">
+    <div class="abs" id="buildlbl" style="left:310px;top:118px;transform:translateX(-50%);font-size:22px;font-weight:650;color:var(--accent-ink);white-space:nowrap">back to Build</div>
+    <svg class="g" id="rsvg" viewBox="0 0 1280 720"><path id="rback" fill="none" stroke="oklch(70% 0.15 268)" stroke-width="3" stroke-linecap="round"/></svg>
+    <div class="abs card who" id="codex" style="top:300px">Second model</div>
+    <div class="abs card who" id="copilot" style="top:430px">Copilot</div>
+    <div class="abs bin" id="bin0" style="left:390px"><div class="h" style="color:var(--ok)">fixed</div></div>
+    <div class="abs bin" id="bin1" style="left:650px"><div class="h muted">rejected</div></div>
+    <div class="abs bin" id="bin2" style="left:910px"><div class="h" style="color:var(--warn)">parked for you</div></div>
+    <div class="abs fc" id="f0">N+1 query</div>
+    <div class="abs fc" id="f1">Archived flows</div>
+    <div class="abs fc" id="f2">Empty state link?</div>
+    <div class="abs fc" id="f3">Label typo</div>
+    <div class="abs" id="pulse"></div>
+    <div class="abs" id="ringb"></div>
+  </section>
+
+  <!-- 7 board -->
+  <section class="scene" id="s-board">
+    <div class="abs card chrome frame">
+      <div class="top"><i></i><i></i><i></i><span class="url">127.0.0.1:4317</span></div>
+      <div class="view">
+        <img id="img-build" src="shots/board-build.png" alt="">
+        <img id="img-columns" src="shots/board-columns.png" alt="">
+        <img id="img-tested" src="shots/board-tested.png" alt="">
+      </div>
+    </div>
+    <div class="abs callout" id="co0" style="left:110px;top:128px">The stages</div>
+    <div class="abs callout" id="co1" style="left:110px;top:128px">Who is working on what</div>
+    <div class="abs callout" id="co2" style="left:110px;top:128px">What was tested</div>
+  </section>
+
+  <!-- 8 understand -->
+  <section class="scene" id="s-understand">
+    <div class="abs card chrome frame">
+      <div class="top"><i></i><i></i><i></i><span class="url">127.0.0.1:4317</span></div>
+      <div class="view" id="uview">
+        <img id="img-explain" src="shots/board-explain.png" alt="">
+        <div class="abs band" id="pb0"></div><div class="abs band" id="pb1"></div><div class="abs band" id="pb2"></div>
+        <div class="abs hl" id="hb0"></div><div class="abs hl" id="hb1"></div><div class="abs hl" id="hb2"></div>
+      </div>
+    </div>
+    <div class="abs card" id="note">
+      <div class="h">Tell the agent to act</div>
+      <div class="txt"><span id="typed2"></span><span class="caret" id="caret2" style="height:30px;width:14px"></span></div>
+    </div>
+    <div class="abs card who" id="agent">Agent</div>
+    <div class="abs" id="picked"><span class="chip ok">note picked up</span></div>
+  </section>
+
+  <!-- 9 limits -->
+  <section class="scene" id="s-limits">
+    <div class="abs muted" id="limtitle" style="left:230px;top:110px;font-size:30px;font-weight:600">Some things it will never do</div>
+    <div class="abs lim" id="lim0" style="top:200px"><span class="mark"><span class="lock"></span></span>Pushes only to the story branch</div>
+    <div class="abs lim" id="lim1" style="top:310px"><span class="mark"><span class="cross"></span></span>Never merges</div>
+    <div class="abs lim" id="lim2" style="top:420px"><span class="mark"><span class="you">you</span></span>A human approves. A human merges.</div>
+  </section>
+
+  <!-- 10 start -->
+  <section class="scene" id="s-start">
+    <div class="abs" id="setup" style="inset:0">
+      <div class="abs card term" style="left:260px;top:80px">
+        <div class="top"><i></i><i></i><i></i></div>
+        <div class="line"><b>&gt; </b><span id="typed3"></span><span class="caret" id="caret3"></span></div>
+      </div>
+      <div class="abs pre" id="pre0" style="top:290px"><span class="box" id="pb-0"></span>Shortcut CLI and the start-story skill</div>
+      <div class="abs pre" id="pre1" style="top:350px"><span class="box" id="pb-1"></span>GitHub CLI, signed in</div>
+      <div class="abs pre" id="pre2" style="top:410px"><span class="box" id="pb-2"></span>A second model for the review</div>
+      <div class="abs pre" id="pre3" style="top:470px"><span class="box" id="pb-3"></span>A browser for the verifier</div>
+    </div>
+    <div class="abs" id="end">
+      <div class="name">story<span>-</span>loop</div>
+      <div class="line">One story. Nine stages. You sign, you understand, you merge.</div>
+    </div>
+  </section>
+
+  <div id="dots"></div>
+  <div id="captions"><p id="caption"></p></div>
+</div>
+
+<script src="scenes.js"></script>
+<script>
+'use strict'
+const $ = id => document.getElementById(id)
+const SC = Object.fromEntries(window.SCENES.map(s => [s.id, s]))
+const LAST = window.SCENES[window.SCENES.length - 1]
+window.TOTAL = LAST.start + LAST.duration
+const FADE = 0.4
+
+// ---- time helpers: every style below is a pure function of t
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v))
+const eo = x => 1 - Math.pow(1 - x, 3)
+const eio = x => x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2
+const lin = x => x
+const prog = (t, a, b, e = eo) => e(clamp((t - a) / (b - a)))
+const mix = (a, b, k) => a + (b - a) * k
+// local start of caption i of scene id
+const cap = (id, i) => SC[id].captions[i].start - SC[id].start
+function put(el, o, x = 0, y = 0, s = 1) {
+  el.style.opacity = String(clamp(o))
+  el.style.transform = `translate(${x}px, ${y}px) scale(${s})`
+}
+// appear at t0: fade in and rise 14px
+const rise = (el, lt, t0, d = 0.6, dy = 14) => { const k = prog(lt, t0, t0 + d); put(el, k, 0, (1 - k) * dy) }
+// visible between a and b, fading 0.35s each side
+const win = (lt, a, b, f = 0.35) => Math.min(prog(lt, a, a + f, lin), 1 - prog(lt, b - f, b, lin))
+const typed = (text, lt, a, b) => text.slice(0, Math.round(prog(lt, a, b, lin) * text.length))
+const blink = t => (Math.floor(t * 2.2) % 2 ? 0 : 1)
+
+// ---- stage dots
+const STAGES = ['Contract', 'Build', 'Test review', 'Browser verify', 'Second review', 'Push', 'Copilot review', 'Fix comments', 'Report']
+const dx = i => 200 + i * 110
+const dotsEl = $('dots')
+dotsEl.append(Object.assign(document.createElement('div'), { className: 'rail' }))
+const fillEl = Object.assign(document.createElement('div'), { className: 'fill' })
+dotsEl.append(fillEl)
+const dotEls = STAGES.map((_, i) => { const d = document.createElement('div'); d.className = 'd'; d.style.left = `${dx(i)}px`; dotsEl.append(d); return d })
+const ringEl = Object.assign(document.createElement('div'), { className: 'ring' }); dotsEl.append(ringEl)
+const lblEl = Object.assign(document.createElement('div'), { className: 'lbl' }); dotsEl.append(lblEl)
+function stageAt(t) {
+  const at = (id, i = 0) => SC[id].captions[i]?.start ?? SC[id].start
+  if (t < SC.build.start) return [0, 0]
+  if (t < SC.prove.start) return [1, 1]
+  if (t < at('prove', 2)) return [2, 2]
+  if (t < SC.reviews.start) return [3, 3]
+  if (t < at('reviews', 1)) return [4, 4]
+  if (t < at('reviews', 2)) return [6, 6]
+  if (t < SC.board.start) return [7, 7]
+  if (t >= at('limits', 1) && t < at('limits', 2)) return [5, 8]
+  if (t >= at('limits', 3) && t < SC.start.start) return [8, 8]
+  return [-1, 8]
+}
+function renderDots(t) {
+  const o = Math.min(prog(t, SC.contract.start, SC.contract.start + FADE, lin), 1 - prog(t, SC.start.start, SC.start.start + FADE, lin))
+  dotsEl.style.opacity = String(o)
+  dotsEl.style.visibility = o > 0 ? 'visible' : 'hidden'
+  if (o <= 0) return
+  const [on, done] = stageAt(t)
+  dotEls.forEach((d, i) => { d.className = `d${i === on ? ' on' : i < done ? ' done' : ''}` })
+  fillEl.style.width = `${Math.max(0, (Math.max(done, on) - 0) * 110)}px`
+  ringEl.style.opacity = on < 0 ? '0' : '1'
+  lblEl.style.opacity = on < 0 ? '0' : '1'
+  if (on >= 0) {
+    ringEl.style.left = `${dx(on)}px`
+    lblEl.style.left = `${dx(on)}px`
+    if (lblEl.textContent !== STAGES[on]) lblEl.textContent = STAGES[on]
+  }
+}
+
+// ---- captions
+function renderCaption(t) {
+  let c = null
+  for (const s of window.SCENES) for (const x of s.captions) if (t >= x.start && t < x.end + 0.3) c = x
+  const el = $('caption')
+  if (!c) { el.style.opacity = '0'; return }
+  if (el.textContent !== c.text) el.textContent = c.text
+  el.style.opacity = String(Math.min(prog(t, c.start, c.start + 0.25, lin), 1 - prog(t, c.end + 0.05, c.end + 0.3, lin)))
+}
+
+// ---- scenes (lt = seconds since the scene started, d = its duration)
+const R = {}
+
+R.hook = (lt) => {
+  const lines = [...document.querySelectorAll('#code .cl')]
+  rise($('code'), lt, 0, 0.5)
+  lines.forEach((l, i) => { const k = prog(lt, 0.25 + i * 0.27, 0.55 + i * 0.27, lin); l.style.clipPath = `inset(0 ${100 - k * 100}% 0 0)` })
+  rise($('pr'), lt, 2.3)
+  const dim = mix(1, 0.35, prog(lt, cap('hook', 1), cap('hook', 1) + 0.6))
+  $('code').style.opacity = String(prog(lt, 0, 0.5) * dim)
+  rise($('q1'), lt, cap('hook', 1) + 0.1, 0.7, 18)
+  rise($('q2'), lt, cap('hook', 2) + 0.1, 0.7, 18)
+}
+
+R.command = (lt, d) => {
+  rise($('term1'), lt, 0, 0.5)
+  $('typed1').textContent = typed('/story-loop SC-12345', lt, 0.5, 2.1)
+  $('caret1').style.opacity = String(lt < 2.1 ? 1 : blink(lt))
+  rise($('story'), lt, 2.5)
+  const a = prog(lt, 3.3, 4.1, eio)
+  $('arrow1').style.opacity = String(a > 0 ? 1 : 0)
+  $('arrow1').style.transform = `scaleX(${a})`
+  rise($('draft'), lt, 4.0)
+}
+
+R.contract = (lt) => {
+  rise($('doc'), lt, 0, 0.5)
+  for (let i = 0; i < 4; i++) rise($(`sec${i}`), lt, cap('contract', 1) - 0.6 + i * 0.75, 0.5, 10)
+  rise($('gate'), lt, 0.6)
+  const signed = cap('contract', 2) + 0.2
+  const open = prog(lt, signed + 0.5, signed + 1.0)
+  $('glock').style.setProperty('--open', String(open))
+  $('glock').classList.toggle('accent', open > 0.5)
+  $('gatetext').textContent = open > 0.5 ? 'Build may start' : 'Build waits'
+  put($('gaps'), win(lt, cap('contract', 1) + 1.6, cap('contract', 1) + 4.0), 0, 0)
+  put($('gapsok'), prog(lt, cap('contract', 1) + 4.0, cap('contract', 1) + 4.4, lin) * (1 - prog(lt, signed - 0.3, signed, lin)), 0, 0)
+  const k = prog(lt, signed, signed + 0.6)
+  put($('stamp'), k, 0, 0, mix(1.12, 1, k))
+}
+
+R.build = (lt) => {
+  const split = prog(lt, 0.9, 1.8, eio)
+  rise($('plan'), lt, 0, 0.5)
+  rise($('tfirst'), lt, 2.4)
+  for (let i = 0; i < 3; i++) {
+    const task = $(`task${i}`)
+    const y = mix(258, 170 + i * 120, split)
+    task.style.top = `${y}px`
+    put(task, prog(lt, 0.9, 1.4, lin), mix(-200, 0, split), 0, mix(0.9, 1, split))
+    rise($(`tier${i}`), lt, 1.9 + i * 0.35, 0.4, 6)
+    const red = prog(lt, 2.6 + i * 0.4, 3.0 + i * 0.4, lin), green = prog(lt, 4.4 + i * 0.6, 4.8 + i * 0.6, lin)
+    put($(`red${i}`), red * (1 - green))
+    put($(`green${i}`), green)
+  }
+}
+
+R.prove = (lt) => {
+  const swap = cap('prove', 2) - 0.1
+  const A = 1 - prog(lt, swap - 0.4, swap, lin), B = prog(lt, swap, swap + 0.45, lin)
+  $('halfA').style.opacity = String(A); $('halfA').style.visibility = A > 0 ? 'visible' : 'hidden'
+  $('halfB').style.opacity = String(B); $('halfB').style.visibility = B > 0 ? 'visible' : 'hidden'
+  if (A > 0) {
+    rise($('mlabel'), lt, 0.2)
+    rise($('mline'), lt, 0.3)
+    const flip = prog(lt, cap('prove', 1) + 0.3, cap('prove', 1) + 0.8)
+    put($('mline').querySelector('.old'), 1 - flip, 0, -flip * 14)
+    put($('mline').querySelector('.new'), flip, 0, (1 - flip) * 14)
+    rise($('mt0'), lt, cap('prove', 1) + 1.4)
+    rise($('mt1'), lt, cap('prove', 1) + 2.4)
+  }
+  if (B > 0) {
+    const b0 = swap
+    rise($('browser'), lt, b0, 0.6)
+    rise($('neversaw'), lt, b0 + 0.5)
+    for (let i = 0; i < 3; i++) {
+      const on = lt >= b0 + 1.4 + i * 1.1
+      const bx = $(`bx${i}`)
+      bx.classList.toggle('on', on)
+      bx.textContent = on ? '✓' : ''
+    }
+    const k = prog(lt, b0 + 4.6, b0 + 5.4)
+    put($('shot'), k, mix(-160, 0, k), mix(-40, 0, k), mix(0.7, 1, k))
+    rise($('shotlbl'), lt, b0 + 5.2)
+  }
+}
+
+// reviews: the back-edge runs under the persistent stage dots, from Codex review to Build
+const GX = i => dx(i), GY = 29
+const ARC = { x1: GX(4), x2: GX(1), y: GY + 10, h: -80 }
+$('rback').setAttribute('d', `M ${ARC.x1} ${ARC.y} C ${ARC.x1} ${ARC.y - ARC.h} ${ARC.x2} ${ARC.y - ARC.h} ${ARC.x2} ${ARC.y}`)
+const arcPoint = k => {
+  const { x1, x2, y, h } = ARC, u = 1 - k
+  const px = u * u * u * x1 + 3 * u * u * k * x1 + 3 * u * k * k * x2 + k * k * k * x2
+  const py = u * u * u * y + 3 * u * u * k * (y - h) + 3 * u * k * k * (y - h) + k * k * k * y
+  return [px, py]
+}
+const BIN_X = [390, 650, 910]
+const FINDINGS = [
+  { from: 'codex', bin: 0, slot: 0, at: () => 0.9 },
+  { from: 'codex', bin: 1, slot: 0, at: () => 1.9 },
+  { from: 'copilot', bin: 2, slot: 0, at: () => cap('reviews', 1) + 0.7 },
+  { from: 'copilot', bin: 0, slot: 1, at: () => cap('reviews', 1) + 1.6 },
+]
+R.reviews = (lt) => {
+  rise($('codex'), lt, 0.2)
+  rise($('copilot'), lt, cap('reviews', 1))
+  for (let i = 0; i < 3; i++) rise($(`bin${i}`), lt, 0.4 + i * 0.15, 0.5, 10)
+  // the "fixed" finding that goes back through the loop
+  const back0 = cap('reviews', 2) + 0.3
+  FINDINGS.forEach((f, i) => {
+    const el = $(`f${i}`), t0 = f.at()
+    const k = prog(lt, t0, t0 + 1.2, eio)
+    const sx = 90 + 100 - 103, sy = (f.from === 'codex' ? 300 : 430) + 6
+    const ex = BIN_X[f.bin] + 12, ey = 360 + f.slot * 66
+    let x = mix(sx, ex, k), y = mix(sy, ey, k), o = prog(lt, t0, t0 + 0.3, lin), s = 1
+    if (i === 0) {
+      // lift off toward Codex review, shrink into the pulse
+      const lift = prog(lt, back0, back0 + 0.8, eio)
+      x = mix(x, GX(4) - 103, lift); y = mix(y, GY + 20, lift); s = mix(1, 0.2, lift); o *= 1 - prog(lt, back0 + 0.6, back0 + 0.8, lin)
+    }
+    el.style.left = '0px'; el.style.top = '0px'
+    put(el, o, x, y, s)
+  })
+  const travel = prog(lt, back0 + 0.8, back0 + 2.2, eio)
+  const draw = $('rback'), len = draw.getTotalLength()
+  draw.style.strokeDasharray = `${len}`
+  draw.style.strokeDashoffset = `${len * (1 - travel)}`
+  draw.style.opacity = String(travel > 0 ? 1 : 0)
+  const [px, py] = arcPoint(travel)
+  $('pulse').style.left = `${px}px`; $('pulse').style.top = `${py}px`
+  $('pulse').style.opacity = String(travel > 0 && travel < 1 ? 1 : 0)
+  const ring = prog(lt, back0 + 2.2, back0 + 3.2)
+  $('ringb').style.left = `${GX(1)}px`; $('ringb').style.top = `${GY}px`
+  put($('ringb'), ring > 0 ? 1 - ring * 0.6 : 0, 0, 0, mix(0.6, 1.3, ring))
+  $('buildlbl').style.opacity = String(win(lt, back0 + 1.6, back0 + 4.2))
+  // parked bin turns to the developer
+  const parked = prog(lt, cap('reviews', 3), cap('reviews', 3) + 0.6)
+  $('bin2').style.borderColor = parked > 0.5 ? 'var(--warn)' : ''
+  $('bin2').style.borderStyle = parked > 0.5 ? 'solid' : ''
+  $('bin2').style.background = `oklch(80% 0.14 75 / ${0.1 * parked})`
+}
+
+// camera over a 1120x700 screenshot inside a 1120x480 viewport
+const VW = 1120, VH = 480, IW = 1120, IH = 700
+function cam(r) {
+  const s = Math.min(VW / ((r[2] - r[0]) * IW), VH / ((r[3] - r[1]) * IH))
+  let tx = VW / 2 - (r[0] + r[2]) / 2 * IW * s, ty = VH / 2 - (r[1] + r[3]) / 2 * IH * s
+  tx = clamp(tx, VW - IW * s, 0); ty = clamp(ty, VH - IH * s, 0)
+  return { s, tx, ty }
+}
+const lerpR = (a, b, k) => a.map((v, i) => mix(v, b[i], k))
+function camAt(lt, keys) {
+  let cur = keys[0][1]
+  for (let i = 1; i < keys.length; i++) { const [t0, rr, dur = 1.2] = keys[i]; if (lt >= t0) cur = lerpR(cur, rr, prog(lt, t0, t0 + dur, eio)) }
+  return cam(cur)
+}
+const applyCam = (img, c) => { img.style.transform = `translate(${c.tx}px, ${c.ty}px) scale(${c.s})` }
+
+R.board = (lt) => {
+  const c1 = cap('board', 1), c2 = cap('board', 2), c3 = cap('board', 3)
+  applyCam($('img-build'), camAt(lt, [[0, [0, 0, 1, 0.69]], [0.2, [0.01, 0.02, 0.99, 0.7], 2.0], [c1 - 0.2, [0.02, 0.22, 0.98, 0.5], 0.8]]))
+  applyCam($('img-columns'), camAt(lt, [[0, [0.01, 0.28, 0.43, 0.75]], [c2 + 0.2, [0.01, 0.3, 0.43, 0.72], 2]]))
+  applyCam($('img-tested'), camAt(lt, [[0, [0.01, 0, 0.43, 0.58]], [c3 + 0.2, [0.01, 0.02, 0.43, 0.56], 2]]))
+  const sw1 = prog(lt, c2 - 0.2, c2 + 0.2, lin), sw2 = prog(lt, c3 - 0.2, c3 + 0.2, lin)
+  $('img-build').style.opacity = String(1 - sw1)
+  $('img-columns').style.opacity = String(sw1 * (1 - sw2))
+  $('img-tested').style.opacity = String(sw2)
+  put($('co0'), win(lt, c1 + 0.1, c2 - 0.05, 0.25))
+  put($('co1'), win(lt, c2 + 0.1, c3 - 0.05, 0.25))
+  put($('co2'), win(lt, c3 + 0.1, 9, 0.25))
+}
+
+// board-explain.png regions in image fractions (from the 2000x1250 preview)
+const fx = v => v / 2000, fy = v => v / 1250
+const BTN = [[888, 602, 1022, 645], [1034, 602, 1162, 645], [1174, 602, 1348, 645]]
+const PAR = [[880, 712, 1800, 790], [880, 800, 1800, 876], [880, 888, 1800, 962]]
+R.understand = (lt) => {
+  const c = camAt(lt, [[0, [0.43, 0.3, 0.99, 0.8]], [0.2, [0.435, 0.38, 0.985, 0.8], 3.5]])
+  applyCam($('img-explain'), c)
+  const box = (el, r, pad) => {
+    el.style.left = `${c.tx + fx(r[0]) * IW * c.s - pad}px`; el.style.top = `${c.ty + fy(r[1]) * IH * c.s - pad}px`
+    el.style.width = `${(fx(r[2]) - fx(r[0])) * IW * c.s + pad * 2}px`; el.style.height = `${(fy(r[3]) - fy(r[1])) * IH * c.s + pad * 2}px`
+  }
+  const tell = cap('understand', 5)
+  for (let i = 0; i < 3; i++) {
+    const a = cap('understand', 2 + i)
+    const on = win(lt, a, i === 2 ? tell : cap('understand', 3 + i) + 0.15, 0.2)
+    box($(`hb${i}`), BTN[i], 4); box($(`pb${i}`), PAR[i], 4)
+    put($(`hb${i}`), on); put($(`pb${i}`), on)
+  }
+  $('img-explain').style.opacity = String(mix(1, 0.3, prog(lt, tell, tell + 0.5, lin)))
+  const n = prog(lt, tell + 0.2, tell + 0.8)
+  const fly = prog(lt, tell + 2.6, tell + 3.4, eio)
+  put($('note'), n * (1 - prog(lt, tell + 3.1, tell + 3.4, lin)), mix(0, 560, fly), mix(14 * (1 - n), 20, fly), mix(1, 0.15, fly))
+  $('typed2').textContent = typed('Do this differently: memoize in the controller.', lt, tell + 0.7, tell + 2.3)
+  $('caret2').style.opacity = String(lt < tell + 2.3 ? 1 : blink(lt))
+  rise($('agent'), lt, tell + 0.4)
+  $('agent').style.borderColor = lt >= tell + 3.4 ? 'var(--accent)' : ''
+  rise($('picked'), lt, tell + 3.5)
+}
+
+R.limits = (lt) => {
+  rise($('limtitle'), lt, 0.2)
+  for (let i = 0; i < 3; i++) rise($(`lim${i}`), lt, cap('limits', 1 + i) - 0.05, 0.6, 16)
+}
+
+R.start = (lt, d) => {
+  const end = cap('start', 2) - 0.1
+  const S = 1 - prog(lt, end - 0.2, end + 0.3, lin)
+  $('setup').style.opacity = String(S); $('setup').style.visibility = S > 0 ? 'visible' : 'hidden'
+  $('typed3').textContent = typed('/story-loop setup', lt, 0.4, 1.5)
+  $('caret3').style.opacity = String(lt < 1.5 ? 1 : blink(lt))
+  for (let i = 0; i < 4; i++) {
+    rise($(`pre${i}`), lt, cap('start', 1) - 0.3 + i * 0.5, 0.5, 10)
+    const on = lt >= cap('start', 1) + 0.6 + i * 0.75
+    const bx = $(`pb-${i}`)
+    bx.classList.toggle('on', on); bx.textContent = on ? '✓' : ''
+  }
+  const k = prog(lt, end + 0.2, end + 1.0)
+  put($('end'), k, 0, (1 - k) * 18)
+}
+
+// ---- the one entry point
+const layers = Object.fromEntries(window.SCENES.map(s => [s.id, $(`s-${s.id}`)]))
+window.seek = function seek(t) {
+  t = clamp(Number(t) || 0, 0, window.TOTAL)
+  window.SCENES.forEach((s, i) => {
+    const lt = t - s.start
+    // A scene fades in over the outgoing scene's last FADE seconds, so the two overlap.
+    const first = i === 0, last = i === window.SCENES.length - 1
+    const inside = lt >= (first ? 0 : -FADE) && (lt < s.duration || last)
+    const a = !inside ? 0 : Math.min(first ? 1 : prog(lt, -FADE, 0, lin), last ? 1 : 1 - prog(lt, s.duration - FADE, s.duration, lin))
+    const layer = layers[s.id]
+    layer.style.visibility = a > 0 ? 'visible' : 'hidden'
+    layer.style.opacity = String(a)
+    if (a > 0) R[s.id](Math.max(lt, 0), s.duration)
+  })
+  renderDots(t)
+  renderCaption(t)
+}
+
+// ---- review playback (?play): the only clock, it just calls seek
+if (new URLSearchParams(location.search).has('play')) {
+  let origin = performance.now(), paused = false, at = 0
+  const frame = now => {
+    if (!paused) { at = (now - origin) / 1000; if (at > window.TOTAL) { at = 0; origin = now } window.seek(at) }
+    requestAnimationFrame(frame)
+  }
+  const jumpTo = t => { at = clamp(t, 0, window.TOTAL); origin = performance.now() - at * 1000; window.seek(at) }
+  addEventListener('keydown', e => {
+    if (e.key === ' ') { e.preventDefault(); paused = !paused; if (!paused) origin = performance.now() - at * 1000 }
+    const idx = window.SCENES.findLastIndex(s => s.start <= at + 0.01)
+    if (e.key === 'ArrowRight') jumpTo(window.SCENES[Math.min(idx + 1, window.SCENES.length - 1)].start)
+    if (e.key === 'ArrowLeft') jumpTo(window.SCENES[Math.max(idx - (at - window.SCENES[idx].start < 1 ? 1 : 0), 0)].start)
+  })
+  requestAnimationFrame(frame)
+} else {
+  window.seek(0)
+}
+</script>
+</body>
+</html>

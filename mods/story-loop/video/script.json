@@ -1,0 +1,12 @@
+[
+  { "id": "hook", "text": "Agents can write a whole feature while you get coffee. The hard part is knowing whether to trust it. And still understanding your own code afterwards." },
+  { "id": "command", "text": "Story loop takes one Shortcut story, or a GitHub issue, and one command, and carries it to a reviewed draft pull request." },
+  { "id": "contract", "text": "It starts with a contract. The agent drafts the plan and the test steps, asks about the gaps, and waits. Nothing is built until you sign." },
+  { "id": "build", "text": "Then it builds. The plan is split into tasks, and worker agents of different strengths write the code, tests first." },
+  { "id": "prove", "text": "Now the work has to prove itself. Every changed line is broken on purpose, to see if a test notices. Then a second agent, that never saw the code, checks each test step in a real browser, and keeps a screenshot." },
+  { "id": "reviews", "text": "Then a second model, ideally from another company, tries to tear it apart. After the push, GitHub Copilot reviews it again. Clear defects are fixed, and go back through the loop. Open questions are parked for you." },
+  { "id": "board", "text": "You follow all of it on a live board. The stages. Who is working on what. And what was tested." },
+  { "id": "understand", "text": "And you stay in touch with the code. For every changed file, you can ask: explain this. Why here? How does it connect? If you disagree, tell the agent, and it picks up your note." },
+  { "id": "limits", "text": "Some things it will never do. It pushes only to the story branch. It never merges. A human approves, and a human merges." },
+  { "id": "start", "text": "To begin, run story loop setup. It checks your machine, and walks you through anything that is missing. Then pick a small story, and watch." }
+]
