@@ -60,6 +60,12 @@ names. If it lists none, `LOOP block build "story-loop workers not loaded; start
   right reason; the worker shows the failing run, then the passing one.
 - Do not implement in parallel with workers. While they run, prepare the next
   briefs or the review checklist.
+- **Parallel workers share this checkout, so they never share files.** Give
+  each parallel task its own files; tasks that touch the same file, the same
+  test database or the same fixtures run one after another. Workers do not
+  commit — you commit accepted work, one task at a time, so nobody's
+  half-done change ends up in another task's commit. Tests that need one test
+  database (Rails request specs, migrations) run serially.
 
 ## 4. Review every result
 
@@ -77,6 +83,8 @@ Treat a worker report as a claim to check.
 
 ## 5. Close the stage
 
-Every task accepted → run the affected spec and Jest suites once; failures go
-back to the tier that owns the code. Commit (atomic, signed, lint clean).
-Then `LOOP pass build "<n tasks, suites run>"`.
+Every task accepted (`LOOP put tasks` with `"status":"accepted"`) → run the
+affected spec and Jest suites once; failures go back to the tier that owns the
+code. Commit (atomic, signed, lint clean). Then
+`LOOP pass build "<n tasks, suites run>"` — refused while a task is not
+accepted or anything is uncommitted.

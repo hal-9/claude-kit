@@ -10,8 +10,9 @@ https://github.com/user-attachments/assets/41477f16-1996-42d5-bb66-3ca51721f699
 /story-loop gh-123          # a GitHub issue (or paste its URL)
 ```
 
-> Status: 0.6, experimental. The parts are tested on their own; the whole loop
-> has not yet carried a real story. Expect rough edges and tell the author.
+> Status: 0.7, experimental. The parts are tested on their own, against real
+> git, local bare remotes, a fake `gh` and a fake `claude`; the whole loop has
+> not yet carried a real story. Expect rough edges and tell the author.
 
 ## What happens
 
@@ -28,17 +29,19 @@ flowchart LR
 | # | Stage | What the agent does | What proves it |
 | --- | --- | --- | --- |
 | 1 | Contract | From the story (`start-story`) or the issue: drafts the PR description, asks about gaps, opens the draft PR | **Your sign-off** |
-| 2 | Build | Splits the plan into tasks; worker agents on Haiku, Sonnet or Opus build test-first | The diff, read by the conductor; suites green |
-| 3 | Test review | Breaks each changed line on purpose and checks a test notices | The mutant table |
-| 4 | Browser verify | A second agent that has not seen the code checks every Test Step in a real browser | A screenshot per check |
-| 5 | Second review | Another model tries to break the work: Codex by default, any reviewer CLI you name, or a fresh Claude on another model | Every finding fixed, rejected with a reason, or parked for you |
-| 6 | Push | Commits (signed) and pushes the story branch | The commit |
-| 7 | Copilot review | Requests GitHub Copilot's review and waits for it | The review |
-| 8 | Fix comments | Fixes what is clear, answers every thread | The replies |
-| 9 | Report | Posts the results on the PR | The comment; the PR stays a draft |
+| 2 | Build | Splits the plan into tasks; worker agents on Haiku, Sonnet or Opus build test-first | Every task accepted, everything committed |
+| 3 | Test review | Breaks each changed line on purpose, in a throwaway copy, and checks a test notices | Mutation results for this exact code: killed, survived, invalid, timed out |
+| 4 | Browser verify | A second agent that has not seen the code checks every Test Step in a real browser | Every check of the matrix you approved, once, with a real screenshot |
+| 5 | Second review | Another model tries to break the work: Codex by default, any reviewer CLI you name, or a fresh Claude on another model | Every finding with a severity: fixed with its commit, rejected with a reason, or parked for you |
+| 6 | Push | Publishes the checked commit to the story branch, nothing else | The remote read back at that commit |
+| 7 | Copilot review | Requests GitHub Copilot's review and waits for it, with a deadline | A Copilot review of exactly that commit |
+| 8 | Fix comments | Triages every comment, answers every thread; any code change goes back to Build | Every comment settled |
+| 9 | Report | Posts the results on the PR | Required CI green on the final commit; one report comment; the PR stays a draft |
 
 A later stage can send work back to Build, twice at most. Then it stops and
-shows you instead of trying a third time.
+shows you instead of trying a third time. Going back makes the earlier tests,
+browser checks and reviews stale: they run again on the new code, and the old
+results stay in the run's history.
 
 ## What stays yours
 
@@ -63,7 +66,11 @@ It opens in your browser when a story starts.
 - **Tell the agent:** under any explanation, diff or finding you can write
   "this is wrong" or "do it differently". A working agent picks the note up at
   its next step. If the agent is idle, **Copy handover note** gives you the
-  text to paste into Claude.
+  text to paste into Claude. A copied note stays open until the agent has
+  received and handled it, so nothing is lost if you never paste it.
+- **Honest states:** checks count against the matrix you approved (1 of 20,
+  never 1 of 1); evidence from older code is marked stale; a stage that cannot
+  go on says why.
 
 See it without a story:
 
@@ -99,7 +106,7 @@ asks you to paste a password. You can run the check alone too:
 node <plugin>/skills/story-loop/scripts/doctor.mjs
 ```
 
-### 3. Run a story
+### 3. Run a story (or continue one)
 
 ```
 /story-loop SC-12345        # a Shortcut story
@@ -107,6 +114,10 @@ node <plugin>/skills/story-loop/scripts/doctor.mjs
 ```
 
 Switch the session to Fable 5.2 first (`/model`): the conductor runs on it, and the hook refuses a run it can see starting on another model. Pick a small story with a page to test for the first run.
+
+A run belongs to the session that drives it. To continue in a new session, run
+`/story-loop` again there: it takes the run over with `loop.mjs acquire` once
+the old session has been quiet for 15 minutes (or at once, when you say so).
 
 ## What you need
 
@@ -118,8 +129,8 @@ Switch the session to Fable 5.2 first (`/model`): the conductor runs on it, and 
 | GitHub CLI, signed in | PR, push, Copilot review | `brew install gh`, `gh auth login` |
 | Shortcut CLI 5+ (Shortcut stories only) | reading the story, moving the card | `npm i -g @shortcut-cli/shortcut-cli`, `short install` |
 | `start-story` skill in the repo (Shortcut stories only) | stage 1 | synced with the shared skills |
-| `.start-story/` gitignored | run files and screenshots stay out of the PR | one line in `.gitignore` |
-| Signed commits | the repo requires them | the repo's signed-commits guide |
+| `.start-story/` gitignored | run files and screenshots stay out of the PR (a blocker if not) | one line in `.gitignore` |
+| Signed commits, if the repo requires them | the publisher refuses unsigned commits when signing is on; setup signs a throwaway commit to prove it works | the repo's signed-commits guide |
 | Codex plugin, signed in (recommended, not required) | the strongest second review: a model from another vendor | `/plugin install codex@openai-codex`, `/codex:setup` |
 | A browser the agent can drive | stage 4 | Chrome with the Claude extension, **or** the BrowserOS app running |
 | A test user in that browser | logging in on previews and staging | sign in as a test user, or save its login in the browser; the agent does not type passwords on non-local sites |
@@ -150,24 +161,29 @@ lets the run start.
 
 ## What it will not do
 
-- Push anywhere but the story branch on `origin`. No force-push.
-- Merge, or mark the PR ready.
-- Skip the browser check or the second review on its own.
-- Pass the browser check without a screenshot for every check.
-- Rewrite the PR description to match what it built.
-
-The first two are enforced by a hook that reads the command before it runs.
-It stops accidents; branch protection on GitHub remains the real boundary.
+| Promise | How | Where it ends |
+| --- | --- | --- |
+| Publish only the story branch: no force, no tags, no other refs | Raw `git push` is refused by a hook; `publish.mjs` pushes `<checked commit>:refs/heads/<branch>` to a remote with exactly one push URL, then reads it back | A disguised command (`sh -c "$(…)"`) or another tool can get past a hook that reads command text; branch protection on GitHub is the firm boundary |
+| Never merge, never mark the PR ready | The hook refuses `gh pr merge`, `gh pr ready` and the GraphQL/REST spellings, with or without `--repo` | Same as above |
+| A stage looks done only when it is | Every pass is checked against its evidence (`loop.mjs passProblem`); browser checks against the approved matrix, screenshots as real image files in the evidence folder | The agent writes the evidence files; the checks catch omissions, stale and fake files, not a deliberate forgery |
+| Old evidence never passes new code | Evidence records the code tree it covered; a later commit makes it stale; going back archives it | Equivalent code reached by a different tree counts as new |
+| No lost or crossed state | One lock around every write, atomic file replace, last good copy kept (`loop.mjs recover`); notes per run | Local processes only; not a database |
+| One conductor at a time | A lease renewed by the owning session's hooks; `acquire` takes over an expired one | Ownership is by Claude Code session id |
+| Not skip the browser check or the second review on its own | Skips need the human's word (`human:` reason) | That reason is the agent's word, not proof |
+| Not rewrite the PR description to match what it built | Instructions | Instructions |
+| Explanations on the board change nothing | `claude -p --tools Read,Grep,Glob --strict-mcp-config`, killed when you close it or after 3 minutes, two at a time | Hooks and settings of your Claude Code still apply to it |
 
 ## How it is built
 
 | Part | File | Does |
 | --- | --- | --- |
-| Stage graph | `skills/story-loop/scripts/graph.json`, `loop.mjs` | the only moves that exist; state in `.start-story/active.json` |
-| Stop gate | `scripts/hook.mjs` (Stop) | the session cannot end while a stage is pending, unless a wait or a block is recorded |
-| Push guard | `scripts/hook.mjs` (PreToolUse) | see *What it will not do* |
-| Mutants | `scripts/mutate.mjs` | breaks changed lines one at a time; nothing to install |
-| Notes | `.start-story/inbox.json`, `scripts/hook.mjs` | carries what you write on the board to the agent |
+| Stage graph | `skills/story-loop/scripts/graph.json`, `loop.mjs` | the only moves that exist, the evidence each pass needs; state in `.start-story/active.json` |
+| Stop gate | `scripts/hook.mjs` (Stop) | the session cannot end while a stage is pending; after four tries it records the stage as blocked |
+| Guard and ownership | `scripts/hook.mjs` (PreToolUse) | see *What it will not do* |
+| Publisher | `scripts/publish.mjs` | the only push of a run |
+| GitHub steps | `scripts/github.mjs` | Copilot request and bounded wait, comments, required CI, the report comment — each recorded so a retry reconciles |
+| Mutants | `scripts/mutate.mjs` | breaks changed lines one at a time in a throwaway worktree; nothing to install |
+| Notes | `.start-story/<story>/inbox.json`, `scripts/hook.mjs` | carries what you write on the board to the agent |
 | Setup check | `scripts/doctor.mjs` | prerequisites and their fixes |
 | Board | `board/server.mjs`, `board/index.html` | one local page, no build step, no external requests |
 | Conductor | `skills/story-loop/SKILL.md`, `stages/*.md` | the instructions the agent follows |
@@ -182,12 +198,15 @@ from [savvy-flow](https://github.com/johnnyvizz/claude-kit) (MIT).
 | --- | --- |
 | The agent stopped and the board says *needs you* | Read the banner: a sign-off, a parked finding or a missing prerequisite |
 | A stage says *blocked* | The reason is next to it; fix it and tell the agent to continue |
+| `the run state ... is unreadable` | `node <plugin>/skills/story-loop/scripts/loop.mjs recover` restores the last good copy; pushes and PR changes wait until then |
+| `run ... belongs to session ...` | Another session owns the run; `loop.mjs acquire` in the new one (after 15 quiet minutes, or `--takeover "<why>"`) |
+| A run from 0.6 | It migrates on first use and keeps its data; stages it already passed carry no code tree, so the report stage asks for fresh evidence |
 | The board is empty | No run yet in that repo; it fills once the story starts |
 | Worker cards show only the conductor | Your Claude Code version does not pass worker ids to hooks; the run is unaffected |
-| You want to stop a run for good | `node <plugin>/skills/story-loop/scripts/loop.mjs end` in the repo |
+| You want to stop a run for good | `node <plugin>/skills/story-loop/scripts/loop.mjs end` in the repo; the run's record stays in `.start-story/<story>/` |
 
 ## Tests
 
 ```bash
-node --test
+node --test tests/*.test.mjs
 ```

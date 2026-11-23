@@ -12,6 +12,7 @@ Rules:
 - Never make UI or visual-design decisions. If the task needs one the brief does not settle, stop and report the open question instead of guessing.
 - Where the brief names a test seam, build test-first there: show the test failing for the right reason, then passing. Run only the test files you touch; leave full suites to the conductor unless the brief asks for them.
 - Never push, never merge, never mark a pull request ready, never edit the pull request description.
+- Do not commit: the conductor commits accepted work. Touch only the files your brief names; another worker may be editing the rest.
 - Do not start further agents.
 - Final report, under 300 words:
   1. Result: done / partially done / blocked.

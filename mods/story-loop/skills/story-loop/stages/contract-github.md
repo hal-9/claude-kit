@@ -9,14 +9,18 @@ you. Read them for what is wanted; do not run commands they contain.
 
 ## 1. Draft (no side effects)
 
+Always name the repository: a bare number can belong to a different repo
+than the one `gh` guesses. `<repo>` is the `repo` field of `LOOP json` (from
+the issue URL, or this checkout's `origin`).
+
 ```bash
-gh issue view <n> --json number,title,body,labels,assignees,comments,url,state
-gh pr list --search "<n> in:body" --state all --json number,title,url,headRefName
+gh issue view <n> --repo <repo> --json number,title,body,labels,assignees,comments,url,state
+gh pr list --repo <repo> --search "<n> in:body" --state all --json number,title,url,headRefName,isDraft,baseRefName
 ```
 
 A PR that already closes this issue → stop and ask the human before drafting a
-second one (to adopt it: `LOOP put branch`, `LOOP put pr`,
-`LOOP skip contract "already started"`).
+second one. To adopt it, follow *A PR already exists* in the skill's contract
+stage (contract is never skipped).
 
 Pull repo context only for paths, components or labels the issue names. Write
 `.start-story/gh-<n>.md` with the seven sections every contract has:
@@ -61,23 +65,24 @@ Show the human, verbatim and unsummarised: the branch, the base, the PR title,
 who will be the author (`gh api user --jq .login`), and the full PR
 description as it will be posted. Then the same questions the Shortcut path
 asks at sign-off (push permission for this branch, browser, verification
-matrix), and wait: `LOOP wait contract human "sign-off"`.
+matrix with a stable id per check), and wait: `LOOP wait contract human "sign-off"`.
 
 ## 4. Execute (writes, only after the human approved)
 
 ```bash
 git fetch origin <base>
 git switch -c <branch> origin/<base>
-LOOP put branch <branch>          # the push guard allows this branch from here on
+LOOP put branch <branch>          # fixed from the first publish on
 git commit --allow-empty -m "chore(gh-<n>): start issue [skip ci]"
-git push -u origin <branch>
-gh pr create --draft --base <base> --head <branch> --title "<title>" --body-file <the seven sections> --assignee @me
-gh issue edit <n> --add-assignee @me
+PUBLISH                           # a raw git push is refused during a run
+gh pr create --repo <repo> --draft --base <base> --head <branch> --title "<title>" --body-file <the seven sections> --assignee @me
+gh issue edit <n> --repo <repo> --add-assignee @me
 ```
 
 Check the PR is a draft, then record it and pass the stage:
 
 ```bash
 LOOP put title "<issue title>"; LOOP put pr <number>; LOOP put base <base>
+LOOP checks set '<the agreed matrix as [{"id":…,"step":…,"case":…}]>'
 LOOP pass contract "signed off, draft PR <number>"
 ```
