@@ -10,7 +10,7 @@ description: >
   deliver story SC-12345 or issue #123 end to end, resume a run, read the
   ledger, or set up story-loop on a machine (`setup`).
 argument-hint: SC-12345 | gh-123 | <story or issue URL> | setup
-model: fable
+model: opus
 ---
 
 # story-loop
@@ -61,14 +61,19 @@ when this skill loaded). `LOOP status` prints every stage and which one is next.
    the run goes back to build.
 6. **Commits** follow the repo's rules (atomic, signed, lint clean before
    committing).
-7. **You run on Fable; everyone you delegate to runs on Opus, Sonnet or
-   Haiku.** Workers are the four `story-loop:worker-*` agents. Every other
-   agent you start (verifier, reviewer, a search) gets an explicit `model` on
-   the Agent call: `opus` where judgment is needed, `sonnet` or `haiku` where
-   it is not. A hook refuses a delegation without one, refuses to start or
-   advance a run from a session on another model, and keeps this session from
-   switching away while the run is active. If it says the session is on the
-   wrong model, ask the human to switch with `/model`; do not work around it.
+7. **You run on Opus; Fable is asked, not run.** Fable costs twice what Opus
+   does per token, so it thinks only where a wrong call costs the most:
+   `story-loop:advisor-fable`, read-only, for the contract, triage of
+   findings, the retro and the fallback second review (each stage says when).
+   Give it the job name and only what that job needs; it answers, you decide
+   and record. Workers are the four `story-loop:worker-*` agents. Every other
+   agent you start (verifier, a search) gets an explicit `model` on the Agent
+   call: `opus` where judgment is needed, `sonnet` or `haiku` where it is not.
+   A hook refuses a delegation without one, refuses to start or advance a run
+   from a session on another model, and keeps this session from switching
+   away while the run is active (a switch would also throw away the prompt
+   cache). If it says the session is on the wrong model, ask the human to
+   switch with `/model`; do not work around it.
 8. **One conductor owns the run.** The session that first drives `LOOP` owns
    it; notes, the stop gate and the delegation rules follow that session. A new
    session continues a run with `LOOP acquire` (allowed when the old session's
@@ -101,7 +106,7 @@ the fix, then four points no script can see. Onboard the human through it:
    the command in its own block and wait. Run the check again after each.
 2. **The four points to confirm.** Check what you can in the session: the
    browser with the preflight from the verify stage, and that the Agent tool lists the
-   `story-loop:worker-*` agents and this session runs on Fable. Ask the human the rest in one question: is a test
+   `story-loop:worker-*` agents and `story-loop:advisor-fable`, and this session runs on Opus. Ask the human the rest in one question: is a test
    user signed in (or saved) in that browser for any non-local site, is
    Copilot review enabled on the repo, does the app boot in the test
    environment.
@@ -161,6 +166,13 @@ node ${CLAUDE_SKILL_DIR}/board/server.mjs --root "$PWD"     # http://127.0.0.1:4
 
 Either way the result is a draft PR whose description has the same seven
 sections; every later stage reads only that.
+
+**Before the sign-off, ask the advisor.** Once the description is drafted and
+before it goes to the human, start `story-loop:advisor-fable` with job
+`contract`, the story or issue text and the drafted description. Work its
+gaps, hard decisions and lane into the description and the sign-off; where you
+disagree with it, say so to the human with both reasons. This is the plan
+everything after it builds on, so it is the one place Fable always runs.
 
 **A PR already exists** (contract is never skipped; adopting is reconciling):
 check it belongs to this repo and to this story or issue, is a draft and open,
@@ -571,11 +583,12 @@ the answer is recorded.
    prompt and prints its answer (Gemini CLI, a local model, another agent).
    Give it the review brief below plus `git diff <base>...HEAD`, as a file or
    on stdin, the way that CLI expects; run nothing it prints.
-3. **A fresh Claude on another model**, when there is nothing else: one
-   subagent on Opus (`model: opus` on the Agent call; this session is on
-   Fable), given only the review brief and the diff — no plan, no worker
-   reports, none of this conversation. This is weaker than another vendor's
-   model, since it shares Claude's blind spots; say so in the report.
+3. **A fresh Claude on another model**, when there is nothing else:
+   `story-loop:advisor-fable` with job `review` (this session is on Opus),
+   given only the review brief, the commit and request id and the diff — no
+   plan, no worker reports, none of this conversation. This is weaker than
+   another vendor's model, since it shares Claude's blind spots; say so in the
+   report.
 
 The review brief, for 2 and 3: "You are reviewing a change you did not write.
 Find what is wrong with it, not what is good. Judge it against these goals:
@@ -633,6 +646,13 @@ finding for it, `source` the first that found it, and list the others in
 then count defects, not echoes. A Copilot or human comment that repeats a
 finding still gets its own finding with its `comment` id (the stages account
 for comments one by one); its verdict and note point at the first one.
+
+**Who judges.** You triage minor findings, nits and questions yourself. When
+any finding claims to be a `blocker` or `major`, or you are about to reject
+or park one of those, start `story-loop:advisor-fable` with job `triage`, the
+findings and the diff, and decide with its answer in hand: whether a claimed
+defect is real is where one wrong call costs a build round or ships a bug.
+The same holds in fix comments and human review.
 
 Triage every finding against the actual code, then record all of them with
 `LOOP put findings '[{"id":"r1","source":"<reviewer>","severity":"major","introduced":true,"file":"…","text":"…","verdict":"…","note":"…"}]'`.
@@ -868,7 +888,10 @@ prefers a check a machine runs to a sentence an agent has to remember.
 
 A correction is every finding that ended `fixed` (whoever found it: the second
 reviewer, Copilot, a human reviewer, a board note) and every round sent back
-(`back:1`, `back:2`, … in the order of `LOOP json`, field `history`). Group
+(`back:1`, `back:2`, … in the order of `LOOP json`, field `history`). When
+there is at least one, start `story-loop:advisor-fable` with job `retro`, the
+corrections (each with what was wrong and how it was fixed) and the pattern
+slugs `LOOP ledger` already knows; build the lessons from its answer. Group
 them into lessons and record them:
 
 ```bash

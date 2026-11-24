@@ -32,7 +32,8 @@
     "heavy": { "diff_lines": 1500 }
   },
   "models": {
-    "conductor": "fable",
-    "delegates": ["opus", "sonnet", "haiku"]
+    "conductor": "opus",
+    "delegates": ["opus", "sonnet", "haiku"],
+    "advisor": "fable"
   }
 }

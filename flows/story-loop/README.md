@@ -161,7 +161,7 @@ node <plugin>/skills/story-loop/scripts/doctor.mjs
 /story-loop gh-123          # a GitHub issue (or paste its URL)
 ```
 
-Switch the session to Fable 5.2 first (`/model`): the conductor runs on it, and the hook refuses a run it can see starting on another model. Pick a small story with a page to test for the first run.
+Switch the session to Opus 5.5 first (`/model`): the conductor runs on it, and the hook refuses a run it can see starting on another model. Pick a small story with a page to test for the first run.
 
 A run belongs to the session that drives it. To continue in a new session, run
 `/story-loop` again there: it takes the run over with `loop.mjs acquire` once
@@ -229,16 +229,18 @@ asks you to start one.
 
 | Role | Model | Why |
 | --- | --- | --- |
-| Conductor: plans, keeps the overview, checks every result | Fable 5.2 | judgment is the scarce part |
-| Hard or delicate tasks, the browser verifier, the fallback reviewer | Opus (max effort for the hardest) | needs care, not the overview |
+| Conductor: runs the loop, keeps the overview, checks every result | Opus 5.5 | care and overview, at half Fable's price per token |
+| Advisor, read-only: the contract, triage of serious findings, the retro, the fallback reviewer | Fable 5.2 | the few calls where one wrong judgment costs a build round or ships a bug |
+| Hard or delicate tasks, the browser verifier | Opus (max effort for the hardest) | needs care, not the overview |
 | Standard feature work | Sonnet | clear requirements, few files |
 | Mechanical edits, running suites | Haiku | nothing to decide |
 
 This is enforced, not suggested. The four workers carry their model in their
 definition. A hook refuses any other delegation that does not name Opus,
 Sonnet or Haiku, refuses to start a run from a session on another model, and
-blocks switching the session away from Fable while a run is active. The models
-are two lines in `skills/story-loop/scripts/graph.json`.
+blocks switching the session away from Opus while a run is active (a switch
+would also drop the prompt cache). The models are three lines in
+`skills/story-loop/scripts/graph.json`.
 
 One limit: Claude Code tells hooks the session's model only at session start
 and on a switch. If it reports neither, the check cannot see the model and

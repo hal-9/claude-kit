@@ -75,7 +75,7 @@ export const CHECKS = [
 
 // What no script can see; the conductor checks the first two in the session and asks the human the rest.
 export const CONFIRM = [
-  ['The session runs on Fable', 'The conductor keeps the overview on Fable and delegates to Opus, Sonnet and Haiku workers. Switch with /model before starting; the hook refuses a run from another model when it can see it.'],
+  ['The session runs on Opus', 'The conductor keeps the overview on Opus, delegates to Opus, Sonnet and Haiku workers, and asks a read-only Fable advisor at the contract, triage and retro. Switch with /model before starting; the hook refuses a run from another model when it can see it.'],
   ['A browser the agent can drive', 'Chrome with the Claude extension connected to this session, or the BrowserOS app running. The skill tests this itself (browser preflight).'],
   ['A test user the browser can be', 'For a local test server the verifier creates users itself. For a preview or staging site, sign in as a test user in that browser first, or save the test user\'s login in the browser: the agent does not type passwords on sites that are not local.'],
   ['Copilot code review on the repo', 'Stage 7 requests a review from Copilot. Check once that Copilot review is enabled for the repository (a past PR with a Copilot review is proof).'],

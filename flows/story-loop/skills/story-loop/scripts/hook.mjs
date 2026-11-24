@@ -18,7 +18,8 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const MAX_STOP_BLOCKS = 3
 const HEARTBEAT_MS = 60_000
 // The plugin's four worker profiles and the model each one is defined with.
-export const PROFILES = { 'worker-haiku': 'haiku', 'worker-sonnet': 'sonnet', 'worker-opus': 'opus', 'worker-opus-max': 'opus' }
+// The advisor is the one agent on the advisor model: read-only judgment for the contract, triage and the retro.
+export const PROFILES = { 'worker-haiku': 'haiku', 'worker-sonnet': 'sonnet', 'worker-opus': 'opus', 'worker-opus-max': 'opus', 'advisor-fable': 'fable' }
 // Commands with an effect outside this machine. With an unreadable state they are refused.
 const OUTWARD = /\bgit\b[^\n;&|]*\spush\b|\bgh\b[^\n;&|]*\b(pr|api|issue|release)\b/
 // Running a script that writes the run, not reading or grepping one (`grep x github.mjs` is no write).
@@ -57,6 +58,7 @@ function claimTitle(root, agentType) {
 // graph.json names the conductor's model and the models work may be delegated to.
 
 const MODELS = GRAPH.models
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1)
 const isConductorModel = model => new RegExp(MODELS.conductor, 'i').test(model)
 const modelFile = sessionId => join(tmpdir(), `story-loop-model-${String(sessionId).replace(/[^\w-]/g, '')}`)
 const knownModel = sessionId => { try { return readFileSync(modelFile(sessionId), 'utf8').trim() } catch { return null } }
@@ -65,13 +67,13 @@ const knownModel = sessionId => { try { return readFileSync(modelFile(sessionId)
 // workers carry their model in their definition; anything else must name one.
 export function checkAgent({ subagent_type: type = 'general-purpose', model } = {}) {
   const allowed = MODELS.delegates
-  if (model && !allowed.includes(model))
-    return `story-loop: work is delegated to ${allowed.join(', ')} only, not "${model}". The conductor keeps ${MODELS.conductor} for itself.`
   const profile = PROFILES[type.replace(/^story-loop:/, '')]
+  if (model && !allowed.includes(model) && model !== profile)
+    return `story-loop: work is delegated to ${allowed.join(', ')} only, not "${model}". ${cap(MODELS.advisor)} judgment goes through story-loop:advisor-${MODELS.advisor}.`
   if (profile) return model && model !== profile
     ? `story-loop: ${type} is defined on ${profile}; drop model: ${model}, or pick the worker defined on ${model}.`
     : null
-  if (/fable/i.test(type)) return `story-loop: "${type}" runs on the conductor's model; use a story-loop worker instead.`
+  if (new RegExp(MODELS.advisor, 'i').test(type)) return `story-loop: "${type}" is not story-loop's ${MODELS.advisor} agent; use story-loop:advisor-${MODELS.advisor} for judgment, a story-loop worker for work.`
   if (!model) return `story-loop: "${type}" would inherit the conductor's model. Use a story-loop worker (${Object.keys(PROFILES).join(', ')}) or add model: ${allowed.join(' | ')}.`
   return null
 }

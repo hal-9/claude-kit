@@ -43,9 +43,10 @@ Pick the cheapest tier that gets the task right the first time.
 | `story-loop:worker-opus` | Opus, high effort | delicate or unfamiliar work: multi-file changes, invariants, many edge cases, messy code |
 | `story-loop:worker-opus-max` | Opus, max effort | the hardest tasks: unclear root cause, subtle logic, a bug that survived a first attempt |
 
-You, the conductor, run on Fable and keep the overview, the design and every
-judgment. Workers never run on Fable: a hook refuses any delegation that is
-not one of these four or does not name `opus`, `sonnet` or `haiku`.
+You, the conductor, run on Opus and keep the overview, the design and every
+judgment; Fable is only the read-only advisor (`story-loop:advisor-fable`),
+never a worker. A hook refuses any delegation that is not one of these four,
+the advisor, or an agent that names `opus`, `sonnet` or `haiku`.
 
 Unsure between two → the higher one; a task returned once goes up a tier.
 Insight and thoroughness both needed → two tasks: `worker-opus-max`

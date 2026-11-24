@@ -170,7 +170,12 @@ test('work is delegated to the four worker profiles or a named delegate model, n
   assert.match(checkAgent({ subagent_type: 'general-purpose' }), /would inherit/)
   assert.match(checkAgent({}), /would inherit/)
   assert.match(checkAgent({ subagent_type: 'story-loop:worker-opus', model: 'fable' }), /opus, sonnet, haiku only/)
-  assert.match(checkAgent({ subagent_type: 'savvy-flow:savvy-fable' }), /conductor's model/)
+  assert.match(checkAgent({ subagent_type: 'general-purpose', model: 'fable' }), /opus, sonnet, haiku only.*advisor-fable/)
+  assert.match(checkAgent({ subagent_type: 'savvy-flow:savvy-fable' }), /use story-loop:advisor-fable/)
+  // Fable thinks only as the read-only advisor.
+  assert.equal(checkAgent({ subagent_type: 'story-loop:advisor-fable' }), null)
+  assert.equal(checkAgent({ subagent_type: 'advisor-fable', model: 'fable' }), null)
+  assert.match(checkAgent({ subagent_type: 'story-loop:advisor-fable', model: 'opus' }), /defined on fable/)
 })
 
 test('the conductor stays on its model: runs start on it and cannot switch away', () => {
@@ -180,16 +185,16 @@ test('the conductor stays on its model: runs start on it and cannot switch away'
   const sid = `t${process.pid}`
 
   assert.equal(as(`${sid}-unknown`, init).status, 0)
-  as(`${sid}-opus`, { hook_event_name: 'SessionStart', model: 'claude-opus-5-5' })
-  assert.match(as(`${sid}-opus`, init).stderr, /conductor runs on fable/)
-  as(`${sid}-opus`, { hook_event_name: 'PostModelSwitch', to_model: 'claude-fable-5-2' })
-  assert.equal(as(`${sid}-opus`, init).status, 0)
+  as(`${sid}-fable`, { hook_event_name: 'SessionStart', model: 'claude-fable-5-2' })
+  assert.match(as(`${sid}-fable`, init).stderr, /conductor runs on opus/)
+  as(`${sid}-fable`, { hook_event_name: 'PostModelSwitch', to_model: 'claude-opus-5-5' })
+  assert.equal(as(`${sid}-fable`, init).status, 0)
 
   mkdirSync(join(root, '.start-story'))
   save(root, { ...newRun('sc-1'), branch: B, ...owned(sid) })
-  assert.equal(as(sid, { hook_event_name: 'PreModelSwitch', to_model: 'claude-opus-5-5' }).status, 2)
-  assert.equal(as(sid, { hook_event_name: 'PreModelSwitch', to_model: 'claude-fable-5-2' }).status, 0)
-  assert.equal(as('someone-else', { hook_event_name: 'PreModelSwitch', to_model: 'claude-opus-5-5' }).status, 0)
+  assert.equal(as(sid, { hook_event_name: 'PreModelSwitch', to_model: 'claude-fable-5-2' }).status, 2)
+  assert.equal(as(sid, { hook_event_name: 'PreModelSwitch', to_model: 'claude-opus-5-5' }).status, 0)
+  assert.equal(as('someone-else', { hook_event_name: 'PreModelSwitch', to_model: 'claude-fable-5-2' }).status, 0)
   const spawn = model => as(sid, { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'general-purpose', description: 'verify', model } })
   assert.equal(spawn(undefined).status, 2)
   assert.equal(spawn('opus').status, 0)
