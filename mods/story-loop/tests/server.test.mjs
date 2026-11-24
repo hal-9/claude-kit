@@ -6,9 +6,9 @@ import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { repo, withRun, PNG } from './helpers.mjs'
+import { repo, withRun, PNG, ENV, META } from './helpers.mjs'
 import { mkdirSync } from 'node:fs'
-import { resultsFile, evidenceDir, load, addNote } from '../skills/story-loop/scripts/loop.mjs'
+import { resultsFile, evidenceDir, load, update, addNote, verifyRequest, verifyProblem } from '../skills/story-loop/scripts/loop.mjs'
 
 const SERVER = fileURLToPath(new URL('../skills/story-loop/board/server.mjs', import.meta.url))
 const bin = mkdtempSync(join(tmpdir(), 'sl-fakeclaude-'))
@@ -74,6 +74,73 @@ async function board(t, dir, offset) {
   await wait(600)
   return { server, base: `http://127.0.0.1:${port}` }
 }
+
+// What a page that opens now is told: the first message of a fresh stream.
+async function snapshot(base) {
+  const events = await stream(base)
+  assert.ok(await events.until(/"type":"snapshot".*\n\n/s))
+  events.close()
+  return JSON.parse(events.state.text.match(/data: (.*)/)[1])
+}
+
+// ---- regressions from the 0.8.0 review -------------------------------------------
+
+test('R6: the board counts a check only when the gate accepts it, and celebrates only on the gate\'s yes', async t => {
+  const { dir, git, commit } = repo()
+  const checks = [{ id: 'a', step: 1 }, { id: 'b', step: 2, case: 'mobile' }]
+  let run = withRun(dir, { checks, checks_revision: 1, environment: ENV, browser: 'chrome' })
+  const request = verifyRequest(run, git('rev-parse', 'HEAD^{tree}'), git('rev-parse', 'HEAD'))
+  run = update(dir, r => { for (const id of ['contract', 'build', 'test_review']) r.stages[id].status = 'passed'; Object.assign(r.stages.verify, { status: 'blocked', reason: 'the verifier lost its browser', request }); return r })
+  mkdirSync(evidenceDir(dir, run), { recursive: true })
+  for (const id of ['a', 'b']) writeFileSync(join(evidenceDir(dir, run), `${id}.png`), PNG)
+  const row = (id, more = {}) => ({ ...checks.find(c => c.id === id), verdict: 'pass', evidence: [`${id}.png`], ...META, ...more })
+  const write = (id, rows) => writeFileSync(resultsFile(dir, run), JSON.stringify({ request: id, results: rows }))
+  const { base } = await board(t, dir, 3)
+  const seen = async () => { const s = await snapshot(base); return { tested: s.tested, rows: s.results.map(r => [r.id, r.verdict, r.accepted, r.rejected]) } }
+
+  // the reviewed reproduction: verify is blocked, results.json holds passes written for an old request
+  write('an-earlier-request', [row('a'), row('b')])
+  assert.match(verifyProblem(dir, load(dir)), /belong to another attempt/, 'the gate refuses them')
+  let view = await seen()
+  assert.deepEqual([view.tested.accepted, view.tested.total, view.tested.reported, view.tested.current, view.tested.all_accepted], [0, 2, 2, false, false])
+  assert.deepEqual([view.tested.request, view.tested.results_request], [request.id, 'an-earlier-request'])
+  for (const [id, verdict, accepted, rejected] of view.rows) {
+    assert.deepEqual([verdict, accepted], ['pass', false], `${id} is still shown as what the verifier reported`)
+    assert.match(rejected, /carry request "an-earlier-request", not this attempt's/, 'with the reason it does not count')
+  }
+  // a duplicate, an invented id and a row that is no object, under the current request
+  write(request.id, [row('a'), row('a'), row('a', { id: 'invented' }), 'nonsense'])
+  view = await seen()
+  assert.deepEqual([view.tested.accepted, view.tested.all_accepted], [0, false])
+  assert.match(view.rows[0][3], /reported twice/)
+  assert.match(view.rows[2][3], /not in the approved check list/)
+  assert.deepEqual(view.rows[3].slice(1, 3), ['blocked', false])
+  // current results, one without its screenshot and one without the URL it ended on
+  write(request.id, [row('a', { evidence: ['gone.png'] }), row('b', { url: undefined })])
+  view = await seen()
+  assert.deepEqual([view.tested.accepted, view.tested.current, view.tested.all_accepted], [0, true, false])
+  assert.match(view.rows[0][3], /screenshot gone\.png does not exist/)
+  assert.match(view.rows[1][3], /does not record the URL/)
+  // one of two accepted is one of two, never "all"
+  write(request.id, [row('a'), row('b', { verdict: 'fail' })])
+  view = await seen()
+  assert.deepEqual([view.tested.accepted, view.tested.all_accepted, view.rows[1].slice(1)], [1, false, ['fail', false, null]])
+  // fresh, complete, current: accepted, and the page may celebrate
+  write(request.id, [row('a'), row('b')])
+  assert.equal(verifyProblem(dir, load(dir)), null)
+  view = await seen()
+  assert.deepEqual(view.tested, { request: request.id, results_request: request.id, current: true, accepted: 2, total: 2, reported: 2, problem: null, all_accepted: true, provenance: 'local-checkout' })
+  assert.deepEqual(view.rows, [['a', 'pass', true, null], ['b', 'pass', true, null]])
+  // the same files after a new commit: the evidence is for older code
+  update(dir, r => { Object.assign(r.stages.verify, { status: 'passed', tree: request.tree }); return r })
+  assert.equal((await seen()).tested.all_accepted, true)
+  commit()
+  assert.equal((await seen()).tested.all_accepted, false, 'stale evidence never celebrates')
+  // the page takes the count and the celebration from these fields, not from the verdicts
+  const page = await (await fetch(`${base}/`)).text()
+  assert.match(page, /const allPass = !stale && !extras && verify\.status !== 'running' && Boolean\(tested\?\.all_accepted\)/)
+  assert.match(page, /r\.verdict === 'pass' && !r\.accepted \? \{ \.\.\.r, verdict: 'rejected' \}/)
+})
 
 test('H22: a renamed file, and a name with spaces, are real paths the diff endpoint answers for', async t => {
   const { dir, git } = repo()

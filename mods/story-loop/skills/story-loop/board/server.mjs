@@ -10,7 +10,8 @@ import { execFileSync, spawn } from 'node:child_process'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, paths, newRun, move, save, emit, readInbox, addNote, deliver, readResults, resultsFile, evidenceDir, runDir, staleStages, headCommit } from '../scripts/loop.mjs'
+import { GRAPH, paths, newRun, move, save, emit, readInbox, addNote, deliver, readResults, resultsFile, evidenceDir, runDir, staleStages, headCommit, verifyReport } from '../scripts/loop.mjs'
+import { record } from '../scripts/diag.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const argv = process.argv.slice(2)
@@ -57,8 +58,17 @@ function changes(run) {
   } catch { return [] }
 }
 const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', ...(DEMO ? { '.svg': 'image/svg+xml' } : {}) }
-// The verifier's checks, with each screenshot as a URL this server can serve.
-function results(run) {
+// What the gate makes of the results on disk, asked of the gate itself (verifyReport),
+// never worked out a second time here: a row is "accepted" only when it counts as
+// passing evidence for the request that is current now.
+function gate(run) {
+  if (!run || DEMO) return null
+  try { return verifyReport(ROOT, run) } catch (error) { return { problem: error.message, rows: [], accepted: 0, total: 0, request: null, results_request: null, provenance: null } }
+}
+// The verifier's checks, with each screenshot as a URL this server can serve, and
+// for every row whether it is accepted and, if not, why. A rejected row stays on
+// the page with its reason; it only never counts.
+function results(run, report = gate(run)) {
   const list = run && readResults(ROOT, run)
   if (!Array.isArray(list)) return []
   // The file is the verifier's, written while we read: a row of the wrong shape is shown as invalid, not trusted and not dropped.
@@ -69,15 +79,40 @@ function results(run) {
       : row.evidence !== undefined && !(Array.isArray(row.evidence) && row.evidence.every(f => typeof f === 'string')) ? 'evidence must be a list of screenshot file names'
       : null
     const evidence = problem ? [] : (row.evidence ?? []).map(file => `/evidence/${encodeURIComponent(basename(file))}`)
-    return problem
-      ? { ...row, id: typeof row.id === 'string' ? row.id : `invalid-${i + 1}`, step: Number.isInteger(row.step) ? row.step : 0, verdict: 'blocked', note: `Invalid result in results.json: ${problem}.`, evidence }
-      : { ...row, evidence }
+    if (problem) return { ...row, id: typeof row.id === 'string' ? row.id : `invalid-${i + 1}`, step: Number.isInteger(row.step) ? row.step : 0, verdict: 'blocked', note: `Invalid result in results.json: ${problem}.`, evidence, accepted: false, rejected: problem }
+    // The demo has no gate to ask; there a pass is taken as the script wrote it.
+    const judged = report ? report.rows[i] : { accepted: row.verdict === 'pass', reason: null }
+    return { ...row, evidence, accepted: Boolean(judged?.accepted), rejected: row.verdict === 'pass' && !judged?.accepted ? judged?.reason ?? 'not accepted' : null }
   })
+}
+// The numbers and the one decision the "Tested in the browser" section shows.
+// all_accepted is the gate's own answer: every approved check accepted for the
+// current request, and the evidence not stale for the code that is HEAD now.
+function tested(run, report = gate(run), rows = results(run, report)) {
+  if (!run) return null
+  const checks = Array.isArray(run.checks) ? run.checks : null
+  const stale = (DEMO ? (run.stale ?? []) : staleStages(ROOT, run)).includes('verify')
+  const approved = new Set((checks ?? []).map(c => c.id))
+  const accepted = report ? report.accepted : rows.filter(r => r.accepted && approved.has(r.id)).length
+  const all = report ? report.problem === null : Boolean(checks?.length) && accepted === checks.length && rows.every(r => approved.has(r.id))
+  return {
+    request: report?.request ?? null, results_request: report?.results_request ?? null,
+    // Results written for another request are old evidence: shown, never counted.
+    current: report ? report.results_request !== null && report.results_request === report.request : true,
+    accepted, total: checks?.length ?? 0, reported: rows.length, problem: report?.problem ?? null,
+    all_accepted: all && !stale, provenance: report?.provenance ?? run.stages?.verify?.provenance ?? null,
+  }
 }
 // The run as the page sees it: the state file plus which evidence is stale for the code now.
 function view(run) {
   if (!run) return run
   return { ...run, stale: DEMO ? (run.stale ?? []) : staleStages(ROOT, run), head: DEMO ? 'demo' : headCommit(ROOT) }
+}
+// Rows and summary from one reading of the gate, so they can never disagree.
+function testedView(run) {
+  const report = gate(run)
+  const rows = results(run, report)
+  return { results: rows, tested: tested(run, report, rows) }
 }
 const inboxPath = run => run ? join(runDir(ROOT, run), 'inbox.json') : ''
 const diffOf = (run, file) => DEMO ? DEMO_DIFF : git('diff', '--no-renames', mergeBase(run), '--', file)
@@ -102,8 +137,9 @@ tick(() => {
   seen.events = events.length
   const run = readJson(P.active)
   const inboxStamp = stamp(inboxPath(run))
-  const resultsStamp = run ? stamp(resultsFile(ROOT, run)) : ''
-  if (resultsStamp !== seen.results) { seen.results = resultsStamp; broadcast({ type: 'results', results: results(run) }) }
+  // Whether a result counts depends on the run too (a new request, a changed check list), not on the file alone.
+  const resultsStamp = run ? `${stamp(resultsFile(ROOT, run))}|${runStamp}` : ''
+  if (resultsStamp !== seen.results) { seen.results = resultsStamp; broadcast({ type: 'results', ...testedView(run) }) }
   if (inboxStamp !== seen.inbox) { seen.inbox = inboxStamp; broadcast({ type: 'inbox', inbox: inbox(run) }) }
 }, 700)
 tick(() => {
@@ -114,7 +150,7 @@ tick(() => {
   if (key !== seen.changes) { seen.changes = key; broadcast({ type: 'changes', changes: list }) }
   // A new commit can make passed evidence stale without the state file changing.
   const head = DEMO ? '' : headCommit(ROOT)
-  if (head !== seen.head) { seen.head = head; broadcast({ type: 'run', run: view(run) }) }
+  if (head !== seen.head) { seen.head = head; broadcast({ type: 'run', run: view(run) }); broadcast({ type: 'results', ...testedView(run) }) }
 }, 5000)
 
 function body(req) {
@@ -152,20 +188,26 @@ async function explain(req, res) {
     cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, STORY_LOOP_EXPLAINER: '1' },
   })
   explaining++
-  let wrote = false, stderr = '', finished = false
+  const began = Date.now()
+  record(ROOT, 'board.explain', { outcome: 'started', question, file })
+  let wrote = false, stderr = '', finished = false, ended = null
   const stop = () => { try { process.kill(-child.pid, 'SIGKILL') } catch {} }
-  const timer = setTimeout(() => { if (!res.writableEnded) res.write(`\n\n_Stopped: no answer within ${EXPLAIN_SECONDS} seconds._`); stop() }, EXPLAIN_SECONDS * 1000)
-  const done = () => { if (finished) return; finished = true; explaining--; clearTimeout(timer) }
+  const timer = setTimeout(() => { ended = 'timeout'; if (!res.writableEnded) res.write(`\n\n_Stopped: no answer within ${EXPLAIN_SECONDS} seconds._`); stop() }, EXPLAIN_SECONDS * 1000)
+  const done = (outcome, reason) => {
+    if (finished) return
+    finished = true; explaining--; clearTimeout(timer)
+    record(ROOT, 'board.explain', { outcome: ended ?? outcome, reason, question, file, elapsed_ms: Date.now() - began })
+  }
   child.stdout.on('data', chunk => { wrote = true; res.write(chunk) })
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2000) })
-  child.on('error', error => { done(); if (!res.writableEnded) res.end(`_Could not start claude: ${error.message}_`) })
+  child.on('error', error => { done('failed', error.message); if (!res.writableEnded) res.end(`_Could not start claude: ${error.message}_`) })
   child.on('close', code => {
-    done()
+    done(code === 0 ? 'ok' : 'failed', code === 0 ? undefined : `exit ${code ?? 'killed'}`)
     if (res.writableEnded) return
     res.end(code === 0 || wrote ? '' : `_The explanation failed (exit ${code ?? 'killed'})${stderr ? `: ${stderr.trim().split('\n').at(-1)}` : ''}_`)
   })
   // The page closed or cancelled: the work stops with it.
-  res.on('close', () => { if (!finished) stop() })
+  res.on('close', () => { if (!finished) { ended ??= 'cancelled'; stop() } })
 }
 
 const isJson = req => /^application\/json/.test(req.headers['content-type'] ?? '')
@@ -206,7 +248,7 @@ createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' })
       const run = readJson(P.active)
       const events = readEvents()
-      send(res, { type: 'snapshot', seq: events.length, run: view(run), graph: GRAPH, events: events.slice(-300), changes: changes(run), inbox: inbox(run), results: results(run), demo: DEMO })
+      send(res, { type: 'snapshot', seq: events.length, run: view(run), graph: GRAPH, events: events.slice(-300), changes: changes(run), inbox: inbox(run), ...testedView(run), demo: DEMO })
       if (!clients.size) seen.events = events.length
       clients.add(res)
       return req.on('close', () => clients.delete(res))
@@ -235,9 +277,16 @@ createServer(async (req, res) => {
     }
     text(res, 404, 'not found')
   } catch (error) {
+    record(ROOT, 'board.error', { outcome: 'request failed', reason: error.message, path: String(req.url ?? '').split('?')[0] })
     text(res, 500, error.message)
   }
+}).on('error', error => {
+  // A board that cannot start (the port is taken) says so here and in the run's diagnostics, then gives up.
+  record(ROOT, 'board.error', { outcome: 'could not start', reason: error.message, port: PORT })
+  console.error(`story-loop board: could not listen on 127.0.0.1:${PORT} (${error.message}); pass --port <n>`)
+  process.exit(1)
 }).listen(PORT, '127.0.0.1', () => {
+  record(ROOT, 'board.start', { port: PORT })
   console.log(`story-loop board: http://127.0.0.1:${PORT}${DEMO ? ' (demo)' : ` · ${ROOT}`}`)
   if (!DEMO && !existsSync(P.active)) console.log('no active run yet; the board fills in once loop.mjs init has run')
 })

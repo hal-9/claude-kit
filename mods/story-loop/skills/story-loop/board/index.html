@@ -378,7 +378,7 @@ button.quiet:hover { color: var(--ink); background: none; text-decoration: under
 .t-cases { display: grid; gap: 8px; }
 .t-case { display: grid; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--sunk); }
 .t-case[data-verdict="fail"] { background: var(--bad-soft); }
-.t-case[data-verdict="blocked"] { background: var(--warn-soft); }
+.t-case[data-verdict="blocked"], .t-case[data-verdict="rejected"] { background: var(--warn-soft); }
 .t-case-head { display: flex; align-items: baseline; gap: 10px; font-size: 13px; }
 .t-case-head b { font-weight: 600; }
 .t-note { font-size: 13.5px; color: var(--ink-2); }
@@ -1480,22 +1480,26 @@ function findingForm(f) {
 }
 
 // ---------- tested in the browser ----------
-const RANK = { fail: 0, blocked: 1, missing: 2, pass: 3 }
+// "rejected" is a result that says pass and that the gate does not accept (written for
+// an earlier request, missing its screenshot or its URL, …): shown with the reason, never counted.
+const RANK = { fail: 0, blocked: 1, rejected: 1, missing: 2, pass: 3 }
 const BROWSER = { chrome: 'Chrome', browseros: 'BrowserOS', playwright: 'Playwright' }
 const TT = { open: null, draft: '', sent: {} }
 const SHOTS = []
 let testedKey = ''
-const overall = cases => cases.some(c => c.verdict === 'fail') ? 'fail' : cases.some(c => c.verdict === 'blocked') ? 'blocked' : cases.some(c => c.verdict === 'missing') ? 'missing' : cases.every(c => c.verdict === 'pass') ? 'pass' : 'blocked'
-const VCHIP = { pass: 'ok', fail: 'bad', blocked: 'warn', missing: '' }
-const VWORD = { missing: 'not reported' }
+const overall = cases => cases.some(c => c.verdict === 'fail') ? 'fail' : cases.some(c => c.verdict === 'blocked') ? 'blocked' : cases.some(c => c.verdict === 'rejected') ? 'rejected' : cases.some(c => c.verdict === 'missing') ? 'missing' : cases.every(c => c.verdict === 'pass') ? 'pass' : 'blocked'
+const VCHIP = { pass: 'ok', fail: 'bad', blocked: 'warn', rejected: 'warn', missing: '' }
+const VWORD = { missing: 'not reported', rejected: 'not accepted' }
 const evidenceName = src => { try { return decodeURIComponent(src.split('/').pop()) } catch { return src } }
 function renderTested(force) {
-  const results = (S.results ?? []).filter(r => r && typeof r === 'object')
+  // The server asks the gate about every row; a pass the gate does not accept is not a pass here either.
+  const results = (S.results ?? []).filter(r => r && typeof r === 'object').map(r => r.verdict === 'pass' && !r.accepted ? { ...r, verdict: 'rejected' } : r)
   const verify = S.run?.stages?.verify ?? { status: 'pending' }
+  const tested = S.tested ?? null
   // The approved check list is the denominator; null means a run from before check lists.
   const checks = Array.isArray(S.run?.checks) ? S.run.checks : null
   const stale = (S.run?.stale ?? []).includes('verify') && verify.status !== 'running'
-  const key = JSON.stringify([results, checks, stale, verify.status, verify.reason, verify.waiting_on, S.run?.browser, TT.open, TT.sent])
+  const key = JSON.stringify([results, tested, checks, stale, verify.status, verify.reason, verify.waiting_on, S.run?.browser, TT.open, TT.sent])
   if (key === testedKey && !force) return
   testedKey = key
   const draft = $('tested').querySelector('.f-form textarea')
@@ -1514,15 +1518,21 @@ function renderTested(force) {
   const browser = S.run?.browser ?? results.find(r => r.browser)?.browser
   const extras = rows.filter(r => r.extra).length
   const passed = rows.filter(r => !r.extra && r.verdict === 'pass').length
+  const refused = rows.filter(r => r.verdict === 'rejected').length
   const tail = [browser && (BROWSER[browser] ?? browser), shots && `${shots} screenshot${shots === 1 ? '' : 's'}`, stale && 'stale']
   $('tested-count').textContent = checks?.length
-    ? [`${reported.size} of ${checks.length} checks reported`, `${passed} passed`, extras && `${extras} not in the approved list`, ...tail].filter(Boolean).join(' · ')
+    ? [`${reported.size} of ${checks.length} checks reported`, `${passed} accepted`, refused && `${refused} not accepted`, extras && `${extras} not in the approved list`, ...tail].filter(Boolean).join(' · ')
     : !checks && groups.length ? [`${groups.filter(g => g.verdict === 'pass').length} of ${groups.length} Test Steps passed`, ...tail].filter(Boolean).join(' · ')
     : ''
 
   const out = []
   const reason = verify.reason ? `: ${verify.reason}` : '.'
   if (stale) out.push(el('p', { class: 't-state' }, el('span', { class: 'chip warn' }, ico('pause'), 'stale'), el('b', { text: 'These checks covered older code. ' }), 'They count again once the verifier has run on the current commit.'))
+  // Results on disk that were written for another request are an earlier attempt's: kept in view, never counted.
+  if (tested && !tested.current && results.length) out.push(el('p', { class: 't-state' }, el('span', { class: 'chip warn' }, ico('pause'), 'old results'),
+    el('b', { text: 'These results are not for the current verification request. ' }), tested.request ? 'They were written for an earlier attempt or check list and count for nothing; the verifier has to report again.' : 'Verification has not been started on this attempt, so nothing here counts yet.'))
+  if (tested?.provenance === 'unlinked') out.push(el('p', { class: 't-state' }, el('span', { class: 'chip warn' }, ico('pause'), 'not exact code'),
+    el('b', { text: 'The tested environment is not tied to this code. ' }), 'The checks show what that environment did, not necessarily what this commit does.'))
   if (checks && !checks.length) out.push(el('p', { class: 't-state' }, el('b', { text: 'No user journey in this story. ' }), 'The approved check list is empty, so there is nothing to try in a browser.'))
   else if (verify.status === 'skipped') out.push(el('p', { class: 't-state' }, el('b', { text: 'Browser verification was skipped' }), reason))
   else if (verify.status === 'blocked') out.push(el('p', { class: 't-state' }, el('b', { text: 'Browser verification is blocked' }), `: ${blockSummary(verify.reason) || 'no reason given'}`))
@@ -1535,8 +1545,9 @@ function renderTested(force) {
       el('div', { class: 't-head' }, el('span', { class: 't-num', text: `Step ${g.step}` }), el('span', { class: 't-text', text }), el('span', { class: `chip ${VCHIP[g.verdict]}` }, ico(VERDICT_ICON[g.verdict] ?? 'open'), VWORD[g.verdict] ?? g.verdict)),
       el('div', { class: 't-cases' }, g.cases.map(c => caseRow(g.step, c, c.key, verify.status === 'running')))))
   }
-  // All green only when every approved check passed, nothing extra, and the evidence is for this code.
-  const allPass = !stale && !extras && verify.status !== 'running' && (checks ? checks.length > 0 && passed === checks.length : groups.length > 0 && groups.every(g => g.verdict === 'pass'))
+  // All green, and the celebration, only on the gate's own answer: every approved check
+  // accepted for the current request, nothing extra, and the evidence for this code.
+  const allPass = !stale && !extras && verify.status !== 'running' && Boolean(tested?.all_accepted)
   const v = $('tested-char')
   if (allPass && !S.allPass && S.booted) setChar(v, 'done')
   else if (verify.status === 'running') setChar(v, 'working', 'read')
@@ -1557,10 +1568,11 @@ function caseRow(step, c, key, running) {
     img.addEventListener('error', () => img.replaceWith(el('span', { class: 'thumb-missing', text: `${evidenceName(src)} did not load` })))
     return el('button', { type: 'button', class: 'thumb', dataset: { shot: String(index) }, 'aria-label': `Open ${SHOTS[index].alt}`, onclick: () => openLightbox(index) }, img)
   })
-  const flagged = c.verdict === 'fail' || c.verdict === 'blocked'
+  const flagged = c.verdict === 'fail' || c.verdict === 'blocked' || c.verdict === 'rejected'
   return el('div', { class: 't-case', dataset: c.extra ? { verdict: c.verdict, extra: '' } : { verdict: c.verdict } },
-    c.case || flagged || c.extra ? el('div', { class: 't-case-head' }, c.case ? el('b', { text: c.case }) : null, el('span', { class: `chip ${VCHIP[c.verdict] ?? ''}` }, ico(VERDICT_ICON[c.verdict] ?? 'open'), c.verdict),
+    c.case || flagged || c.extra ? el('div', { class: 't-case-head' }, c.case ? el('b', { text: c.case }) : null, el('span', { class: `chip ${VCHIP[c.verdict] ?? ''}` }, ico(c.verdict === 'rejected' ? 'pause' : VERDICT_ICON[c.verdict] ?? 'open'), VWORD[c.verdict] ?? c.verdict),
       c.extra ? el('span', { class: 'chip warn', title: c.id ? `Check id "${c.id}"` : 'No check id' }, 'not in the approved list') : null) : null,
+    c.verdict === 'rejected' ? el('p', { class: 't-note', text: `Reported as a pass, not accepted: ${c.rejected}.` }) : null,
     c.note ? el('p', { class: 't-note', text: c.note }) : null,
     c.url ? el('span', { class: 't-url', text: c.url }) : null,
     thumbs.length ? el('div', { class: 'thumbs' }, thumbs) : null,
@@ -2028,7 +2040,7 @@ function renderRun() {
 }
 // A new story (or a reset events file) must not show anything of the old one as current.
 function resetRunScoped() {
-  S.backs = []; S.workers = new Map(); S.feed = []; S.inbox = []; S.results = []; S.idle = false
+  S.backs = []; S.workers = new Map(); S.feed = []; S.inbox = []; S.results = []; S.tested = null; S.idle = false
   S.finished = false; S.allPass = undefined
   attentionKey = ''; findingsKey = ''; testedKey = ''; historyKey = ''
   Object.assign(FF, { open: null, kind: null, draft: '', sent: {} })
@@ -2049,7 +2061,7 @@ function onSnapshot(m) {
   S.seq = m.seq ?? 0
   S.graph = m.graph; S.run = m.run; S.changes = m.changes ?? []; S.demo = !!m.demo
   S.backs = []; S.workers = new Map(); S.feed = []; attentionKey = ''; findingsKey = ''
-  S.inbox = m.inbox ?? []; S.idle = false; S.results = m.results ?? []; testedKey = ''
+  S.inbox = m.inbox ?? []; S.idle = false; S.results = m.results ?? []; S.tested = m.tested ?? null; testedKey = ''
   if (graphChanged) buildStages()
   for (const ev of m.events ?? []) applyEvent(ev, false)
   S.finished = false; S.allPass = undefined
@@ -2089,7 +2101,7 @@ function connect() {
     }
     else if (m.type === 'changes') { S.changes = m.changes ?? []; renderChanges() }
     else if (m.type === 'inbox') { S.inbox = m.inbox ?? []; renderNotes() }
-    else if (m.type === 'results') { S.results = m.results ?? []; renderTested() }
+    else if (m.type === 'results') { S.results = m.results ?? []; S.tested = m.tested ?? null; renderTested() }
   }
 }
 let graphWidth = 0
