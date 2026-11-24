@@ -10,7 +10,7 @@ https://github.com/user-attachments/assets/41477f16-1996-42d5-bb66-3ca51721f699
 /story-loop gh-123          # a GitHub issue (or paste its URL)
 ```
 
-> Status: 0.10, experimental, in a supervised pilot. What has been checked, and
+> Status: 0.11, experimental, in a supervised pilot. What has been checked, and
 > how, are three different things:
 >
 > - **Fixture tests** (`node --test tests/*.test.mjs`): the parts on their own,
