@@ -1,6 +1,6 @@
 {
   "name": "story-loop",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "One Shortcut story or GitHub issue, ticket to merged PR: contract with a lane, workers on fixed models, a quality gate and mutants on the diff, blind browser verify, a second-model review, a Copilot review, the human review round and a retro, behind a stage graph, a push guard, a live board and a ledger across runs.",
   "author": { "name": "hal-9" },
   "license": "MIT",
