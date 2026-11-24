@@ -21,7 +21,8 @@ const HEARTBEAT_MS = 60_000
 export const PROFILES = { 'worker-haiku': 'haiku', 'worker-sonnet': 'sonnet', 'worker-opus': 'opus', 'worker-opus-max': 'opus' }
 // Commands with an effect outside this machine. With an unreadable state they are refused.
 const OUTWARD = /\bgit\b[^\n;&|]*\spush\b|\bgh\b[^\n;&|]*\b(pr|api|issue|release)\b/
-const LOOP_WRITE = /loop\.mjs["']?\s+(start|pass|skip|block|wait|back|put|checks|note|end|review|mutant|quality)\b|publish\.mjs|github\.mjs|mutate\.mjs|quality\.mjs/
+// Running a script that writes the run, not reading or grepping one (`grep x github.mjs` is no write).
+const LOOP_WRITE = /loop\.mjs["']?\s+(start|pass|skip|block|wait|back|put|checks|note|end|review|mutant|quality)\b|\bnode\b[^\n;&|]*\b(publish|github|mutate|quality)\.mjs/
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
 // Returns the reason a shell command is refused during a run, or null.
@@ -234,6 +235,8 @@ function main() {
             ? { ...r, owner: { session: input.session_id, since: new Date().toISOString(), heartbeat: Date.now() } } : undefined)
         } catch { /* claimed on the next call */ }
       }
+      // Only the run's own session shows on its board; another session in this checkout is not the conductor.
+      if (!ours) return
       if (tool === 'Agent' || tool === 'Task') {
         appendFileSync(join(root, '.start-story', 'spawns.jsonl'),
           JSON.stringify({ agent: ti.subagent_type ?? 'general-purpose', title: ti.description }) + '\n')

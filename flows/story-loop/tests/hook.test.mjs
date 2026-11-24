@@ -76,6 +76,19 @@ test('the conductor may go idle while its workers run, and is held again once th
   assert.match(fire(stale, { hook_event_name: 'Stop' }).stdout, /"decision":"block"/)
 })
 
+test('another session in the checkout neither shows on the board nor is refused for reading the scripts', () => {
+  const root = runDirWith(owned('owner'))
+  const events = () => { try { return readFileSync(join(root, '.start-story', 'events.jsonl'), 'utf8') } catch { return '' } }
+  fire(root, { ...bash('grep -n reply scripts/github.mjs scripts/quality.mjs'), session_id: 'visitor' })
+  assert.doesNotMatch(events(), /grep -n reply/)
+  assert.equal(fire(root, { ...bash('sed -n 1,20p scripts/mutate.mjs'), session_id: 'visitor' }).status, 0)
+  const write = fire(root, { ...bash('node scripts/github.mjs reply --map r.json'), session_id: 'visitor' })
+  assert.equal(write.status, 2)
+  assert.match(write.stderr, /acquire first/)
+  fire(root, { hook_event_name: 'SubagentStart', agent_id: 'w9', session_id: 'visitor' })
+  assert.equal(load(root).live_workers, undefined, 'a visitor\'s helpers are not the run\'s workers')
+})
+
 test('a fourth unproductive Stop gives way and records the stage as blocked', () => {
   const root = runDirWith(owned())
   for (let i = 0; i < 3; i++) assert.match(fire(root, { hook_event_name: 'Stop' }).stdout, /"decision":"block"/)
