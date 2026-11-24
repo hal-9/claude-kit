@@ -3,7 +3,7 @@
 **One command takes a Shortcut story or a GitHub issue to a reviewed PR and through its review. You sign the plan
 at the start, watch it on a live board, and merge; the run closes by writing down what it learned.**
 
-https://github.com/user-attachments/assets/41477f16-1996-42d5-bb66-3ca51721f699
+https://github.com/user-attachments/assets/2b6288d5-f57a-4f69-ad09-538e4a70fcab
 
 ```
 /story-loop SC-12345        # a Shortcut story
