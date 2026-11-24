@@ -47,10 +47,11 @@ when this skill loaded). `LOOP status` prints every stage and which one is next.
    `LOOP wait <stage> background "<what>"` and end the turn, then
    `LOOP start <stage>` again when it wakes you. Never hold the turn with a
    sleep loop, a `until … do sleep` or a check for files going quiet.
-3. **Publish only through `PUBLISH`. Never merge. Never mark the PR ready.** A
-   hook refuses every raw `git push`, every merge and `gh pr ready`; do not look
-   for a way around it. `PUBLISH` pushes the current commit to the story branch
-   on the recorded remote and nothing else.
+3. **Publish only through `PUBLISH`. Never merge.** A hook refuses every raw
+   `git push`, every merge and every raw `gh pr ready`; do not look for a way
+   around it. `PUBLISH` pushes the current commit to the story branch on the
+   recorded remote and nothing else. The PR leaves draft once, through
+   `GH ready` right after the push stage (see there).
 4. **The PR description is the contract.** *How (Proposed)* is the plan, each
    `- [ ]` under *Test Steps* is one goal. If the build has to differ, stop and
    tell the human what differs. Never rewrite the description to match the code.
@@ -635,8 +636,16 @@ that already landed instead of repeating it. `LOOP pass push "<sha>"`.
 ## 8 · copilot_review
 
 ```bash
+GH ready                  # the PR leaves draft at the published commit, recorded
 GH copilot-request        # asks Copilot to review the published commit, records it
 ```
+
+`GH ready` first: required CI that skips drafts (this repo's CircleCI suite)
+starts on the published commit while Copilot reviews, so it is green or red by
+the report stage. It acts only when the PR head is the published commit, once
+per commit, and leaves a PR a human already marked ready as it is. Every later
+publish (a fix after Copilot or a reviewer) keeps it ready; you never set a PR
+back to draft and never merge.
 
 Then `LOOP wait copilot_review copilot "requested at <sha>"`.
 
@@ -677,11 +686,20 @@ repository spelled out).
   Tests, mutants, the browser checks and both reviews then run on the new
   code; their old evidence is stale and the script will not pass
   fix_comments or report on it.
-- Reply on every thread in one or two sentences — what was changed (once it
-  is pushed), or why not — and say the reply is from the agent:
-  `gh api -X POST repos/<owner>/<repo>/pulls/<pr>/comments/<id>/replies -f body='…'`.
-  Copilot does not read replies; they are for the human reviewer. The script
-  does not check the replies; they are yours to do.
+- Reply on every thread in one or two sentences — what was changed, or why
+  not — with one map for all of them, after the fixes are pushed:
+
+  ```bash
+  GH reply --map <file>   # {"<comment id>": {"disposition": "fixed|rejected|deferred", "message": "…", "commit": "<sha, for fixed>"}}
+  ```
+
+  It checks the whole map before posting anything (a known disposition, a
+  message, a fix's commit already in the published head), marks each reply as
+  the agent's, posts each reply once even when run again, and resolves only
+  the `fixed` threads: a rejected or deferred one stays open for the reviewer.
+  `rejected` and `parked` findings answer as `rejected` and `deferred`.
+  Copilot does not read replies; they are for the human reviewer. Never post
+  or resolve a thread with a raw `gh api` call.
 
 When every Copilot finding is `rejected` or `parked` with a note (nothing to
 change), or there are none → `LOOP pass fix_comments "<n rejected · n parked>"`.
@@ -770,13 +788,12 @@ fetched Copilot comment has a finding and no finding is open, HEAD is
 published, required CI passed on it, and the report for it is confirmed on
 the PR with its comment id. Then
 tell the human, in this order: what needs their
-decision (parked findings), what was verified, and that the PR is a draft
-waiting for their review — they mark it ready, another developer approves, a
-human merges. Point them at the board's *Understand this change* column.
+decision (parked findings), what was verified, and that the PR is ready for
+review — another developer approves, a human merges. Point them at the board's *Understand this change* column.
 
 ## 11 · human_review
 
-The run is not over at the draft PR: what a human reviewer catches is the
+The run is not over at the report: what a human reviewer catches is the
 most valuable signal this loop gets, and it is handled with the same care as
 a model's review. `LOOP start human_review`, then:
 
@@ -785,7 +802,7 @@ GH human-comments      # what human reviewers wrote (top-level threads and revie
 ```
 
 It records the ids it fetched and the PR's state in the same call. Nothing
-yet, PR still open → `LOOP wait human_review human "draft PR <n> awaits your review"`
+yet, PR still open → `LOOP wait human_review human "PR <n> awaits review"`
 and end the turn; the push guard keeps holding meanwhile. When the human says
 there are comments, or that it is merged, start the stage and fetch again.
 
@@ -796,11 +813,12 @@ there are comments, or that it is merged, start the stage and fetch again.
   to the human of this session first.
 - Any code change → `LOOP back human_review build "<what>"`: every stage after
   build runs again on the new code, the report is posted again, and the run
-  comes back here. Reply on each thread once the fix is pushed, as in fix
-  comments, and say the reply is from the agent.
+  comes back here. Reply on each thread once the fix is pushed with
+  `GH reply --map <file>`, as in fix comments; a review body's id
+  (`review-<id>`) is answered with one PR comment, since it has no thread.
 - `LOOP pass human_review "<merged|closed · n fixed · n rejected · n parked>"`:
   refused until every fetched comment has a settled finding and the last
-  fetch saw the PR merged or closed. You never merge and never mark it ready.
+  fetch saw the PR merged or closed. You never merge.
 - The human may take the review over themselves:
   `LOOP skip human_review "human: <their words>"`.
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // GitHub steps of a run, each recorded in the run state so a resumed session
 // reconciles instead of repeating them.
+//   node github.mjs ready                        mark the PR ready for review at the published commit
 //   node github.mjs copilot-request              ask Copilot to review the published commit
 //   node github.mjs copilot-wait [--minutes 30]  wait for that review (bounded); exit 3 on timeout
 //   node github.mjs comments                     the Copilot review's top-level comments, one JSON per line
@@ -8,6 +9,7 @@
 //   node github.mjs ci                           required checks on the PR head; exit 0 only when they pass
 // Every call names the run's repository; gh's default repo and GH_REPO play no part.
 //   node github.mjs report --body-file <f> [--attach <img>]...   create or update the one report comment
+//   node github.mjs reply --map <file>           answer review threads (fixed / rejected / deferred), resolve the fixed ones
 // Each step notes the run and attempt it started in and is checked against that
 // before its result is recorded: a step that finishes after the run was ended,
 // replaced or sent back to build changes nothing (exit 4, result kept under stale/).
@@ -95,6 +97,27 @@ function observe(root, run, pr) {
   const what = seen.state === 'MERGED' ? 'was merged' : seen.state === 'CLOSED' ? 'was closed' : 'was marked ready for review'
   emit(root, { kind: 'note', text: `PR ${run.pr} ${what} by a human (${changed}); story-loop leaves it as it is` })
   console.error(`github: PR ${run.pr} ${what} (${changed}). That is the human's decision; nothing is undone. Tell them what this run still had open.`)
+}
+
+// After the push: the PR leaves draft, so required CI that skips drafts runs on the
+// published commit. Only for exactly that commit, on the run's own PR, once; raw
+// `gh pr ready` stays refused by the hook. Merging remains the human's alone.
+export function ready(root) {
+  const run = load(root)
+  const ctx = begin(root, run, 'ready', 'copilot_review')
+  const head = run.pushed?.state === 'confirmed' ? run.pushed.sha : fail('publish first; the PR is marked ready for the published commit')
+  const prSha = prHead(root, run)
+  prSha === head || fail(`PR ${run.pr} is at ${prSha.slice(0, 7)}, not the published ${head.slice(0, 7)}; publish again before marking it ready`)
+  if (run.ready?.sha === head) return `already marked ready at ${head.slice(0, 7)}`
+  const pr = JSON.parse(gh(['pr', 'view', String(run.pr), '-R', repoOf(run), '--json', 'state,isDraft'], root))
+  pr.state === 'OPEN' || fail(`PR ${run.pr} is ${pr.state.toLowerCase()}; nothing to mark ready`)
+  if (pr.isDraft) gh(['pr', 'ready', String(run.pr), '-R', repoOf(run)], root)
+  const at = new Date().toISOString()
+  // Recorded as seen, so the next look at the PR does not report it as a human's doing.
+  opUpdate(root, ctx, r => ({ ...r, ready: { sha: head, at, by: pr.isDraft ? 'story-loop' : 'already ready' }, pr_state: { state: 'OPEN', draft: false, at, previous: r.pr_state ?? null } }),
+    { ready: head }, r => r.pushed?.sha === head ? null : 'the published commit changed while the PR was marked ready')
+  emit(root, { kind: 'note', text: `PR ${run.pr} ${pr.isDraft ? 'marked ready for review' : 'was already ready'} at ${head.slice(0, 7)}` })
+  return pr.isDraft ? `marked ready at ${head.slice(0, 7)}` : `already ready at ${head.slice(0, 7)}`
 }
 
 export function copilotRequest(root) {
@@ -204,6 +227,71 @@ export function humanComments(root) {
   const fetched = { ids: list.map(c => c.id), pr_state: pr.state, at: new Date().toISOString() }
   opUpdate(root, ctx, r => ({ ...r, human_review: { ...r.human_review, comments: fetched } }), fetched)
   return { state: pr.state, draft: pr.isDraft ?? null, list }
+}
+
+// Answers review threads from one map, so "every comment settled" is something a
+// script did and recorded, not a promise in prose. The map is JSON:
+//   { "<comment id>": { "disposition": "fixed" | "rejected" | "deferred", "message": "...", "commit": "<sha>" } }
+// A fix names a commit already in the published head. Only a fixed thread is
+// resolved; a rejected or deferred one stays open for the reviewer to answer.
+// A review body ("review-<id>") has no thread: its answer is one PR comment.
+// Every reply carries a marker with its comment id, so a retry never posts twice.
+export const DISPOSITIONS = ['fixed', 'rejected', 'deferred']
+const replyMark = id => `<!-- story-loop-reply ${id} -->`
+
+export function checkReplies(map, { pushed, contains }) {
+  const entries = Object.entries(map ?? {})
+  entries.length || fail('the reply map is empty')
+  return entries.map(([id, r]) => {
+    /^(\d+|review-\d+)$/.test(id) || fail(`"${id}" is not a review comment id (a number, or review-<id> for a review body)`)
+    DISPOSITIONS.includes(r?.disposition) || fail(`comment ${id}: disposition must be one of ${DISPOSITIONS.join(', ')}`)
+    String(r.message ?? '').trim() || fail(`comment ${id}: say what was done or why not (message)`)
+    if (r.disposition === 'fixed') {
+      r.commit || fail(`comment ${id}: a fix names its commit`)
+      pushed || fail('publish first; a fix is answered once it is pushed')
+      contains(r.commit, pushed) || fail(`comment ${id}: ${String(r.commit).slice(0, 7)} is not in the published head ${pushed.slice(0, 7)}; push it first`)
+    }
+    return { id, disposition: r.disposition, message: String(r.message).trim(), commit: r.commit ?? null }
+  })
+}
+
+export function reply(root, mapFile) {
+  const run = load(root)
+  const stage = run.stages?.human_review?.status === 'running' ? 'human_review' : 'fix_comments'
+  const ctx = begin(root, run, 'reply', stage)
+  const repo = repoOf(run)
+  const contains = (commit, head) => { try { execFileSync('git', ['merge-base', '--is-ancestor', commit, head], { cwd: root, stdio: 'ignore' }); return true } catch { return false } }
+  const list = checkReplies(JSON.parse(readFileSync(mapFile, 'utf8')), { pushed: run.pushed?.state === 'confirmed' ? run.pushed.sha : null, contains })
+  const me = gh(['api', 'user', '--jq', '.login'], root).trim()
+  const ours = c => c.user === me
+  const answered = new Set([
+    ...paged(root, `repos/${repo}/pulls/${run.pr}/comments?per_page=100`, '{user: .user.login, body}'),
+    ...paged(root, `repos/${repo}/issues/${run.pr}/comments?per_page=100`, '{user: .user.login, body}'),
+  ].filter(ours).flatMap(c => [...String(c.body).matchAll(/<!-- story-loop-reply (\S+) -->/g)].map(m => m[1])))
+  const done = {}
+  for (const r of list) {
+    const body = `${r.message}\n\n_${r.disposition}${r.commit ? ` in ${r.commit.slice(0, 7)}` : ''} · reply from the story-loop agent_\n${replyMark(r.id)}`
+    if (!answered.has(r.id)) {
+      if (r.id.startsWith('review-')) gh(['api', '-X', 'POST', `repos/${repo}/issues/${run.pr}/comments`, '-f', `body=${body}`], root)
+      else gh(['api', '-X', 'POST', `repos/${repo}/pulls/${run.pr}/comments/${r.id}/replies`, '-f', `body=${body}`], root)
+    }
+    done[r.id] = { disposition: r.disposition, commit: r.commit, at: new Date().toISOString() }
+  }
+  const fixed = list.filter(r => r.disposition === 'fixed' && !r.id.startsWith('review-')).map(r => Number(r.id))
+  if (fixed.length) {
+    const [owner, name] = repo.split('/')
+    // ponytail: the first 100 threads. A PR with more is past what one story should be; page here if one ever is.
+    const threads = JSON.parse(gh(['api', 'graphql', '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `pr=${run.pr}`, '-f',
+      'query=query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved comments(first:1){nodes{databaseId}}}}}}}'], root))
+      .data.repository.pullRequest.reviewThreads.nodes
+    for (const t of threads) {
+      if (t.isResolved || !fixed.includes(t.comments.nodes[0]?.databaseId)) continue
+      gh(['api', 'graphql', '-F', `id=${t.id}`, '-f', 'query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}'], root)
+    }
+  }
+  opUpdate(root, ctx, r => ({ ...r, replies: { ...r.replies, ...done } }), { replies: done })
+  emit(root, { kind: 'note', text: `answered ${list.length} review thread${list.length === 1 ? '' : 's'} (${DISPOSITIONS.map(d => `${list.filter(r => r.disposition === d).length} ${d}`).join(', ')})` })
+  return done
 }
 
 // The PR's checks as gh lists them; only the ones GitHub labels required, or all.
@@ -332,6 +420,7 @@ async function main([cmd, ...args]) {
   const root = findRoot() ?? fail('no active story-loop run here')
   const opt = name => { const i = args.indexOf(`--${name}`); return i < 0 ? undefined : args[i + 1] }
   switch (cmd) {
+    case 'ready': return console.log(ready(root))
     case 'copilot-request': return console.log(copilotRequest(root))
     case 'copilot-wait': {
       const review = await copilotWait(root, { minutes: Number(opt('minutes') ?? 30), interval: Number(opt('interval') ?? 60) })
@@ -357,7 +446,11 @@ async function main([cmd, ...args]) {
       const attach = args.flatMap((a, i) => a === '--attach' ? [args[i + 1]] : [])
       return console.log(`report comment ${report(root, bodyFile, attach)}`)
     }
-    default: fail('usage: github.mjs copilot-request | copilot-wait [--minutes n] | comments | human-comments | ci | report --body-file <f> [--attach img]...')
+    case 'reply': {
+      const done = reply(root, opt('map') ?? fail('reply needs --map <file>'))
+      return Object.entries(done).forEach(([id, r]) => console.log(`${id}  ${r.disposition}${r.commit ? ` ${r.commit.slice(0, 7)}` : ''}`))
+    }
+    default: fail('usage: github.mjs ready | copilot-request | copilot-wait [--minutes n] | comments | human-comments | ci | report --body-file <f> [--attach img]... | reply --map <file>')
   }
 }
 

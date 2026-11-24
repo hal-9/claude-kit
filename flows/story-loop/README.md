@@ -46,9 +46,9 @@ flowchart LR
 | 5 | Browser verify | A second agent that has not seen the code checks every Test Step in a real browser | Every check of the matrix you approved, once, with a real screenshot |
 | 6 | Second review | Another model tries to break the work, and names what the next change would copy: Codex by default, any reviewer CLI you name, or a fresh Claude on another model | Every finding with a severity: fixed with its commit, rejected with a reason, or parked for you |
 | 7 | Push | Publishes the checked commit to the story branch, nothing else | The remote read back at that commit |
-| 8 | Copilot review | Requests GitHub Copilot's review and waits for it, with a deadline | A Copilot review of exactly that commit |
-| 9 | Fix comments | Triages every comment, answers every thread; any code change goes back to Build | Every comment settled |
-| 10 | Report | Posts the results on the PR, what needs your decision first, with the user flow as a chart and the evidence where you chose to share it | Required CI green on the final commit; one report comment; the PR stays a draft |
+| 8 | Copilot review | Marks the PR ready for review (so CI that skips drafts runs), requests GitHub Copilot's review and waits for it in the background, with a deadline | A Copilot review of exactly that commit |
+| 9 | Fix comments | Triages every comment, answers every thread from one map (fixed, rejected, deferred) and resolves only the fixed ones; any code change goes back to Build | Every comment settled |
+| 10 | Report | Posts the results on the PR, what needs your decision first, with the user flow as a chart and the evidence where you chose to share it | Required CI green on the final commit; one report comment |
 | 11 | Human review | Fetches what human reviewers wrote, triages it like any review, sends real defects back to Build | Every reviewer comment settled, and the PR merged or closed **by a human** |
 | 12 | Retro | Names a lesson for every correction of the run and the check that would catch its kind next time: a lint rule, a type, a test, an API that makes the mistake impossible, and prose only as the last resort | A lesson for every fixed finding and every round sent back; the run's line in the ledger |
 
@@ -62,8 +62,9 @@ results stay in the run's history.
 - **Signing the contract.** Nothing is built before you approve the plan.
 - **Decisions.** Design questions and anything that contradicts the PR
   description are parked for you, never guessed.
-- **Ready for review, approval, merge.** The agent never marks the PR ready
-  and never merges. A hook refuses it.
+- **Approval and merge.** The agent marks the PR ready for review once, right
+  after the push, and never merges. A hook refuses a merge and any other way of
+  marking it ready.
 - **Building the checks.** The retro proposes them; each one is its own story,
   started by you.
 

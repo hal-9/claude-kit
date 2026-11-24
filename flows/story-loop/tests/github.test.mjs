@@ -438,6 +438,71 @@ test('H14: a report that could not be posted stays "attempted" and does not pass
   assert.equal(passProblem(root, load(root), 'report'), null)
 })
 
+test('ready: the PR leaves draft once, at the published commit, and is not reported as a human\'s doing', () => {
+  assert.throws(() => gh.ready(published({ pushed: null })), /publish first/)
+
+  const root = published()
+  rules([view({ headRefOid: 'b'.repeat(40) })])
+  assert.throws(() => gh.ready(root), /not the published aaaaaaa; publish again/)
+  assert.equal(calls().filter(c => /pr ready/.test(c)).length, 0)
+
+  rules([view(), { match: 'pr view 7 -R acme/app --json state,isDraft', stdout: JSON.stringify({ state: 'OPEN', isDraft: true }), times: 1 },
+    { match: '^pr ready 7 -R acme/app$', stdout: '', times: 1 }])
+  assert.match(gh.ready(root), /marked ready at aaaaaaa/)
+  assert.deepEqual([load(root).ready.sha, load(root).ready.by, load(root).pr_state.draft], [SHA, 'story-loop', false])
+  assert.match(gh.ready(root), /already marked ready/)
+  assert.equal(calls().filter(c => /pr ready/.test(c)).length, 1, 'once per commit')
+
+  // A human marked it ready first: left as it is, nothing sent.
+  const human = published()
+  rules([view(), { match: 'json state,isDraft', stdout: JSON.stringify({ state: 'OPEN', isDraft: false }) }])
+  assert.match(gh.ready(human), /already ready/)
+  assert.equal(calls().filter(c => /pr ready/.test(c)).length, 0)
+
+  const closed = published()
+  rules([view(), { match: 'json state,isDraft', stdout: JSON.stringify({ state: 'CLOSED', isDraft: true }) }])
+  assert.throws(() => gh.ready(closed), /is closed; nothing to mark ready/)
+})
+
+test('replies: a bad map posts nothing; a fix must be pushed; only fixed threads resolve; a retry never posts twice', () => {
+  const { dir: root, commit } = repo()
+  const fix = commit('b.txt', 'fixed')
+  const later = commit('c.txt', 'not pushed')
+  withRun(root, { pushed: { state: 'confirmed', sha: fix } })
+  const map = m => { const f = join(root, 'replies.json'); writeFileSync(f, JSON.stringify(m)); return f }
+  rules([])
+  assert.throws(() => gh.reply(root, map({ 11: { disposition: 'maybe', message: 'x' } })), /disposition must be one of/)
+  assert.throws(() => gh.reply(root, map({ 11: { disposition: 'rejected', message: ' ' } })), /say what was done/)
+  assert.throws(() => gh.reply(root, map({ 11: { disposition: 'fixed', message: 'done', commit: later } })), /not in the published head/)
+  assert.throws(() => gh.reply(root, map({ abc: { disposition: 'rejected', message: 'no' } })), /not a review comment id/)
+  assert.equal(calls().length, 0, 'nothing reaches GitHub before the whole map is valid')
+
+  const threads = JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [
+    { id: 'T11', isResolved: false, comments: { nodes: [{ databaseId: 11 }] } },
+    { id: 'T12', isResolved: false, comments: { nodes: [{ databaseId: 12 }] } }] } } } } })
+  const answers = { 11: { disposition: 'fixed', message: 'Guarded the empty shelf.', commit: fix }, 12: { disposition: 'rejected', message: 'Kept: the spec asks for it.' }, 'review-5': { disposition: 'deferred', message: 'Parked for a follow-up story.' } }
+  rules([{ match: '^api user', stdout: 'story-bot\n', times: 9 },
+    { match: 'api --paginate repos/acme/app/pulls/7/comments', stdout: jsonl([{ user: 'ada', body: 'quoting <!-- story-loop-reply 11 -->' }]), times: 1 },
+    { match: 'api --paginate repos/acme/app/issues/7/comments', stdout: '', times: 1 },
+    { match: 'POST repos/acme/app/pulls/7/comments/(11|12)/replies', stdout: '{}', times: 2 },
+    { match: 'POST repos/acme/app/issues/7/comments', stdout: '{}', times: 1 },
+    { match: 'graphql .*query=query', stdout: threads, times: 9 },
+    { match: 'graphql -F id=T11', stdout: '{}', times: 1 }])
+  const done = gh.reply(root, map(answers))
+  assert.deepEqual(Object.keys(done).sort(), ['11', '12', 'review-5'])
+  assert.equal(calls().filter(c => /POST/.test(c)).length, 3, 'a human quoting the marker is not our reply')
+  assert.deepEqual(calls().filter(c => /resolveReviewThread/.test(c)).length, 1, 'only the fixed thread is resolved')
+  assert.equal(load(root).replies[12].disposition, 'rejected')
+
+  // The retry sees our own markers and posts nothing new.
+  rules([{ match: '^api user', stdout: 'story-bot\n', times: 9 },
+    { match: 'api --paginate repos/acme/app/pulls/7/comments', stdout: jsonl([{ user: 'story-bot', body: 'x <!-- story-loop-reply 11 -->' }, { user: 'story-bot', body: 'y <!-- story-loop-reply 12 -->' }]), times: 1 },
+    { match: 'api --paginate repos/acme/app/issues/7/comments', stdout: jsonl([{ user: 'story-bot', body: 'z <!-- story-loop-reply review-5 -->' }]), times: 1 },
+    { match: 'graphql .*query=query', stdout: threads.replace('"isResolved":false', '"isResolved":true'), times: 9 }])
+  gh.reply(root, map(answers))
+  assert.equal(calls().filter(c => /POST|resolveReviewThread/.test(c)).length, 0)
+})
+
 test('human review: what counts are the humans\' top-level threads and review bodies, with the PR state read in the same call', () => {
   const root = published()
   rules([{ match: 'pr view 7 -R acme/app --json state,isDraft', stdout: JSON.stringify({ state: 'MERGED', isDraft: false }) },

@@ -33,7 +33,7 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 export function checkCommand(command) {
   if (/\bgh\b[^\n;&|]*\bpr\s+(merge|ready)\b/.test(command) ||
       /\bgh\s+api\b[^\n;&|]*(\/merge\b|mergePullRequest|markPullRequestReadyForReview|enablePullRequestAutoMerge)/.test(command))
-    return 'story-loop never merges and never marks a PR ready. A human does both on GitHub.'
+    return 'story-loop never merges; a human does that on GitHub. The PR leaves draft only through github.mjs ready, after the push.'
   if (/\bgit\b(?:\s+(?:-[cC]|--git-dir|--work-tree|--namespace|--exec-path|--config-env)(?:\s+|=)\S+|\s+-{1,2}[\w-]+(?:=\S+)?)*\s+push\b/.test(command))
     return `story-loop: pushes go through the publisher, which pushes the checked commit to the story branch only: node "${join(HERE, 'publish.mjs')}"`
   return null
