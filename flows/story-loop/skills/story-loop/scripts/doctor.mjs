@@ -57,6 +57,11 @@ export const CHECKS = [
     const probe = s.run('git', ['commit-tree', '-S', 'HEAD^{tree}', '-m', 'story-loop signing probe'])
     return probe.ok ? ok('a test signature worked') : blocker('signing is on, but signing a test commit failed', `Fix the signing setup (key, agent, pinentry): ${probe.out.trim().split('\n')[0] ?? ''}`)
   }],
+  ['Claude CLI signed in on its own', 'the board\'s Explain this / Why here? / quiz start `claude -p`, which cannot borrow the desktop app\'s session', s => {
+    let state = {}
+    try { state = JSON.parse(s.run('claude', ['auth', 'status']).out) } catch {}
+    return state.loggedIn ? ok(state.authMethod) : warning('`claude auth status` says not logged in', 'In a terminal run: claude auth login   (the board explanations fail with "OAuth session expired" until then; the run itself is unaffected).')
+  }],
   ['A second model for the review', 'second review: a reviewer from another vendor catches what Claude misses in its own work', s => {
     const fallback = 'Without it the second review still runs, by a fresh Claude on another model, which is weaker. '
     if (!s.exists(CODEX)) return warning('the openai-codex plugin is not installed', fallback + 'For Codex: /plugin marketplace add openai/codex-plugin-cc, /plugin install codex@openai-codex, then /codex:setup. Any other reviewer CLI can be named at sign-off.')

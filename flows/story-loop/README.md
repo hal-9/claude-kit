@@ -266,7 +266,7 @@ lets the run start.
 | One conductor at a time | A lease renewed by every hook call of the owning session, its workers' included; `acquire` takes over an expired one; after a takeover the old session's file edits are refused | Ownership is by Claude Code session id. One tool call longer than 15 minutes with nothing else running lets the lease expire. An old session's shell command that changes files is not caught |
 | Not skip the browser check or the second review on its own | Skips need the human's word (`human:` reason) | That reason is the agent's word, not proof |
 | Not rewrite the PR description to match what it built | Instructions | Instructions |
-| Explanations on the board change nothing | `claude -p --tools Read,Grep,Glob --strict-mcp-config`, killed when you close it or after 3 minutes, two at a time | Hooks and settings of your Claude Code still apply to it |
+| Explanations on the board change nothing | `claude -p --tools Read,Grep,Glob --strict-mcp-config`, killed when you close it or after 3 minutes, two at a time | Hooks and settings of your Claude Code still apply to it. It needs the `claude` CLI signed in on its own (`claude auth login`): the desktop app's session does not carry over, and the board says so instead of answering |
 
 ## How it is built
 

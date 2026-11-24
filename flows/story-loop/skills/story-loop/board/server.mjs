@@ -6,7 +6,7 @@
 // Read, Grep and Glob tools exist in it, no MCP servers, bounded in time and count.
 import { createServer } from 'node:http'
 import { readFileSync, writeFileSync, statSync, existsSync, mkdtempSync, mkdirSync } from 'node:fs'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -161,6 +161,21 @@ function body(req) {
   })
 }
 
+// `claude -p` started from here has no login of its own when the CLI was only ever
+// used inside the desktop app; it then prints "OAuth session expired" as if it were
+// the answer. Ask first. A yes is remembered for five minutes, a no never.
+const NOT_SIGNED_IN = 'The explanations run the `claude` CLI, and it is not signed in on its own (the desktop app\'s session does not carry over). In a terminal run `claude auth login`, then ask again.'
+let signedInUntil = 0
+function signedIn() {
+  if (Date.now() < signedInUntil) return Promise.resolve(true)
+  return new Promise(done => execFile('claude', ['auth', 'status'], { timeout: 15_000 }, (_error, stdout) => {
+    let yes = false
+    try { yes = JSON.parse(stdout).loggedIn === true } catch {}
+    if (yes) signedInUntil = Date.now() + 5 * 60_000
+    done(yes)
+  }))
+}
+
 async function explain(req, res) {
   if (!/^application\/json/.test(req.headers['content-type'] ?? '')) return text(res, 415, 'json only')
   const { file, question, text: custom } = await body(req)
@@ -171,6 +186,7 @@ async function explain(req, res) {
   const ask = question === 'custom' ? String(custom ?? '').slice(0, 500) : QUESTIONS[question]
   if (!ask) return text(res, 400, 'unknown question')
   if (explaining >= EXPLAIN_MAX) return text(res, 429, `${EXPLAIN_MAX} explanations are already running; wait for one to finish`)
+  if (!DEMO && !(await signedIn())) return text(res, 503, NOT_SIGNED_IN)
   const head = DEMO ? 'demo' : headCommit(ROOT) ?? ''
   res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-story-loop-head': head })
   if (DEMO) return res.end(question === 'quiz' ? DEMO_QUIZ : DEMO_ANSWER)

@@ -1,7 +1,7 @@
 // The board server with a fake `claude` on PATH: what the explainer may use, and that cancelling stops it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync, rmSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -14,7 +14,9 @@ const SERVER = fileURLToPath(new URL('../skills/story-loop/board/server.mjs', im
 const bin = mkdtempSync(join(tmpdir(), 'sl-fakeclaude-'))
 const ARGS = join(bin, 'args.json')
 const PID = join(bin, 'pid')
+const LOGGED_OUT = join(bin, 'logged-out')
 writeFileSync(join(bin, 'claude'), `#!/usr/bin/env node
+if (process.argv[2] === 'auth') { process.stdout.write(JSON.stringify({ loggedIn: !require('fs').existsSync(${JSON.stringify(LOGGED_OUT)}) })); process.exit(0) }
 require('fs').writeFileSync(${JSON.stringify(ARGS)}, JSON.stringify({ args: process.argv.slice(2), explainer: process.env.STORY_LOOP_EXPLAINER }))
 require('fs').writeFileSync(${JSON.stringify(PID)}, String(process.pid))
 process.stdout.write('thinking...')
@@ -37,6 +39,15 @@ test('the explainer has only read tools, no MCP servers, and stops when the page
 
   const foreign = await fetch(`${base}/api/steer`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://evil.example' }, body: '{}' })
   assert.equal(foreign.status, 403)
+
+  // A CLI with no login of its own is said plainly, before anything is started; a no is not remembered.
+  const ask = () => fetch(`${base}/api/explain`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: 'a.txt', question: 'explain' }) })
+  writeFileSync(LOGGED_OUT, '')
+  const out = await ask()
+  assert.equal(out.status, 503)
+  assert.match(await out.text(), /claude auth login/)
+  assert.equal(existsSync(ARGS), false, 'no explainer was started')
+  rmSync(LOGGED_OUT)
 
   const abort = new AbortController()
   const res = await fetch(`${base}/api/explain`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: 'a.txt', question: 'explain' }), signal: abort.signal })

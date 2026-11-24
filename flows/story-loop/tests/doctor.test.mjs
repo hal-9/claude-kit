@@ -12,6 +12,7 @@ const healthy = (over = {}) => ({
     if (key === 'short --version') return { ok: true, out: '5.0.0\n' }
     if (key === 'git config --get commit.gpgsign') return { ok: true, out: 'true\n' }
     if (key === 'claude plugin list') return { ok: true, out: '  ❯ savvy-flow@claude-kit\n    Version: 1.2.0\n    Status: ✘ disabled\n\n  ❯ savvy-flow@hal-9\n    Version: 1.3.0\n    Scope: user\n    Status: ✔ enabled\n' }
+    if (key === 'claude auth status') return { ok: true, out: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }) }
     if (args.includes('setup')) return { ok: true, out: JSON.stringify({ codex: { available: true, detail: 'codex-cli 0.166.0' }, auth: { loggedIn: true } }) }
     return { ok: true, out: '' }
   },
@@ -40,6 +41,11 @@ test('each missing prerequisite is named with its fix', () => {
 
   const noLogin = diagnose(healthy({ run: { [`node ${process.env.HOME}/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs setup --json`]: { ok: true, out: JSON.stringify({ codex: { available: true }, auth: { loggedIn: false } }) } } }))
   assert.equal(statusOf(noLogin, 'A second model'), 'warning')
+
+  // Inside the desktop app the CLI reports no login of its own; the board's explanations need one.
+  const cliOut = diagnose(healthy({ run: { 'claude auth status': { ok: false, out: JSON.stringify({ loggedIn: false, authMethod: 'none' }) } } }))
+  assert.equal(statusOf(cliOut, 'Claude CLI signed in'), 'warning')
+  assert.match(render(cliOut), /claude auth login/)
 
   const issues = diagnose({ ...healthy({ missing: ['start-story'], run: { 'short --version': { ok: false, out: '' } } }), source: 'github' })
   assert.deepEqual(issues.filter(r => r.status === 'blocker'), [])
