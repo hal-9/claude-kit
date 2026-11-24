@@ -15,7 +15,10 @@ from a later stage, the task is only the defects named in the `back` reason.
    story's design links: write them into the brief as concrete specs
    (structure, states, which existing components to reuse). Workers never
    invent UI. No design link for a UI story is a gap start-story should have
-   grilled; `LOOP wait build human` and ask.
+   grilled; `LOOP wait build human` and ask. A check with a Figma frame
+   (`design` in the check list): read it with the Figma MCP
+   (`get_design_context`, `get_screenshot`) and put its sizes, spacing,
+   colours and copy into the brief; verify fails the check on any deviation.
    Any task that touches HTML, CSS or client-side JS: run the
    `modern-web-guidance` skill once, before writing the briefs, and put the
    patterns it returns into them as concrete specs (the native element or API

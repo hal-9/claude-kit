@@ -13,6 +13,7 @@ const healthy = (over = {}) => ({
     if (key === 'git config --get commit.gpgsign') return { ok: true, out: 'true\n' }
     if (key === 'claude plugin list') return { ok: true, out: '  ❯ savvy-flow@claude-kit\n    Version: 1.2.0\n    Status: ✘ disabled\n\n  ❯ savvy-flow@hal-9\n    Version: 1.3.0\n    Scope: user\n    Status: ✔ enabled\n' }
     if (key === 'claude auth status') return { ok: true, out: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }) }
+    if (key === 'claude mcp list') return { ok: true, out: 'Checking MCP server health…\n\nfigma: https://mcp.figma.com/mcp (HTTP) - ✔ Connected\n' }
     if (args.includes('setup')) return { ok: true, out: JSON.stringify({ codex: { available: true, detail: 'codex-cli 0.166.0' }, auth: { loggedIn: true } }) }
     return { ok: true, out: '' }
   },
@@ -48,6 +49,13 @@ test('each missing prerequisite is named with its fix', () => {
   const cliOut = diagnose(healthy({ run: { 'claude auth status': { ok: false, out: JSON.stringify({ loggedIn: false, authMethod: 'none' }) } } }))
   assert.equal(statusOf(cliOut, 'Claude CLI signed in'), 'warning')
   assert.match(render(cliOut), /claude auth login/)
+
+  // Figma matters only for stories that link a frame: missing or signed out is a warning with the fix
+  for (const out of ['browseros-neo: http://127.0.0.1:9010/mcp (HTTP) - ✔ Connected\n', 'figma: https://mcp.figma.com/mcp (HTTP) - ! Needs authentication\n']) {
+    const figma = diagnose(healthy({ run: { 'claude mcp list': { ok: true, out } } }))
+    assert.equal(statusOf(figma, 'Figma MCP'), 'warning', out)
+    assert.match(render(figma), /claude mcp add --scope user --transport http figma https:\/\/mcp\.figma\.com\/mcp/)
+  }
 
   const issues = diagnose({ ...healthy({ missing: ['start-story'], run: { 'short --version': { ok: false, out: '' } } }), source: 'github' })
   assert.deepEqual(issues.filter(r => r.status === 'blocker'), [])

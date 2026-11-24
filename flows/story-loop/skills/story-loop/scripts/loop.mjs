@@ -637,7 +637,7 @@ export function verifyReport(root, run) {
       const problem = imageProblem(evidenceDir(root, run), file)
       if (problem) return `check "${r.id}": ${problem}`
     }
-    return null
+    return designProblem(r, check)
   }
   const rows = results.map((r, i) => { const reason = rowProblem(r); return { id: r?.id ?? `invalid-${i + 1}`, accepted: !reason, reason } })
   // The order of the first reported problem: nothing invented or doubled, then nothing missing, then each row.
@@ -710,6 +710,16 @@ export function changedSince(root, commit) {
   } catch { return null }
 }
 
+// The Figma frame a design link points at: figma.com/design|file/<key>/…?node-id=1-2 → { key, node: '1:2' }.
+export function figmaRef(url) {
+  const u = urlOf(url)
+  const key = u && /(^|\.)figma\.com$/.test(u.hostname) && u.pathname.match(/^\/(?:design|file)\/([A-Za-z0-9]+)/)?.[1]
+  const node = u?.searchParams.get('node-id')?.replace('-', ':')
+  return key && node && /^\d+:\d+$/.test(node) ? { key, node } : null
+}
+// What a result names as the Figma frame it was compared with.
+export const designReference = d => { const f = figmaRef(d.url); return `figma:${f.key}:${f.node}` }
+
 export function checksProblem(checks) {
   if (!Array.isArray(checks)) return 'checks must be a JSON array'
   const seen = new Set()
@@ -717,9 +727,34 @@ export function checksProblem(checks) {
     if (typeof c?.id !== 'string' || !c.id.trim()) return 'every check needs an id'
     if (seen.has(c.id)) return `check id "${c.id}" is used twice`
     if (!Number.isInteger(c.step)) return `check "${c.id}" needs the number of its Test Step (step)`
+    if (c.design !== undefined) {
+      const d = c.design
+      if (d?.kind === 'figma') { if (!figmaRef(d.url)) return `check "${c.id}": a figma design is the link to one frame (figma.com/design/<file>/…?node-id=<frame>)` }
+      else if (d?.kind === 'prototype') { if (!urlOf(d.url)) return `check "${c.id}": a prototype design needs the URL the browser opens` }
+      else return `check "${c.id}": design is {"kind":"figma"|"prototype","url":…}`
+    }
     seen.add(c.id)
   }
   return null
+}
+
+// A check with a design passes only when the browser compared the page with it and found no
+// deviation, or the human accepted the deviation. The comparison is the verifier's judgment;
+// the script checks that it names this check's design and, for a prototype, kept its capture.
+// ponytail: a Figma frame is read through the Figma MCP, so no file proves the fetch; the reference id is the verifier's word.
+function designProblem(r, check) {
+  const d = check.design
+  if (!d) return null
+  const got = r.design
+  if (!got || typeof got !== 'object') return `check "${r.id}" has a design and reports no comparison with it (design)`
+  if (d.kind === 'figma' && got.reference !== designReference(d))
+    return `check "${r.id}" must compare with Figma frame ${designReference(d)}, not "${got.reference ?? '(none)'}"`
+  if (d.kind === 'prototype' && !(r.evidence ?? []).includes(got.reference))
+    return `check "${r.id}": the prototype capture (design.reference) must be one of its screenshots (evidence)`
+  if (got.verdict === 'match') return null
+  if (got.verdict === 'deviates')
+    return /^human:/i.test(String(got.accepted ?? '')) ? null : `check "${r.id}" deviates from the design: ${got.note ?? '(no note)'}`
+  return `check "${r.id}": design.verdict is "match" or "deviates"`
 }
 
 const SEVERITY = ['blocker', 'major', 'minor', 'nit', 'question']

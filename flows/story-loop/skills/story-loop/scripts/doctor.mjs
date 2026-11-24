@@ -65,6 +65,13 @@ export const CHECKS = [
     try { state = JSON.parse(s.run('claude', ['auth', 'status']).out) } catch {}
     return state.loggedIn ? ok(state.authMethod) : warning('`claude auth status` says not logged in', 'In a terminal run: claude auth login   (the board explanations fail with "OAuth session expired" until then; the run itself is unaffected).')
   }],
+  ['Figma MCP connected', 'verify compares a page with the Figma frame its check names, and build reads sizes and colours from it', s => {
+    const line = s.run('claude', ['mcp', 'list']).out.split('\n').find(l => /figma/i.test(l))
+    const fix = 'In a terminal: claude mcp add --scope user --transport http figma https://mcp.figma.com/mcp, then sign in to Figma from /mcp in a session. ' +
+      'Needed only for stories that link a Figma frame; a claude.ai Figma connector also works but this check cannot see it.'
+    if (!line) return warning('no Figma MCP server configured', fix)
+    return /connected/i.test(line) ? ok(line.trim()) : warning(`Figma MCP is not connected: ${line.trim()}`, fix)
+  }],
   ['A second model for the review', 'second review: a reviewer from another vendor catches what Claude misses in its own work', s => {
     const fallback = 'Without it the second review still runs, by a fresh Claude on another model, which is weaker. '
     if (!s.exists(CODEX)) return warning('the openai-codex plugin is not installed', fallback + 'For Codex: /plugin marketplace add openai/codex-plugin-cc, /plugin install codex@openai-codex, then /codex:setup. Any other reviewer CLI can be named at sign-off.')

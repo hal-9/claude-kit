@@ -211,7 +211,7 @@ screenshots.
 
 ## What you need
 
-`/story-loop setup` checks the first eight for you. Without Codex the second review still runs, by a fresh Claude on another model; that is weaker than a model from another vendor, and the report says which reviewer was used.
+`/story-loop setup` checks the first nine for you. Without Codex the second review still runs, by a fresh Claude on another model; that is weaker than a model from another vendor, and the report says which reviewer was used.
 
 | Needed | For | Get it |
 | --- | --- | --- |
@@ -223,6 +223,7 @@ screenshots.
 | `.start-story/` gitignored | run files and screenshots stay out of the PR (a blocker if not) | one line in `.gitignore` |
 | Signed commits, if the repo requires them | the publisher refuses unsigned commits when signing is on; setup signs a throwaway commit to prove it works | the repo's signed-commits guide |
 | Codex plugin, signed in (recommended, not required) | the strongest second review: a model from another vendor | `/plugin install codex@openai-codex`, `/codex:setup` |
+| Figma MCP, signed in (stories that link a Figma frame) | verify compares the page with the frame its check names; build reads sizes and colours from it | `claude mcp add --scope user --transport http figma https://mcp.figma.com/mcp`, then sign in from `/mcp` |
 | A browser the agent can drive | browser verify | Chrome with the Claude extension, **or** the BrowserOS app running |
 | A test user in that browser | logging in on previews and staging | sign in as a test user, or save its login in the browser; the agent does not type passwords on non-local sites |
 | Copilot review enabled on the repo | the Copilot review | repository settings |

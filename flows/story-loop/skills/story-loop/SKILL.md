@@ -285,6 +285,16 @@ repository is refused), and the story branch may be neither the base nor the
 repository's default branch. If it refuses, tell the human what it said; do
 not change the remote or the recorded repository to get past it.
 
+**A check of a designed screen names its design.** When the story links a
+Figma frame for the state a check shows, add `"design":{"kind":"figma","url":"<frame link with node-id>"}`
+to that check; with no Figma frame but a prototype (a Figma prototype, an HTML
+or Artifact mock-up), `"design":{"kind":"prototype","url":"<prototype URL>"}`.
+Figma wins over a prototype. A link to a whole file is not a frame: ask which
+frame shows the state. Verify then compares the page with that design, and a
+deviation fails the check. A Figma design needs the Figma MCP in this session
+(`/story-loop setup` names it); no access → `LOOP wait contract human` before
+sign-off, not a surprise in verify.
+
 The check list is the denominator of verify: the verifier reports every id
 exactly once. It can change until verify passes (`LOOP checks set` again, when
 the human agrees); after that only by going back to build. A change while
@@ -574,6 +584,20 @@ installed, add its *The captures* and *The claims* sections to the brief):
   on navigation.
 - **Never claim a check that did not run.** A disabled control, a silent no-op
   or a missing precondition is `blocked` with the reason.
+- **A check with a design is compared with it** (the brief carries each
+  check's `design` from the check list, nothing else of the plan):
+  - `figma`: fetch the frame with the Figma MCP's `get_screenshot` (file key
+    and node id from the link: `figma.com/design/<key>/…?node-id=12-34` →
+    `12:34`), and read its sizes, spacing, colours and text with
+    `get_design_context` where the picture leaves doubt. Capture the page at
+    the frame's width.
+  - `prototype`: open it in the browser at the case's viewport, reach the same
+    state, and save that capture as `step<n>-<case>-design.png` next to the
+    page's screenshot.
+  - Compare layout, hierarchy, spacing, colour, type and copy. Real data, a
+    font's rendering and anti-aliasing are not deviations; a missing element,
+    another order, another colour or other copy is. Name each deviation with
+    what the design shows and what the page shows.
 
 Output contract — `.start-story/<story>/results.json`: the request id and one
 object per check id from the approved list, and nothing else returned:
@@ -583,9 +607,17 @@ object per check id from the approved list, and nothing else returned:
   "results": [
     { "id": "1-uk-mobile", "step": 1, "text": "<goal, verbatim>", "case": "UK · mobile", "verdict": "pass",
       "note": "what it saw, one or two sentences", "url": "<URL it ended on>",
-      "browser": "chrome", "environment": "<base URL / deployment>", "evidence": ["step1-uk-mobile.png"] }
+      "browser": "chrome", "environment": "<base URL / deployment>", "evidence": ["step1-uk-mobile.png"],
+      "design": { "reference": "figma:<key>:<node id>", "verdict": "match", "note": "deviations, or what was compared" } }
   ] }
 ```
+
+`design` appears only for a check that has one. `reference` is
+`figma:<key>:<node id>` for a Figma frame, or the prototype capture's file name
+(also listed in `evidence`); `verdict` is `match` or `deviates`. A `deviates`
+fails the check: `LOOP back verify build` with the deviations, or, when the
+human accepts it as it is, add `"accepted":"human: <their reason>"` to that
+`design` and name it in the report.
 
 `verdict` is `pass`, `fail` or `blocked`. Every id appears exactly once; no
 invented ids. `evidence` is always a list. A `pass` counts only with all of

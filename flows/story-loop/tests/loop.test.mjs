@@ -9,7 +9,7 @@ import {
   newRun, move, current, stopReason, GRAPH, verifyProblem, resultsFile, evidenceDir, storyId, issueRepo, remoteRepo,
   load, save, update, withLock, migrate, passProblem, findingsProblem, readInbox, addNote, deliver, staleStages,
   verifyRequest, commentsProblem, mutantsProblem, imageProblem, verifyReport, environmentProblem,
-  FRESH, runProblem, laneProblem, qualityProblem, humanReviewProblem, lessonsProblem, verifyCarry, reviewScope,
+  FRESH, runProblem, laneProblem, qualityProblem, humanReviewProblem, lessonsProblem, verifyCarry, reviewScope, figmaRef, checksProblem,
 } from '../skills/story-loop/scripts/loop.mjs'
 import { readLedger, summary, usage } from '../skills/story-loop/scripts/ledger.mjs'
 import { signalsFor } from '../skills/story-loop/scripts/quality.mjs'
@@ -1002,4 +1002,30 @@ test('verify carries over the passes of checks whose step the fix did not touch,
   assert.match(cli(dir, 'pass', 'verify').stderr, /"b" is marked carried over, but this attempt runs it again/)
   writeFileSync(resultsFile(dir, load(dir)), written(second, [...kept.results, row('b', 2)]))
   assert.equal(cli(dir, 'pass', 'verify').status, 0)
+})
+
+test('a check with a Figma frame or a prototype passes only when the page was compared with that design and matches', () => {
+  const FIGMA = 'https://www.figma.com/design/AbC123/Shop?node-id=12-34&t=x'
+  assert.deepEqual(figmaRef(FIGMA), { key: 'AbC123', node: '12:34' })
+  for (const url of ['https://www.figma.com/design/AbC123/Shop', 'https://evil.example/design/AbC123?node-id=1-2', 'nope']) assert.equal(figmaRef(url), null, url)
+  assert.match(checksProblem([{ id: 'a', step: 1, design: { kind: 'figma', url: 'https://www.figma.com/design/AbC123/Shop' } }]), /link to one frame/)
+  assert.match(checksProblem([{ id: 'a', step: 1, design: { kind: 'sketch', url: FIGMA } }]), /design is/)
+  assert.equal(checksProblem([{ id: 'a', step: 1, design: { kind: 'figma', url: FIGMA } }, { id: 'b', step: 1, design: { kind: 'prototype', url: 'https://proto.example/x' } }]), null)
+
+  const root = mkdtempSync(join(tmpdir(), 'sl-design-'))
+  const run = { ...newRun('sc-1'), checks: [{ id: 'a', step: 1, design: { kind: 'figma', url: FIGMA } }, { id: 'b', step: 1, design: { kind: 'prototype', url: 'https://proto.example/x' } }], checks_revision: 1, environment: ENV }
+  run.stages.verify.request = verifyRequest(run, 'tree-a')
+  mkdirSync(evidenceDir(root, run), { recursive: true })
+  for (const f of ['a.png', 'b.png', 'b-design.png']) writeFileSync(join(evidenceDir(root, run), f), PNG)
+  const a = design => ({ id: 'a', step: 1, verdict: 'pass', evidence: ['a.png'], ...META, ...(design && { design }) })
+  const b = { id: 'b', step: 1, verdict: 'pass', evidence: ['b.png', 'b-design.png'], ...META, design: { reference: 'b-design.png', verdict: 'match' } }
+  const problem = rowA => { writeFileSync(resultsFile(root, run), written(run.stages.verify.request.id, [rowA, b])); return verifyProblem(root, run) }
+  assert.match(problem(a()), /reports no comparison/)
+  assert.match(problem(a({ reference: 'figma:AbC123:1:1', verdict: 'match' })), /must compare with Figma frame figma:AbC123:12:34/)
+  assert.match(problem(a({ reference: 'figma:AbC123:12:34', verdict: 'deviates', note: 'button is blue, design says green' })), /deviates from the design: button is blue/)
+  assert.equal(problem(a({ reference: 'figma:AbC123:12:34', verdict: 'deviates', accepted: 'human: green comes with the brand refresh' })), null)
+  assert.equal(problem(a({ reference: 'figma:AbC123:12:34', verdict: 'match' })), null)
+  // a prototype capture must be kept as a screenshot of the check
+  writeFileSync(resultsFile(root, run), written(run.stages.verify.request.id, [a({ reference: 'figma:AbC123:12:34', verdict: 'match' }), { ...b, evidence: ['b.png'] }]))
+  assert.match(verifyProblem(root, run), /prototype capture/)
 })
