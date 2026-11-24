@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, LEASE_MS, findRoot, load, update, emit, stopReason, liveWorkers, deliver, current, ownerState } from './loop.mjs'
+import { GRAPH, LEASE_MS, findRoot, load, update, emit, stopReason, liveWorkers, liveHelpers, deliver, current, ownerState } from './loop.mjs'
 import { bind, record } from './diag.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -274,8 +274,8 @@ function main() {
       if (notes) { record(root, 'stop', { outcome: 'blocked', reason: 'notes from the board were waiting' }); return console.log(JSON.stringify({ decision: 'block', reason: notes })) }
       const reason = stopReason(run)
       if (!reason) {
-        const waiting = liveWorkers(run).length
-        record(root, 'stop', { outcome: 'allowed', reason: waiting ? `waiting on ${waiting} worker${waiting === 1 ? '' : 's'}` : undefined })
+        const waiting = [...liveWorkers(run).map(() => 'worker'), ...liveHelpers(run).map(o => o.kind)]
+        record(root, 'stop', { outcome: 'allowed', reason: waiting.length ? `waiting on ${waiting.join(', ')}` : undefined })
         return emit(root, { kind: 'session', phase: 'idle' })
       }
       if ((run.stop_blocks ?? 0) >= MAX_STOP_BLOCKS) {

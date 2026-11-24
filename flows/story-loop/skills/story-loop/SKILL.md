@@ -37,9 +37,16 @@ when this skill loaded). `LOOP status` prints every stage and which one is next.
    script refuses any move the graph (`scripts/graph.json`) does not have, and
    refuses a pass whose evidence is missing, stale or incomplete — it says what
    is missing; fix that, never the message. Never edit `.start-story/` by hand.
-2. **Never stop silently.** A hook keeps the session going while a stage is
-   pending or running. To stop, record why:
-   `LOOP wait <stage> human|copilot "<reason>"` or `LOOP block <stage> "<reason>"`.
+2. **Never stop silently, and never wait by polling.** A hook keeps the session
+   going while a stage is pending or running. To stop, record why:
+   `LOOP wait <stage> human|copilot|background "<reason>"` or `LOOP block <stage> "<reason>"`.
+   Waiting is being idle: a worker's report, a background command's end and a
+   board answer each wake you. The hook lets you end the turn while workers or
+   the loop's own helpers (`mutate`, `copilot-wait`) run; for any other command
+   you started in the background (a Codex review), record
+   `LOOP wait <stage> background "<what>"` and end the turn, then
+   `LOOP start <stage>` again when it wakes you. Never hold the turn with a
+   sleep loop, a `until … do sleep` or a check for files going quiet.
 3. **Publish only through `PUBLISH`. Never merge. Never mark the PR ready.** A
    hook refuses every raw `git push`, every merge and `gh pr ready`; do not look
    for a way around it. `PUBLISH` pushes the current commit to the story branch

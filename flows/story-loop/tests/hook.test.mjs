@@ -262,3 +262,17 @@ test('H20: notes the hook cannot read are said to the conductor, not treated as 
   assert.equal(out.status, 0)
   assert.match(JSON.parse(out.stdout).hookSpecificOutput.additionalContext, /notes file .* is unreadable.*Tell the human/s)
 })
+
+test('the conductor may also go idle while the loop\'s own helpers run, or when it records a background wait', () => {
+  // A helper whose process lives (this test process) holds the gate open; a dead one does not.
+  const helping = runDirWith({ ...owned(), ops: { op1: { kind: 'mutate', stage: 'contract', attempt: 1, pid: process.pid, started_at: 'x' } } })
+  assert.equal(fire(helping, { hook_event_name: 'Stop' }).stdout, '', 'mutants running in the background: idle is how it waits')
+  const gone = runDirWith({ ...owned(), ops: { op1: { kind: 'mutate', stage: 'contract', attempt: 1, pid: 2 ** 22 + 12345, started_at: 'x' } } })
+  assert.match(fire(gone, { hook_event_name: 'Stop' }).stdout, /"decision":"block"/)
+  // Anything else in the background is recorded as a wait, which the gate accepts.
+  const codex = runDirWith(owned())
+  const run = move(move(load(codex), 'start', 'contract'), 'wait', 'contract', 'background', 'codex review running')
+  save(codex, run)
+  assert.equal(fire(codex, { hook_event_name: 'Stop' }).stdout, '')
+  assert.throws(() => move(load(gone), 'wait', 'contract', 'nobody', 'x'), /human \| copilot \| background/)
+})

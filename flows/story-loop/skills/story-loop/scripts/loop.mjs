@@ -113,7 +113,8 @@ export function move(run, verb, stage, arg, reason, now = new Date().toISOString
       break
     case 'wait':
       mustBeCurrent(); needReason()
-      ;['human', 'copilot'].includes(arg) || fail('wait needs who: human | copilot')
+      // background: a command the conductor started in the background (a Codex review) and is idle for; its end wakes it.
+      ;['human', 'copilot', 'background'].includes(arg) || fail('wait needs who: human | copilot | background')
       Object.assign(st, { status: 'waiting', waiting_on: arg, reason })
       break
     case 'back': {
@@ -150,15 +151,18 @@ export function move(run, verb, stage, arg, reason, now = new Date().toISOString
 export const WORKER_TTL_MS = 60 * 60_000
 export const liveWorkers = (run, now = Date.now()) => Object.entries(run.live_workers ?? {}).filter(([, since]) => now - since < WORKER_TTL_MS).map(([id]) => id)
 
+// The run's background helpers (mutate, copilot-wait, …) whose process still runs.
+export const liveHelpers = run => Object.values(run.ops ?? {}).filter(o => alive(o.pid))
+
 // What the Stop hook decides: null lets the session end, a string keeps it going.
-// Workers still running let it end: the conductor waits for their reports by
-// being idle, never by polling files.
+// Workers or background helpers still running let it end: the conductor waits for
+// their reports by being idle (their end wakes it), never by polling files.
 export function stopReason(run, now = Date.now()) {
   const cur = current(run)
   if (!cur) return null
   const st = run.stages[cur]
   if (st.status === 'waiting' || st.status === 'blocked') return null
-  if (liveWorkers(run, now).length) return null
+  if (liveWorkers(run, now).length || liveHelpers(run).length) return null
   return `story-loop ${run.story}: stage "${cur}" is ${st.status}. Carry on with it, or record why it stops: ` +
     `loop.mjs wait ${cur} human "<reason>" | loop.mjs block ${cur} "<reason>".`
 }

@@ -65,8 +65,9 @@ names. If it lists none, `LOOP block build "story-loop workers not loaded; start
 - Do not implement in parallel with workers. While they run, prepare the next
   briefs or the review checklist, then end your turn. Each worker's report
   arrives as a notification that wakes you; the stop gate lets you end the
-  turn while workers it saw start are still running. Never wait by polling
-  files, sleeping or watching the checkout go quiet.
+  turn while workers it saw start, or the loop's own helpers, are still
+  running. Never wait by polling files, sleeping or watching the checkout go
+  quiet.
 - **Parallel workers share this checkout, so they never share files.** Give
   each parallel task its own files; tasks that touch the same file, the same
   test database or the same fixtures run one after another. Workers do not
