@@ -869,3 +869,18 @@ test('token usage is read from the sessions\' transcripts, once per message, und
   // build 116, verify 23 + 66: 89 of 205 tokens went into checking
   assert.match(summary([{ run: 'a', usage: u, lessons: [], backs: [], tasks: {} }]), /Tokens \(1 run with a transcript\): 205 per run, 43% in the stages that check the work/)
 })
+
+test('diffs are taken against the remote base: a stale local main does not count other people\'s commits', async () => {
+  const { diffBase } = await import('../skills/story-loop/scripts/loop.mjs')
+  const { dir, git, commit } = repo({ remote: true })
+  const g = (...args) => git(...args)
+  assert.equal(diffBase(g, 'main'), 'origin/main')
+  assert.equal(diffBase(g, 'origin/main'), 'origin/main')
+  // Someone else lands on origin/main; the local main stays behind; the story branch is cut from origin.
+  git('checkout', '-q', 'main'); commit('other.txt', 'theirs'); git('push', '-q', 'origin', 'main'); git('reset', '-q', '--hard', 'HEAD~1')
+  git('checkout', '-qb', 'feat/two', 'origin/main'); commit('mine.txt', 'mine')
+  assert.equal(git('diff', '--name-only', `${diffBase(g, 'main')}...HEAD`), 'mine.txt')
+  const { dir: bare, git: g2 } = repo()
+  assert.equal(diffBase((...a) => g2(...a), 'main'), 'main', 'no remote: the local branch is the base')
+  assert.ok(dir && bare)
+})

@@ -45,6 +45,13 @@ export const issueRepo = input => String(input).match(/github\.com\/([^/\s]+\/[^
 export const remoteRepo = url => String(url).trim().match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i)?.[1].toLowerCase() ?? null
 // A base is recorded as "main" or "origin/main"; both name the branch main.
 export const baseName = base => String(base ?? '').replace(/^origin\//, '')
+// The ref a diff is taken against: the remote branch when it exists. A local
+// "main" lags origin/main, and diffing a branch cut from origin/main against it
+// counts everyone else's commits as this change.
+export function diffBase(git, base) {
+  const remote = `origin/${baseName(base)}`
+  try { git('rev-parse', '--verify', '--quiet', `${remote}^{commit}`); return remote } catch { return base }
+}
 
 export function newRun(story, now = new Date().toISOString()) {
   return {

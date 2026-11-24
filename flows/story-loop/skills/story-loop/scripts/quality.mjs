@@ -15,7 +15,7 @@
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, findRoot, load, emit, gitIn, dirty, headTree, headCommit, baseName, opStart, opUpdate, opEnd, qualityProblem } from './loop.mjs'
+import { GRAPH, findRoot, load, emit, gitIn, dirty, headTree, headCommit, baseName, diffBase, opStart, opUpdate, opEnd, qualityProblem } from './loop.mjs'
 import { changedLines } from './mutate.mjs'
 
 const fail = message => { throw new Error(message) }
@@ -53,7 +53,7 @@ function main(argv) {
   const git = gitIn(root)
   const ctx = opStart(root, 'quality', 'quality', { base, lint: opt.lint })
   try {
-    const range = `${base}...HEAD`
+    const range = `${diffBase(git, base)}...HEAD`
     const files = git('diff', '--name-only', '--diff-filter=AMR', range).split('\n').filter(Boolean)
     let flags = {}
     for (const file of files) {

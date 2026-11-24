@@ -10,7 +10,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, paths, newRun, move, save, emit, readInbox, addNote, deliver, readResults, resultsFile, evidenceDir, runDir, staleStages, headCommit, verifyReport } from '../scripts/loop.mjs'
+import { GRAPH, paths, newRun, move, save, emit, readInbox, addNote, deliver, readResults, resultsFile, evidenceDir, runDir, staleStages, headCommit, verifyReport, diffBase } from '../scripts/loop.mjs'
 import { record } from '../scripts/diag.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -44,7 +44,7 @@ let explaining = 0
 const stamp = file => { try { const s = statSync(file); return `${s.mtimeMs}:${s.size}` } catch { return '' } }
 
 function mergeBase(run) {
-  try { return git('merge-base', run?.base || 'origin/main', 'HEAD').trim() } catch { return 'HEAD' }
+  try { return git('merge-base', diffBase(git, run?.base || 'main'), 'HEAD').trim() } catch { return 'HEAD' }
 }
 function changes(run) {
   if (DEMO) return DEMO_CHANGES
