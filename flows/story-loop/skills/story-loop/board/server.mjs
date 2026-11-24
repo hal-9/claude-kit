@@ -247,6 +247,23 @@ async function steer(req, res) {
   res.end(JSON.stringify({ id }))
 }
 
+// The human answers the question a stage is waiting on: yes, or no with what to do
+// instead. It lands in the inbox like any note; the conductor's waiter hands it over.
+async function answer(req, res) {
+  if (!isJson(req)) return text(res, 415, 'json only')
+  const { stage, verdict, text: said } = await body(req)
+  const run = readJson(P.active)
+  if (!run) return text(res, 409, 'no active run')
+  const st = run.stages?.[stage]
+  if (!st || st.status !== 'waiting' || st.waiting_on !== 'human') return text(res, 409, 'that stage is not waiting on you any more')
+  if (!['yes', 'no'].includes(verdict)) return text(res, 400, 'answer yes or no')
+  const why = typeof said === 'string' ? said.trim().slice(0, 2000) : ''
+  if (verdict === 'no' && !why) return text(res, 400, 'say what the agent should do instead')
+  const id = addNote(ROOT, { kind: 'answer', stage, verdict, text: why || undefined, question: st.reason ?? undefined })
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ id }))
+}
+
 const text = (res, code, message) => { res.writeHead(code, { 'content-type': 'text/plain; charset=utf-8' }); res.end(message) }
 
 createServer(async (req, res) => {
@@ -287,6 +304,7 @@ createServer(async (req, res) => {
     }
     if (url.pathname === '/api/explain' && req.method === 'POST') return await explain(req, res)
     if (url.pathname === '/api/steer' && req.method === 'POST') return await steer(req, res)
+    if (url.pathname === '/api/answer' && req.method === 'POST') return await answer(req, res)
     if (url.pathname === '/api/handover' && req.method === 'POST') {
       if (!isJson(req)) return text(res, 415, 'json only')
       return text(res, 200, deliver(ROOT, 'copied from the board') ?? '')

@@ -47,6 +47,12 @@ when this skill loaded). `LOOP status` prints every stage and which one is next.
    `LOOP wait <stage> background "<what>"` and end the turn, then
    `LOOP start <stage>` again when it wakes you. Never hold the turn with a
    sleep loop, a `until … do sleep` or a check for files going quiet.
+   After every `wait … human`, start `LOOP await-human` in the background, then
+   end the turn: the board shows the reason with *Yes, go ahead* and *No…*
+   buttons, and the human's click ends the waiter, which wakes you with the
+   answer. Phrase the reason as the question it is ("accept the new size of
+   1058 lines?"), so a yes means one thing. An answer typed in the chat counts
+   the same; the waiter then hands over whatever the board sends later.
 3. **Publish only through `PUBLISH`. Never merge.** A hook refuses every raw
    `git push`, every merge and every raw `gh pr ready`; do not look for a way
    around it. `PUBLISH` pushes the current commit to the story branch on the
@@ -1000,6 +1006,8 @@ Handle each one, then record it: `LOOP note done <id> "<what you did>"`.
 
 | The note says | Do |
 | --- | --- |
+| `answer to your question`, `human: yes` | Do what the question asked, recording the human's word where a command takes one (`LOOP quality accept size "human: yes, accept 1058 lines"`), then carry on with the stage |
+| `answer to your question`, `human: no — <text>` | The text is what to do instead: follow it like any note below (a change request, a question, a contract change). Never treat a no as a yes with conditions |
 | A finding's verdict is wrong (`this is wrong` / `fix it after all` on a finding) | Change that finding's verdict and note in `LOOP put findings`; if it now needs a fix, treat it as a change request |
 | An explanation was wrong, or a question | Check the code. If the code is right, answer in the `note done` result. If the note uncovers a defect, treat it as a change request |
 | A change request ("do this differently") | Add a finding with `"source":"human"`, `"severity":"major"`, `"verdict":"fix_requested"`, then `LOOP back <current stage> build "human: <the request>"`. During build, add it as a task instead. The stages after build run again, both reviews included |

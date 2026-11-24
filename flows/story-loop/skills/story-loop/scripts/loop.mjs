@@ -433,15 +433,16 @@ export function writeInbox(root, run, notes) {
   renameSync(tmp, file)
 }
 
-const KINDS = { note: 'note', wrong: 'this is wrong', change: 'change request', fix: 'fix it after all' }
+const KINDS = { note: 'note', wrong: 'this is wrong', change: 'change request', fix: 'fix it after all', answer: 'answer to your question' }
 
 // The text an agent receives, whether a hook injects it or the human pastes it.
 export function handover(run, notes) {
   const head = `Notes from the human, sent from the story-loop board ` +
     `(story ${run.story}${run.pr ? `, PR ${run.pr}` : ''}, current stage: ${current(run) ?? 'all stages done'}).`
   const items = notes.map(n => [
-    `[${n.id}] ${KINDS[n.kind] ?? 'note'}${n.file ? ` · ${n.file}` : ''}${n.finding ? ` · finding ${n.finding}` : ''}`,
-    `  ${n.text}`,
+    `[${n.id}] ${KINDS[n.kind] ?? 'note'}${n.stage ? ` · stage ${n.stage}` : ''}${n.file ? ` · ${n.file}` : ''}${n.finding ? ` · finding ${n.finding}` : ''}`,
+    n.kind === 'answer' && n.question ? `  You asked: "${n.question}"` : '',
+    n.kind === 'answer' ? `  human: ${n.verdict === 'yes' ? 'yes' : 'no'}${n.text ? ` — ${n.text}` : ''}` : `  ${n.text}`,
     n.context ? `  (They were reading: "${n.context}")` : '',
   ].filter(Boolean).join('\n'))
   return [head,
@@ -484,6 +485,33 @@ export function deliver(root, via, session) {
     for (const n of open) record(root, copy ? 'note.copied' : 'note.delivered', { note: n.id, via, session: session ?? null, generation: run.owner?.generation ?? 0, again: n.status === 'delivered' })
     return handover(run, open)
   })
+}
+
+// Waits for the human's answer from the board and returns it. Run in the background
+// while a stage waits on the human: the process ending is what wakes an idle
+// conductor, so a click on the board needs no message typed into the session.
+// One waiter per run: a newer one takes over and the older one ends quietly.
+// ponytail: polls a local file every interval; nothing leaves the machine and no model runs.
+export function awaitHuman(root, run, { minutes = 12 * 60, interval = 2000 } = {}) {
+  const dir = runDir(root, run)
+  mkdirSync(dir, { recursive: true })
+  const pidFile = join(dir, 'waiter.pid')
+  writeFileSync(pidFile, String(process.pid))
+  const mine = () => { try { return readFileSync(pidFile, 'utf8').trim() === String(process.pid) } catch { return false } }
+  const deadline = Date.now() + minutes * 60_000
+  try {
+    for (;;) {
+      if (!mine()) return { outcome: 'replaced' }
+      const now = load(root)
+      if (runKey(now) !== runKey(run)) return { outcome: 'ended' }
+      const text = deliver(root, 'from the board while you waited', now.owner?.session ?? null)
+      if (text) return { outcome: 'answered', text }
+      if (Date.now() > deadline) return { outcome: 'timeout' }
+      sleep(interval)
+    }
+  } finally {
+    if (mine()) rmSync(pidFile, { force: true })
+  }
 }
 
 // ---- evidence gates --------------------------------------------------------------
@@ -1015,6 +1043,15 @@ function command(root, run, verb, args) {
   if (verb === 'inbox') {
     const open = readInbox(root, run).filter(n => n.status !== 'done')
     return console.log(open.length ? handover(run, open) : 'no open notes')
+  }
+  if (verb === 'await-human') {
+    const i = args.indexOf('--minutes')
+    const minutes = i < 0 ? undefined : Number(args[i + 1])
+    minutes === undefined || (Number.isFinite(minutes) && minutes > 0) || fail('--minutes needs a positive number')
+    const { outcome, text } = awaitHuman(root, run, { minutes })
+    if (outcome === 'answered') return console.log(text)
+    if (outcome === 'timeout') { console.log('no answer from the board in time; the stage still waits on the human'); process.exitCode = 3; return }
+    return console.log(outcome === 'replaced' ? 'a newer waiter took over; nothing to do' : 'the run ended; nothing to wait for')
   }
   if (verb === 'note') {
     const [sub, id, ...what] = args

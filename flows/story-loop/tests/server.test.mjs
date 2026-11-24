@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { repo, withRun, PNG, ENV, META } from './helpers.mjs'
 import { mkdirSync } from 'node:fs'
-import { resultsFile, evidenceDir, load, update, addNote, verifyRequest, verifyProblem } from '../skills/story-loop/scripts/loop.mjs'
+import { resultsFile, evidenceDir, load, update, addNote, readInbox, verifyRequest, verifyProblem } from '../skills/story-loop/scripts/loop.mjs'
 
 const SERVER = fileURLToPath(new URL('../skills/story-loop/board/server.mjs', import.meta.url))
 const bin = mkdtempSync(join(tmpdir(), 'sl-fakeclaude-'))
@@ -205,4 +205,29 @@ test('H23: results of the wrong shape, half-written files and broken notes never
   assert.equal(server.exitCode, null, 'the server is still running')
   assert.equal((await fetch(`${base}/`)).status, 200)
   assert.equal(load(dir).story, 'sc-1')
+})
+
+test('the board answers a stage waiting on the human: yes, or no with what to do instead, and only for that wait', async t => {
+  const { dir } = repo()
+  withRun(dir)
+  update(dir, r => { r.stages.contract.status = 'passed'; r.stages.build.status = 'passed'; r.stages.quality = { ...r.stages.quality, status: 'waiting', waiting_on: 'human', reason: 'accept the new size of 1058 lines?' }; return r })
+  const { base } = await board(t, dir, 4)
+  const send = payload => fetch(`${base}/api/answer`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+
+  assert.equal((await send({ stage: 'build', verdict: 'yes' })).status, 409, 'build is not waiting on the human')
+  assert.equal((await send({ stage: 'quality', verdict: 'maybe' })).status, 400)
+  const bareNo = await send({ stage: 'quality', verdict: 'no', text: '  ' })
+  assert.equal(bareNo.status, 400)
+  assert.match(await bareNo.text(), /what the agent should do instead/)
+  const foreign = await fetch(`${base}/api/answer`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://evil.example' }, body: JSON.stringify({ stage: 'quality', verdict: 'yes' }) })
+  assert.equal(foreign.status, 403)
+  assert.equal(readInbox(dir, load(dir)).length, 0, 'nothing reached the inbox')
+
+  const yes = await send({ stage: 'quality', verdict: 'yes' })
+  assert.equal(yes.status, 200)
+  const [note] = readInbox(dir, load(dir))
+  assert.deepEqual([note.kind, note.stage, note.verdict, note.question, note.status], ['answer', 'quality', 'yes', 'accept the new size of 1058 lines?', 'queued'])
+  const no = await send({ stage: 'quality', verdict: 'no', text: 'split the story instead' })
+  assert.equal(no.status, 200)
+  assert.equal(readInbox(dir, load(dir))[1].text, 'split the story instead')
 })

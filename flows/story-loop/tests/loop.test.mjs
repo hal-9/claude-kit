@@ -917,3 +917,28 @@ test('diffs are taken against the remote base: a stale local main does not count
   assert.equal(diffBase((...a) => g2(...a), 'main'), 'main', 'no remote: the local branch is the base')
   assert.ok(dir && bare)
 })
+
+test('await-human: a waiter in the background ends with the board\'s answer, and a newer waiter replaces an older one', async () => {
+  const { dir } = repo()
+  withRun(dir)
+  const waiter = () => {
+    const child = spawn('node', [LOOP, 'await-human'], { cwd: dir, encoding: 'utf8' })
+    let out = ''
+    child.stdout.on('data', d => { out += d })
+    return { child, done: new Promise(ok => child.on('close', code => ok({ code, out }))) }
+  }
+  const first = waiter()
+  await new Promise(ok => setTimeout(ok, 700))
+  const second = waiter()
+  const replaced = await first.done
+  assert.equal(replaced.code, 0)
+  assert.match(replaced.out, /a newer waiter took over/)
+
+  update(dir, r => { r.stages.contract = { ...r.stages.contract, status: 'waiting', waiting_on: 'human', reason: 'accept the new size?' }; return r })
+  addNote(dir, { kind: 'answer', stage: 'contract', verdict: 'no', text: 'split the story', question: 'accept the new size?' })
+  const answered = await second.done
+  assert.equal(answered.code, 0)
+  assert.match(answered.out, /answer to your question · stage contract\n {2}You asked: "accept the new size\?"\n {2}human: no — split the story/)
+  assert.equal(readInbox(dir, load(dir))[0].status, 'delivered', 'handed over once; the hook does not hand it again')
+  assert.match(cli(dir, 'await-human', '--minutes', '0').stderr, /--minutes needs a positive number/)
+})

@@ -204,6 +204,14 @@ h1 { font-size: clamp(1.6rem, 1.2rem + 1.2vw, 2.25rem); line-height: 1.15; font-
 .needs li > span:first-child { color: var(--warn-ink); font-weight: 560; }
 .needs li .what { color: var(--ink); }
 .needs li .aside { grid-column: 2; font-size: 13px; color: var(--ink-2); }
+.needs li .answer, .needs li .answer-sent { grid-column: 2; display: grid; gap: 8px; margin-top: 6px; }
+.answer-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.answer-row[hidden], .answer-deny[hidden] { display: none; }
+.answer-deny { display: grid; gap: 8px; }
+.answer-deny textarea { width: 100%; font: inherit; font-size: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; resize: vertical; }
+.answer-status { font-size: 13px; color: var(--ink-2); min-height: 1em; }
+.answer-sent { font-size: 13.5px; color: var(--ink-2); }
+.answer-sent b { color: var(--ink); font-weight: 600; }
 .quiet-wait { display: flex; align-items: baseline; gap: 10px; font-size: 14px; color: var(--ink-2); padding: 4px 2px; }
 .quiet-wait::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; border: 1.5px dashed var(--accent); transform: translateY(-1px); animation: spin 8s linear infinite; }
 .quiet-wait b { color: var(--ink); font-weight: 600; }
@@ -607,7 +615,7 @@ details.history .h-ev { display: block; font-size: 12px; color: var(--ink-3); }
   .back-note { display: flex; gap: 8px; align-items: baseline; margin: 0 0 14px; font-size: 13.5px; color: var(--accent-ink); }
   .back-note.settled { color: var(--ink-3); }
   .needs li, .note-list li { grid-template-columns: 1fr; }
-  .needs li .aside { grid-column: 1; }
+  .needs li .aside, .needs li .answer, .needs li .answer-sent { grid-column: 1; }
 }
 
 @keyframes flow-v { to { background-position: 0 32px, 0 0; } }
@@ -1343,7 +1351,7 @@ function needsYou() {
   if (!run) return out
   for (const s of S.graph.stages) {
     const st = run.stages?.[s.id]
-    if (st?.status === 'waiting' && st.waiting_on === 'human') out.push({ kind: `${s.label} needs you`, what: cap(st.reason || s.hint) })
+    if (st?.status === 'waiting' && st.waiting_on === 'human') out.push({ kind: `${s.label} needs you`, what: cap(st.reason || s.hint), stage: s.id, question: st.reason ?? null })
     if (st?.status === 'blocked') {
       const gate = STOP_GATE.test(st.reason ?? '')
       out.push({ kind: `${s.label} is blocked`, what: cap(blockSummary(st.reason)) || 'No reason given.',
@@ -1362,10 +1370,40 @@ function needsYou() {
   return out
 }
 let attentionKey = ''
+// The answer already sent for this exact question, if any (it stays in the inbox until handled).
+const answerFor = item => (S.inbox ?? []).find(n => n.kind === 'answer' && n.stage === item.stage && (n.question ?? null) === item.question && n.status !== 'done')
+// Yes sends the go-ahead; No asks what to do instead. Either reaches the agent through its
+// waiter, which wakes it; without one, the note waits for its next step or the handover button.
+function answerControls(item) {
+  const sent = answerFor(item)
+  if (sent) return el('p', { class: 'answer-sent', role: 'status' }, el('b', { text: sent.verdict === 'yes' ? 'Sent: yes. ' : 'Sent: no. ' }),
+    sent.status === 'queued' ? 'Waiting for the agent to pick it up.' : 'The agent has it.')
+  const status = el('span', { class: 'answer-status', role: 'status' })
+  const why = el('textarea', { rows: '2', placeholder: 'What should the agent do instead?', 'aria-label': `What to do instead: ${item.kind}` })
+  const send = async (verdict, button) => {
+    if (verdict === 'no' && !why.value.trim()) { status.textContent = 'Say what to do instead.'; why.focus(); return }
+    button.disabled = true; status.textContent = 'Sending…'
+    try {
+      const res = await fetch('/api/answer', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ stage: item.stage, verdict, text: verdict === 'no' ? why.value : undefined }) })
+      const msg = await res.text()
+      if (!res.ok) throw new Error(msg)
+      status.textContent = 'Sent. The agent picks it up in a moment.'
+    } catch (e) { status.textContent = `Could not send: ${e.message}`; button.disabled = false }
+  }
+  const denyBox = el('div', { class: 'answer-deny', hidden: true }, why,
+    el('div', { class: 'answer-row' },
+      el('button', { type: 'button', class: 'primary', onclick: e => send('no', e.currentTarget) }, 'Send to the agent'),
+      el('button', { type: 'button', onclick: () => { denyBox.hidden = true; row.hidden = false; status.textContent = '' } }, 'Cancel')))
+  const row = el('div', { class: 'answer-row' },
+    el('button', { type: 'button', class: 'primary', onclick: e => send('yes', e.currentTarget) }, 'Yes, go ahead'),
+    el('button', { type: 'button', onclick: () => { row.hidden = true; denyBox.hidden = false; why.focus() } }, 'No…'))
+  return el('div', { class: 'answer' }, row, denyBox, status)
+}
 function renderAttention() {
   const items = needsYou()
   const copilot = !['timeout', 'failed'].includes(S.run?.copilot?.state) && S.graph?.stages.find(s => S.run?.stages?.[s.id]?.status === 'waiting' && S.run.stages[s.id].waiting_on === 'copilot')
-  const key = JSON.stringify([items, copilot?.id, copilot && S.run.stages[copilot.id].reason])
+  const answers = items.filter(i => i.stage).map(i => answerFor(i)?.status ?? null)
+  const key = JSON.stringify([items, answers, copilot?.id, copilot && S.run.stages[copilot.id].reason])
   if (key === attentionKey) return
   attentionKey = key
   const box = $('attention')
@@ -1375,7 +1413,8 @@ function renderAttention() {
     setChar(looker, 'look')
     box.append(el('div', { class: 'needs' }, looker, el('div', { class: 'needs-body' },
       el('h2', { text: items.length === 1 ? 'One thing needs you' : `${items.length} things need you` }),
-      el('ul', { class: 'block' }, items.map(i => el('li', null, el('span', { text: i.kind }), el('span', { class: 'what', text: i.what }), i.aside ? el('span', { class: 'aside', text: i.aside }) : null))))))
+      el('ul', { class: 'block' }, items.map(i => el('li', null, el('span', { text: i.kind }), el('span', { class: 'what', text: i.what }), i.aside ? el('span', { class: 'aside', text: i.aside }) : null,
+        i.stage ? answerControls(i) : null))))))
   }
   if (copilot) {
     const reason = S.run.stages[copilot.id].reason
@@ -2207,7 +2246,7 @@ function connect() {
       applyEvent(m.event, true)
     }
     else if (m.type === 'changes') { S.changes = m.changes ?? []; renderChanges() }
-    else if (m.type === 'inbox') { S.inbox = m.inbox ?? []; renderNotes() }
+    else if (m.type === 'inbox') { S.inbox = m.inbox ?? []; renderNotes(); renderAttention() }
     else if (m.type === 'results') { S.results = m.results ?? []; S.tested = m.tested ?? null; renderTested() }
   }
 }
