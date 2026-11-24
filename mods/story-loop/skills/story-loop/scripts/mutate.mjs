@@ -22,7 +22,8 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { findRoot, update, emit, headTree, runDir, load } from './loop.mjs'
+import { findRoot, emit, headTree, opStart, opUpdate, opEnd } from './loop.mjs'
+import { record } from './diag.mjs'
 
 const COMMON = [
   [/===/, '!=='], [/!==/, '==='], [/(?<![=!])==(?!=)/, '!='], [/!=(?!=)/, '=='],
@@ -96,17 +97,41 @@ function cleanup() {
   rmSync(active.worktree, { recursive: true, force: true })
   active = null
 }
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { cleanup(); process.exit(128 + ({ SIGINT: 2, SIGTERM: 15, SIGHUP: 1 })[sig]) })
+// The run this call works for, fixed before the first test runs: { runRoot, ctx, base, tree, results }.
+// null when no run was active at the start; such a call never attaches itself to a run that appears later.
+let live = null
+// What this call found, kept next to the run it was started for, also when it ends early
+// (a failing baseline, a signal): an interrupted call is a fact about the run, not nothing.
+function keepLog(status, extra = {}) {
+  if (!live) return null
+  const dir = join(live.runRoot, '.start-story', live.ctx.story)
+  const file = join(dir, `mutants-${Date.now()}-${live.ctx.op}.json`)
+  try {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(file, JSON.stringify({ status, op: live.ctx.op, run: live.ctx.run, attempt: live.ctx.attempt, base: live.base, tree: live.tree, ...extra }, null, 2) + '\n')
+  } catch { return null }
+  return file
+}
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => {
+  if (live) {
+    const log = keepLog('interrupted', { signal: sig, results: live.results })
+    opEnd(live.runRoot, live.ctx, 'interrupted', `${sig} after ${live.results.length} mutants; partial outcomes are in ${log ?? 'no file (it could not be written)'} and are not evidence`)
+  }
+  cleanup()
+  process.exit(128 + ({ SIGINT: 2, SIGTERM: 15, SIGHUP: 1 })[sig])
+})
 
 // Worktrees left by a run that was killed hard (SIGKILL) are removed on the next run.
 function pruneAbandoned(root) {
+  const removed = []
   for (const name of readdirSync(tmpdir()).filter(n => n.startsWith(WORKTREE_PREFIX))) {
     const pid = Number(name.slice(WORKTREE_PREFIX.length).split('-')[0])
     let alive = true
     try { process.kill(pid, 0) } catch (error) { alive = error.code !== 'ESRCH' }
-    if (!alive) rmSync(join(tmpdir(), name), { recursive: true, force: true })
+    if (!alive) { rmSync(join(tmpdir(), name), { recursive: true, force: true }); removed.push(name) }
   }
   try { execFileSync('git', ['worktree', 'prune'], { cwd: root, stdio: 'ignore' }) } catch {}
+  return removed
 }
 
 function runTests(command, cwd, seconds) {
@@ -134,14 +159,25 @@ async function main(argv) {
     else opt.files.push(argv[i])
   }
   if (!opt.test || !opt.files.length) throw new Error("usage: mutate.mjs --test '<command>' [--base ref] [--max n] [--timeout s] [--link path] <file>...")
+  for (const name of ['max', 'timeout'])
+    if (!(Number.isFinite(Number(opt[name])) && Number(opt[name]) > 0)) throw new Error(`--${name} needs a positive number, got "${opt[name]}"`)
   const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' })
   for (const file of opt.files)
     if (git('status', '--porcelain', '--', file).trim()) throw new Error(`${file} has uncommitted changes; commit first, mutants are judged on committed code`)
   const base = git('merge-base', opt.base, 'HEAD').trim()
   const tree = headTree(root)
+  // Whose evidence this will be is settled now, before any test runs, and never again.
+  const runRoot = findRoot(root)
+  const results = []
+  if (runRoot) {
+    const ctx = opStart(runRoot, 'mutate', 'test_review', { files: opt.files, test: opt.test, requested_base: opt.base, merge_base: base, max: Number(opt.max), timeout_s: Number(opt.timeout) })
+    live = { runRoot, ctx, base, tree, results }
+  }
+  const note = (kind, fields) => { if (live) record(live.runRoot, kind, fields) }
 
-  pruneAbandoned(root)
+  const abandoned = pruneAbandoned(root)
+  if (abandoned.length) note('mutate.abandoned', { removed: abandoned })
   const worktree = join(tmpdir(), `${WORKTREE_PREFIX}${process.pid}-${Date.now()}`)
   git('worktree', 'add', '--detach', '--quiet', worktree, 'HEAD')
   active = { worktree, root }
@@ -156,14 +192,22 @@ async function main(argv) {
   const changed = git('diff', '--name-only', '--diff-filter=AMR', '-z', base, 'HEAD').split('\0').filter(Boolean)
   const scope = changed.filter(mutable)
   const outside = changed.filter(f => !mutable(f) && !IS_TEST.test(f))
-  const results = []
   const covered = []
   const unsupported = []
   const inside = realpathSync(worktree) + sep
   try {
+    note('mutate.baseline', { outcome: 'started' })
+    const began = Date.now()
     const baseline = await runTests(opt.test, worktree, Number(opt.timeout))
-    if (baseline.code !== 0)
-      throw new Error(`the test command fails on unmutated code in the disposable copy (${classify(baseline)}); fix that first, or --link the untracked files it needs.\n${baseline.out.slice(-1500)}`)
+    // On unmutated code a failing run is a failure of the suite, not a "kill".
+    const how = baseline.code === 0 ? 'ok' : classify(baseline) === 'killed' ? 'failed' : classify(baseline)
+    note('mutate.baseline', { outcome: how, code: baseline.code ?? null, signal: baseline.signal ?? null, timed_out: Boolean(baseline.timedOut), elapsed_ms: Date.now() - began })
+    if (baseline.code !== 0) {
+      const log = keepLog('baseline_failed', { outcome: how, code: baseline.code ?? null, signal: baseline.signal ?? null, output: baseline.out.slice(-4000) })
+      if (live) opEnd(live.runRoot, live.ctx, 'baseline_failed', `the unmutated baseline did not pass (${how}); see ${log}`)
+      live = null
+      throw new Error(`the test command fails on unmutated code in the disposable copy (${how}); fix that first, or --link the untracked files it needs.\n${baseline.out.slice(-1500)}`)
+    }
     for (const file of opt.files) {
       const ext = extname(file)
       if (!mutable(file)) { unsupported.push(file); console.log(`skip ${file} (test file or unsupported type)`); continue }
@@ -179,6 +223,7 @@ async function main(argv) {
           if (results.filter(r => r.outcome !== 'skipped').length >= Number(opt.max)) { results.push({ ...row, outcome: 'skipped' }); continue }
           writeFileSync(path, lines.with(n - 1, mutated).join('\n'))
           const valid = parses(root, file, path)
+          const began = Date.now()
           if (valid === false) results.push({ ...row, outcome: 'invalid' })
           else {
             const run = await runTests(opt.test, worktree, Number(opt.timeout))
@@ -186,12 +231,15 @@ async function main(argv) {
             // A failing run of code nobody could check may be a parse error, not a test catching the change.
             results.push({ ...row, outcome: outcome === 'killed' && valid === null ? 'unverified' : outcome, log: run.out.slice(-1500) })
           }
+          // syntax_checked: true/false is the checker's answer; null means nothing here can check this file type.
+          note('mutate.mutant', { mutant: row.id, outcome: results.at(-1).outcome, syntax_checked: valid, elapsed_ms: Date.now() - began })
           writeFileSync(path, original)
         }
       }
     }
   } finally {
     cleanup()
+    note('mutate.cleanup', { outcome: existsSync(worktree) ? 'worktree left behind' : 'ok' })
   }
 
   const outcomes = Object.fromEntries(results.map(r => [r.id, r.outcome]))
@@ -211,29 +259,37 @@ async function main(argv) {
   if (outside.length) console.log(`Changed files of a type this runner cannot mutate (name them in the report): ${outside.join(', ')}`)
   console.log(`RESULT ${JSON.stringify(summary)}`)
 
-  // Inside a run the result is evidence for test review, with the per-mutant log next to it.
-  const runRoot = findRoot(root)
-  if (runRoot) {
-    const run = load(runRoot)
-    mkdirSync(runDir(runRoot, run), { recursive: true })
-    const log = join(runDir(runRoot, run), `mutants-${Date.now()}.json`)
-    writeFileSync(log, JSON.stringify({ base, ...summary, results }, null, 2) + '\n')
-    update(runRoot, r => {
+  // Inside a run the result is evidence for test review, with the per-mutant log next to it:
+  // for the run and attempt this call started in, and for no other.
+  if (!live) return
+  const { ctx } = live
+  const log = keepLog('finished', { ...summary, results }) ?? fail(`the mutant log could not be written under ${runRoot}`)
+  try {
+    opUpdate(runRoot, ctx, r => {
       // Several calls on one tree (one per file group, or a retry) merge by mutant id:
-      // a retry replaces the earlier outcome, the earlier log stays as history.
-      const prev = r.evidence?.mutants?.tree === tree ? r.evidence.mutants : {}
+      // a retry replaces the earlier outcome, the earlier log stays as history. Results
+      // of another run, attempt, tree or base are never merged with: they are other evidence.
+      const had = r.evidence?.mutants
+      const prev = had && had.tree === tree && had.base === base && (had.run ?? ctx.run) === ctx.run && (had.attempt ?? ctx.attempt) === ctx.attempt ? had : {}
       const merged = { ...prev.outcomes, ...outcomes }
       const mutants = {
-        ...tally(merged), tree, base, scope, outside, outcomes: merged,
+        ...tally(merged), tree, base, run: ctx.run, attempt: ctx.attempt, scope, outside, outcomes: merged,
         covered: [...new Set([...(prev.covered ?? []), ...covered])],
         unsupported: [...new Set([...(prev.unsupported ?? []), ...unsupported])],
         dispositions: prev.dispositions ?? {}, logs: [...(prev.logs ?? []), log],
       }
       return { ...r, evidence: { ...r.evidence, mutants } }
-    })
-    emit(runRoot, { kind: 'note', text: `mutants: ${summary.killed} of ${summary.valid} valid killed` })
+    }, { log, summary })
+  } catch (error) {
+    opEnd(runRoot, ctx, error.kind === 'stale' ? 'stale' : 'failed', error.message)
+    live = null
+    throw error
   }
+  opEnd(runRoot, ctx, 'ok', `${summary.killed} of ${summary.valid} valid killed`)
+  live = null
+  emit(runRoot, { kind: 'note', text: `mutants: ${summary.killed} of ${summary.valid} valid killed` })
 }
+const fail = message => { throw new Error(message) }
 
 // Counts per outcome; "valid" are the mutants that say something about the tests.
 export function tally(outcomes) {
@@ -244,5 +300,10 @@ export function tally(outcomes) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main(process.argv.slice(2)).catch(error => { cleanup(); console.error(`mutate: ${error.message}`); process.exit(1) })
+  main(process.argv.slice(2)).catch(error => {
+    cleanup()
+    if (live) opEnd(live.runRoot, live.ctx, 'failed', error.message)
+    console.error(`mutate: ${error.message}`)
+    process.exit(error.kind === 'stale' ? 4 : 1)
+  })
 }
