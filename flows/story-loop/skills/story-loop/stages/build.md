@@ -72,6 +72,13 @@ names. If it lists none, `LOOP block build "story-loop workers not loaded; start
   design specs, the constraints that matter, and the exact verification.
 - **Red first.** Every behaviour change starts with a test that fails for the
   right reason; the worker shows the failing run, then the passing one.
+  One slice at a time: one test, the least code that passes it, then the next
+  test. Not all tests first: tests written ahead of the code check the shape
+  the worker imagined, not the behaviour it built.
+- **Through the public interface.** Tests call the code the way its callers
+  do and check what they get back, not the database behind it or a private
+  method. Mock only at the system's edges (external APIs, mail, time,
+  randomness); never the project's own classes or modules.
 - **Tests to the point.** The brief sizes tests by what the change decides
   (each branch, boundary or default), not by its methods or inputs. Put both
   questions into it: *for each decision, would a test fail if it broke?* (no
