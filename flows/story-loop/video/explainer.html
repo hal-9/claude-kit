@@ -112,6 +112,8 @@ body { font: 24px/1.35 var(--sans); color: var(--ink); -webkit-font-smoothing: a
 #mline .op .new { color: var(--warn); }
 .mt { left: 150px; width: 980px; height: 72px; display: flex; align-items: center; gap: 18px; padding: 0 22px; }
 .mt .t { font-size: 25px; flex: 1; }
+.mt .tests { position: relative; width: 170px; height: 34px; }
+.mt .tests .chip { position: absolute; right: 0; top: 0; }
 #browser { left: 140px; top: 84px; width: 700px; height: 500px; }
 .steps { position: absolute; left: 34px; top: 74px; right: 30px; }
 .step { display: flex; gap: 16px; align-items: baseline; font-size: 25px; margin-bottom: 26px; }
@@ -131,6 +133,10 @@ body { font: 24px/1.35 var(--sans); color: var(--ink); -webkit-font-smoothing: a
 .fc { width: 206px; height: 52px; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 560; border-radius: 10px; background: var(--raised); border: 1px solid var(--line-2); white-space: nowrap; }
 #pulse { width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: var(--accent); }
 #ringb { width: 40px; height: 40px; margin: -20px 0 0 -20px; border-radius: 50%; border: 3px solid var(--accent); }
+
+/* learn: human review and retro */
+.cmt, .les { display: flex; align-items: center; gap: 14px; margin-top: 20px; font-size: 25px; }
+.cmt > span:nth-child(2), .les > span:first-child { flex: 1; }
 
 /* board + understand */
 .frame { left: 80px; top: 70px; width: 1120px; height: 520px; }
@@ -191,8 +197,8 @@ body { font: 24px/1.35 var(--sans); color: var(--ink); -webkit-font-smoothing: a
     <div class="abs" id="arrow1" style="left:570px;top:418px;width:150px;height:3px;background:var(--accent);transform-origin:0 50%"></div>
     <div class="abs card" id="draft" style="left:740px;top:330px;width:390px;padding:24px 28px">
       <div class="mono muted" style="font-size:22px">PR #482</div>
-      <div style="font-size:27px;font-weight:650;margin-top:6px">Draft pull request</div>
-      <div style="margin-top:10px"><span class="chip ok">reviewed</span></div>
+      <div style="font-size:27px;font-weight:650;margin-top:6px">Pull request</div>
+      <div style="margin-top:10px"><span class="chip ok">reviewed</span> <span class="chip accent">ready to merge</span></div>
     </div>
   </section>
 
@@ -209,12 +215,13 @@ body { font: 24px/1.35 var(--sans); color: var(--ink); -webkit-font-smoothing: a
     <div class="abs" id="gaps"><span class="chip warn">2 open questions</span></div>
     <div class="abs" id="gapsok" style="left:760px;top:250px"><span class="chip ok">questions answered</span></div>
     <div class="abs" id="stamp">&#10003; Signed off by you</div>
+    <div class="abs" id="lane" style="left:760px;top:450px"><span class="chip accent">lane &middot; standard</span></div>
   </section>
 
   <!-- 4 build -->
   <section class="scene" id="s-build">
     <div class="abs card" id="plan" style="left:80px;top:250px;width:220px;height:92px;display:grid;place-items:center;font-size:30px;font-weight:650">Plan</div>
-    <div class="abs muted" id="tfirst" style="left:1010px;top:100px;font-size:24px;font-weight:600">test first</div>
+    <div class="abs muted" id="tfirst" style="left:960px;top:100px;font-size:24px;font-weight:600">one test at a time</div>
     <div class="abs card task" id="task0"><span class="t">Overview query</span><span class="chip accent" id="tier0">opus</span><span class="tests"><span class="chip bad" id="red0">failing</span><span class="chip ok" id="green0">passing</span></span></div>
     <div class="abs card task" id="task1"><span class="t">Entry page view</span><span class="chip accent" id="tier1">sonnet</span><span class="tests"><span class="chip bad" id="red1">failing</span><span class="chip ok" id="green1">passing</span></span></div>
     <div class="abs card task" id="task2"><span class="t">Sidebar genres memo</span><span class="chip accent" id="tier2">haiku</span><span class="tests"><span class="chip bad" id="red2">failing</span><span class="chip ok" id="green2">passing</span></span></div>
@@ -222,6 +229,12 @@ body { font: 24px/1.35 var(--sans); color: var(--ink); -webkit-font-smoothing: a
 
   <!-- 5 prove -->
   <section class="scene" id="s-prove">
+    <div class="abs" id="halfQ" style="inset:0">
+      <div class="abs muted" id="qlabel" style="left:150px;top:80px;font-size:24px;font-weight:600">Quality gate, on the lines this change added</div>
+      <div class="abs card mt" id="q0" style="top:150px"><span class="t mono" style="font-size:23px">rubocop app spec</span><span class="chip ok">lint clean</span></div>
+      <div class="abs card mt" id="q1" style="top:250px"><span class="t mono" style="font-size:23px">xit "shelf without genres"</span><span class="tests"><span class="chip bad" id="q1bad">skipped test</span><span class="chip ok" id="q1ok">removed</span></span></div>
+      <div class="abs card mt" id="q2" style="top:350px"><span class="t">142 lines of code, lane budget 600</span><span class="chip ok">in budget</span></div>
+    </div>
     <div class="abs" id="halfA" style="inset:0">
       <div class="abs muted" id="mlabel" style="left:150px;top:80px;font-size:24px;font-weight:600">Break one line on purpose</div>
       <div class="abs" id="mline">if genres.size <span class="op"><span class="old">&gt;</span><span class="new">&gt;=</span></span> 0</div>
@@ -245,7 +258,7 @@ body { font: 24px/1.35 var(--sans); color: var(--ink); -webkit-font-smoothing: a
 
   <!-- 6 reviews -->
   <section class="scene" id="s-reviews">
-    <div class="abs" id="buildlbl" style="left:310px;top:118px;transform:translateX(-50%);font-size:22px;font-weight:650;color:var(--accent-ink);white-space:nowrap">back to Build</div>
+    <div class="abs" id="buildlbl" style="left:280px;top:118px;transform:translateX(-50%);font-size:22px;font-weight:650;color:var(--accent-ink);white-space:nowrap">back to Build</div>
     <svg class="g" id="rsvg" viewBox="0 0 1280 720"><path id="rback" fill="none" stroke="oklch(70% 0.15 268)" stroke-width="3" stroke-linecap="round"/></svg>
     <div class="abs card who" id="codex" style="top:300px">Second model</div>
     <div class="abs card who" id="copilot" style="top:430px">Copilot</div>
@@ -260,7 +273,24 @@ body { font: 24px/1.35 var(--sans); color: var(--ink); -webkit-font-smoothing: a
     <div class="abs" id="ringb"></div>
   </section>
 
-  <!-- 7 board -->
+  <!-- 7 learn: human review, merge, retro -->
+  <section class="scene" id="s-learn">
+    <div class="abs card" id="prcard" style="left:110px;top:110px;width:520px;padding:24px 28px">
+      <div class="mono muted" style="font-size:22px">PR #482 &middot; your review</div>
+      <div class="cmt" id="cm0"><span class="you">you</span><span>Rename this helper</span><span class="chip ok" id="cm0ok">fixed</span></div>
+      <div class="cmt" id="cm1"><span class="you">you</span><span>Why not in the model?</span><span class="chip" id="cm1ok">answered</span></div>
+    </div>
+    <div class="abs" id="merged" style="left:110px;top:360px"><span class="chip accent">merged by you</span></div>
+    <div class="abs card" id="retro" style="left:670px;top:110px;width:520px;padding:24px 28px">
+      <div style="font-size:27px;font-weight:650">Retro</div>
+      <div class="les" id="l0"><span>N+1 on genres</span><span class="chip ok">a test</span></div>
+      <div class="les" id="l1"><span>Unclear helper name</span><span class="chip ok">a reviewer rule</span></div>
+      <div class="les" id="l2"><span>A skipped test</span><span class="chip ok">a lint rule</span></div>
+      <div class="muted" id="ledgerline" style="font-size:22px;margin-top:20px">Kept in the ledger, counted across runs</div>
+    </div>
+  </section>
+
+  <!-- 8 board -->
   <section class="scene" id="s-board">
     <div class="abs card chrome frame">
       <div class="top"><i></i><i></i><i></i><span class="url">127.0.0.1:4317</span></div>
@@ -270,9 +300,9 @@ body { font: 24px/1.35 var(--sans); color: var(--ink); -webkit-font-smoothing: a
         <img id="img-tested" src="shots/board-tested.png" alt="">
       </div>
     </div>
-    <div class="abs callout" id="co0" style="left:110px;top:128px">The stages</div>
-    <div class="abs callout" id="co1" style="left:110px;top:128px">Who is working on what</div>
-    <div class="abs callout" id="co2" style="left:110px;top:128px">What was tested</div>
+    <div class="abs callout" id="co0" style="right:110px;top:530px">The stages</div>
+    <div class="abs callout" id="co1" style="right:110px;top:530px">Who is working on what</div>
+    <div class="abs callout" id="co2" style="right:110px;top:530px">What was tested</div>
   </section>
 
   <!-- 8 understand -->
@@ -315,7 +345,7 @@ body { font: 24px/1.35 var(--sans); color: var(--ink); -webkit-font-smoothing: a
     </div>
     <div class="abs" id="end">
       <div class="name">story<span>-</span>loop</div>
-      <div class="line">One story. Nine stages. You sign, you understand, you merge.</div>
+      <div class="line">One story. Twelve stages. You sign, you understand, you merge.</div>
     </div>
   </section>
 
@@ -324,10 +354,12 @@ body { font: 24px/1.35 var(--sans); color: var(--ink); -webkit-font-smoothing: a
 </div>
 
 <script src="scenes.js"></script>
+<script src="regions.js"></script>
 <script>
 'use strict'
 const $ = id => document.getElementById(id)
 const SC = Object.fromEntries(window.SCENES.map(s => [s.id, s]))
+const RG = window.REGIONS
 const LAST = window.SCENES[window.SCENES.length - 1]
 window.TOTAL = LAST.start + LAST.duration
 const FADE = 0.4
@@ -353,8 +385,9 @@ const typed = (text, lt, a, b) => text.slice(0, Math.round(prog(lt, a, b, lin) *
 const blink = t => (Math.floor(t * 2.2) % 2 ? 0 : 1)
 
 // ---- stage dots
-const STAGES = ['Contract', 'Build', 'Test review', 'Browser verify', 'Second review', 'Push', 'Copilot review', 'Fix comments', 'Report']
-const dx = i => 200 + i * 110
+const STAGES = ['Contract', 'Build', 'Quality gate', 'Test review', 'Browser verify', 'Second review', 'Push', 'Copilot review', 'Fix comments', 'Report', 'Human review', 'Retro']
+const STEP = 880 / (STAGES.length - 1)
+const dx = i => 200 + i * STEP
 const dotsEl = $('dots')
 dotsEl.append(Object.assign(document.createElement('div'), { className: 'rail' }))
 const fillEl = Object.assign(document.createElement('div'), { className: 'fill' })
@@ -364,16 +397,21 @@ const ringEl = Object.assign(document.createElement('div'), { className: 'ring' 
 const lblEl = Object.assign(document.createElement('div'), { className: 'lbl' }); dotsEl.append(lblEl)
 function stageAt(t) {
   const at = (id, i = 0) => SC[id].captions[i]?.start ?? SC[id].start
-  if (t < SC.build.start) return [0, 0]
-  if (t < SC.prove.start) return [1, 1]
-  if (t < at('prove', 2)) return [2, 2]
-  if (t < SC.reviews.start) return [3, 3]
-  if (t < at('reviews', 1)) return [4, 4]
-  if (t < at('reviews', 2)) return [6, 6]
-  if (t < SC.board.start) return [7, 7]
-  if (t >= at('limits', 1) && t < at('limits', 2)) return [5, 8]
-  if (t >= at('limits', 3) && t < SC.start.start) return [8, 8]
-  return [-1, 8]
+  const S = name => STAGES.indexOf(name), last = STAGES.length - 1
+  const on = name => [S(name), S(name)]
+  if (t < SC.build.start) return on('Contract')
+  if (t < SC.prove.start) return on('Build')
+  if (t < at('prove', 2)) return on('Quality gate')
+  if (t < at('prove', 3)) return on('Test review')
+  if (t < SC.reviews.start) return on('Browser verify')
+  if (t < at('reviews', 1)) return on('Second review')
+  if (t < at('reviews', 2)) return on('Copilot review')
+  if (t < SC.learn.start) return on('Fix comments')
+  if (t < at('learn', 2)) return on('Human review')
+  if (t < SC.board.start) return on('Retro')
+  if (t >= at('limits', 1) && t < at('limits', 2)) return [S('Push'), last]
+  if (t >= at('limits', 3) && t < SC.start.start) return [S('Human review'), last]
+  return [-1, last]
 }
 function renderDots(t) {
   const o = Math.min(prog(t, SC.contract.start, SC.contract.start + FADE, lin), 1 - prog(t, SC.start.start, SC.start.start + FADE, lin))
@@ -382,7 +420,7 @@ function renderDots(t) {
   if (o <= 0) return
   const [on, done] = stageAt(t)
   dotEls.forEach((d, i) => { d.className = `d${i === on ? ' on' : i < done ? ' done' : ''}` })
-  fillEl.style.width = `${Math.max(0, (Math.max(done, on) - 0) * 110)}px`
+  fillEl.style.width = `${Math.max(0, Math.max(done, on) * STEP)}px`
   ringEl.style.opacity = on < 0 ? '0' : '1'
   lblEl.style.opacity = on < 0 ? '0' : '1'
   if (on >= 0) {
@@ -440,6 +478,8 @@ R.contract = (lt) => {
   put($('gapsok'), prog(lt, cap('contract', 1) + 4.0, cap('contract', 1) + 4.4, lin) * (1 - prog(lt, signed - 0.3, signed, lin)), 0, 0)
   const k = prog(lt, signed, signed + 0.6)
   put($('stamp'), k, 0, 0, mix(1.12, 1, k))
+  // "proposes a lane" comes about two thirds into the second sentence
+  rise($('lane'), lt, mix(cap('contract', 1), cap('contract', 2), 0.62))
 }
 
 R.build = (lt) => {
@@ -458,19 +498,28 @@ R.build = (lt) => {
   }
 }
 
+const show = (id, o) => { $(id).style.opacity = String(o); $(id).style.visibility = o > 0 ? 'visible' : 'hidden' }
 R.prove = (lt) => {
-  const swap = cap('prove', 2) - 0.1
-  const A = 1 - prog(lt, swap - 0.4, swap, lin), B = prog(lt, swap, swap + 0.45, lin)
-  $('halfA').style.opacity = String(A); $('halfA').style.visibility = A > 0 ? 'visible' : 'hidden'
-  $('halfB').style.opacity = String(B); $('halfB').style.visibility = B > 0 ? 'visible' : 'hidden'
+  // three parts: the quality gate, then mutants, then the browser
+  const toA = cap('prove', 2) - 0.1, swap = cap('prove', 3) - 0.1
+  const Q = 1 - prog(lt, toA - 0.4, toA, lin)
+  const A = prog(lt, toA, toA + 0.45, lin) * (1 - prog(lt, swap - 0.4, swap, lin)), B = prog(lt, swap, swap + 0.45, lin)
+  show('halfQ', Q); show('halfA', A); show('halfB', B)
+  if (Q > 0) {
+    rise($('qlabel'), lt, 0.2)
+    for (let i = 0; i < 3; i++) rise($(`q${i}`), lt, cap('prove', 1) - 0.2 + i * 0.6)
+    const fixed = prog(lt, cap('prove', 1) + 2.3, cap('prove', 1) + 2.7, lin)
+    put($('q1bad'), 1 - fixed); put($('q1ok'), fixed)
+  }
   if (A > 0) {
-    rise($('mlabel'), lt, 0.2)
-    rise($('mline'), lt, 0.3)
-    const flip = prog(lt, cap('prove', 1) + 0.3, cap('prove', 1) + 0.8)
+    const m = cap('prove', 2)
+    rise($('mlabel'), lt, m)
+    rise($('mline'), lt, m + 0.1)
+    const flip = prog(lt, m + 0.6, m + 1.1)
     put($('mline').querySelector('.old'), 1 - flip, 0, -flip * 14)
     put($('mline').querySelector('.new'), flip, 0, (1 - flip) * 14)
-    rise($('mt0'), lt, cap('prove', 1) + 1.4)
-    rise($('mt1'), lt, cap('prove', 1) + 2.4)
+    rise($('mt0'), lt, m + 1.5)
+    rise($('mt1'), lt, m + 2.4)
   }
   if (B > 0) {
     const b0 = swap
@@ -490,7 +539,7 @@ R.prove = (lt) => {
 
 // reviews: the back-edge runs under the persistent stage dots, from Codex review to Build
 const GX = i => dx(i), GY = 29
-const ARC = { x1: GX(4), x2: GX(1), y: GY + 10, h: -80 }
+const ARC = { x1: GX(STAGES.indexOf('Second review')), x2: GX(1), y: GY + 10, h: -80 }
 $('rback').setAttribute('d', `M ${ARC.x1} ${ARC.y} C ${ARC.x1} ${ARC.y - ARC.h} ${ARC.x2} ${ARC.y - ARC.h} ${ARC.x2} ${ARC.y}`)
 const arcPoint = k => {
   const { x1, x2, y, h } = ARC, u = 1 - k
@@ -520,7 +569,7 @@ R.reviews = (lt) => {
     if (i === 0) {
       // lift off toward Codex review, shrink into the pulse
       const lift = prog(lt, back0, back0 + 0.8, eio)
-      x = mix(x, GX(4) - 103, lift); y = mix(y, GY + 20, lift); s = mix(1, 0.2, lift); o *= 1 - prog(lt, back0 + 0.6, back0 + 0.8, lin)
+      x = mix(x, ARC.x1 - 103, lift); y = mix(y, GY + 20, lift); s = mix(1, 0.2, lift); o *= 1 - prog(lt, back0 + 0.6, back0 + 0.8, lin)
     }
     el.style.left = '0px'; el.style.top = '0px'
     put(el, o, x, y, s)
@@ -544,6 +593,19 @@ R.reviews = (lt) => {
   $('bin2').style.background = `oklch(80% 0.14 75 / ${0.1 * parked})`
 }
 
+R.learn = (lt) => {
+  const c1 = cap('learn', 1), c2 = cap('learn', 2)
+  rise($('prcard'), lt, 0.2, 0.5)
+  rise($('cm0'), lt, 0.8, 0.5, 10)
+  rise($('cm1'), lt, 1.4, 0.5, 10)
+  rise($('cm0ok'), lt, c1 + 0.4, 0.4, 6)
+  rise($('cm1ok'), lt, c1 + 1.0, 0.4, 6)
+  rise($('merged'), lt, c2 + 0.2)
+  rise($('retro'), lt, c2 + 0.8, 0.5)
+  for (let i = 0; i < 3; i++) rise($(`l${i}`), lt, c2 + 1.6 + i * 0.7, 0.5, 10)
+  rise($('ledgerline'), lt, c2 + 4.0)
+}
+
 // camera over a 1120x700 screenshot inside a 1120x480 viewport
 const VW = 1120, VH = 480, IW = 1120, IH = 700
 function cam(r) {
@@ -562,9 +624,11 @@ const applyCam = (img, c) => { img.style.transform = `translate(${c.tx}px, ${c.t
 
 R.board = (lt) => {
   const c1 = cap('board', 1), c2 = cap('board', 2), c3 = cap('board', 3)
-  applyCam($('img-build'), camAt(lt, [[0, [0, 0, 1, 0.69]], [0.2, [0.01, 0.02, 0.99, 0.7], 2.0], [c1 - 0.2, [0.02, 0.22, 0.98, 0.5], 0.8]]))
-  applyCam($('img-columns'), camAt(lt, [[0, [0.01, 0.28, 0.43, 0.75]], [c2 + 0.2, [0.01, 0.3, 0.43, 0.72], 2]]))
-  applyCam($('img-tested'), camAt(lt, [[0, [0.01, 0, 0.43, 0.58]], [c3 + 0.2, [0.01, 0.02, 0.43, 0.56], 2]]))
+  // regions.js is measured from the board when the shots are taken; show the top of a tall region, drifting down a little
+  const top = (r, h, down = 0) => [r[0], r[1] + down, r[2], r[1] + down + h]
+  applyCam($('img-build'), camAt(lt, [[0, [0, 0, 1, 0.69]], [0.2, [0.01, 0.02, 0.99, 0.7], 2.0], [c1 - 0.2, RG.stages, 0.8]]))
+  applyCam($('img-columns'), camAt(lt, [[0, top(RG.columns, 0.5)], [c2 + 0.2, top(RG.columns, 0.5, 0.06), 2]]))
+  applyCam($('img-tested'), camAt(lt, [[0, top(RG.tested, 0.45)], [c3 + 0.2, top(RG.tested, 0.45, 0.04), 2]]))
   const sw1 = prog(lt, c2 - 0.2, c2 + 0.2, lin), sw2 = prog(lt, c3 - 0.2, c3 + 0.2, lin)
   $('img-build').style.opacity = String(1 - sw1)
   $('img-columns').style.opacity = String(sw1 * (1 - sw2))
@@ -574,16 +638,15 @@ R.board = (lt) => {
   put($('co2'), win(lt, c3 + 0.1, 9, 0.25))
 }
 
-// board-explain.png regions in image fractions (from the 2000x1250 preview)
-const fx = v => v / 2000, fy = v => v / 1250
-const BTN = [[888, 602, 1022, 645], [1034, 602, 1162, 645], [1174, 602, 1348, 645]]
-const PAR = [[880, 712, 1800, 790], [880, 800, 1800, 876], [880, 888, 1800, 962]]
+// board-explain.png: buttons and paragraphs in image fractions, from regions.js
+const BTN = RG.buttons, PAR = RG.paras
 R.understand = (lt) => {
-  const c = camAt(lt, [[0, [0.43, 0.3, 0.99, 0.8]], [0.2, [0.435, 0.38, 0.985, 0.8], 3.5]])
+  const e = RG.explain
+  const c = camAt(lt, [[0, [e[0] - 0.03, e[1] - 0.06, e[2] + 0.03, e[3] + 0.06]], [0.2, e, 3.5]])
   applyCam($('img-explain'), c)
   const box = (el, r, pad) => {
-    el.style.left = `${c.tx + fx(r[0]) * IW * c.s - pad}px`; el.style.top = `${c.ty + fy(r[1]) * IH * c.s - pad}px`
-    el.style.width = `${(fx(r[2]) - fx(r[0])) * IW * c.s + pad * 2}px`; el.style.height = `${(fy(r[3]) - fy(r[1])) * IH * c.s + pad * 2}px`
+    el.style.left = `${c.tx + r[0] * IW * c.s - pad}px`; el.style.top = `${c.ty + r[1] * IH * c.s - pad}px`
+    el.style.width = `${(r[2] - r[0]) * IW * c.s + pad * 2}px`; el.style.height = `${(r[3] - r[1]) * IH * c.s + pad * 2}px`
   }
   const tell = cap('understand', 5)
   for (let i = 0; i < 3; i++) {

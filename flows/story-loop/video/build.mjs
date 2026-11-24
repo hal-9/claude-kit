@@ -99,32 +99,69 @@ async function voice() {
   console.log(`voice: ${scenes.length} scenes, ${start.toFixed(1)}s, ${ELEVEN_KEY ? `ElevenLabs voice ${ELEVEN_VOICE}` : `local voice "${VOICE}"`}`)
 }
 
-// ---- shots: real screenshots of the board, taken from its demo replay
+// ---- shots: real screenshots of the board, taken from its demo replay. Where
+// the page should look in each one is measured from the board's own elements
+// and written to regions.js, so a board redesign needs no hand-measured pixels.
 
 async function shots() {
   const port = 4391
+  const VIEW = { width: 1440, height: 900 }
   const server = spawn('node', [join(HERE, '../skills/story-loop/board/server.mjs'), '--demo', '--port', String(port)], { stdio: 'ignore' })
   let browser
   // Everything after the spawn sits inside try: a failed launch must not leave the server running.
   try {
     browser = await launch()
-    const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: 'dark' })
+    const page = await browser.newPage({ viewport: VIEW, deviceScaleFactor: 2, colorScheme: 'dark' })
     await sleep(800)
     await page.goto(`http://127.0.0.1:${port}`)
     if (!(await page.getByText('Second review').count())) throw new Error(`port ${port} is serving another board; stop whatever listens there`)
     const shot = name => page.screenshot({ path: join(SHOTS, `${name}.png`) })
-    await sleep(11_000); await shot('board-build')          // workers building
-    await sleep(16_600); await shot('board-back')           // the second review sent work back
-    await sleep(16_000); await shot('board-waiting')        // waiting on Copilot, needs you
-    await page.getByRole('heading', { name: /Working now/ }).scrollIntoViewIfNeeded()
-    await page.mouse.wheel(0, 380); await sleep(600); await shot('board-columns')
-    await page.getByRole('heading', { name: /Tested in the browser/ }).evaluate(el => el.scrollIntoView({ block: 'start' }))
-    await sleep(600); await shot('board-tested')
-    await page.getByRole('button', { name: /Explain this: sidebar/ }).click()
+    // A box in viewport fractions [x0, y0, x1, y1], padded by `pad` pixels.
+    const frac = ({ x, y, width, height }, pad = 0) =>
+      [(x - pad) / VIEW.width, (y - pad) / VIEW.height, (x + width + pad) / VIEW.width, (y + height + pad) / VIEW.height].map(v => Math.round(v * 1000) / 1000)
+    const union = boxes => {
+      const x0 = Math.min(...boxes.map(b => b.x)), y0 = Math.min(...boxes.map(b => b.y))
+      return { x: x0, y: y0, width: Math.max(...boxes.map(b => b.x + b.width)) - x0, height: Math.max(...boxes.map(b => b.y + b.height)) - y0 }
+    }
+    const boxOf = locator => locator.boundingBox().then(b => { if (!b) throw new Error(`not on the board: ${locator}`); return b })
+    // The board's header is sticky: 110px keeps a heading clear of it.
+    const atTop = async (locator, offset = 110) => { await locator.evaluate((el, o) => scrollTo(0, el.getBoundingClientRect().top + scrollY - o), offset); await sleep(700) }
+    const regions = {}
+
+    await sleep(9_000); await shot('board-build')           // workers building
+    regions.stages = frac(union(await Promise.all((await page.getByRole('button', { name: /show what this stage ended with/ }).all()).map(boxOf))), 36)
+    await sleep(25_000); await shot('board-back')           // the second review sent work back
+    await sleep(24_000); await shot('board-waiting')        // waiting on Copilot, needs you
+
+    const working = page.getByRole('heading', { name: /^Working now/ })
+    await atTop(working); await shot('board-columns')
+    const evidence = await boxOf(page.getByRole('heading', { name: /^Evidence/ }))
+    const w = await boxOf(working)
+    // The left column runs from its heading to just before "Understand this change".
+    const column = (await boxOf(page.getByRole('heading', { name: /^Understand this change/ }))).x - 40 - w.x
+    regions.columns = frac({ x: w.x, y: w.y, width: column, height: Math.min(evidence.y, VIEW.height) - w.y - 16 }, 20)
+
+    const tested = page.getByRole('heading', { name: /^Tested in the browser/ })
+    await atTop(tested); await shot('board-tested')
+    const t = await boxOf(tested)
+    regions.tested = frac({ x: t.x, y: t.y, width: column, height: 540 }, 20)
+
+    await page.getByRole('button', { name: 'Explain this: sidebar_helper.rb' }).evaluate(b => b.click())
     await sleep(1500)
-    await page.getByRole('heading', { name: /Tell the agent to act/ }).evaluate(el => el.scrollIntoView({ block: 'end' }))
-    await sleep(600); await shot('board-explain')
-    console.log(`shots: 6 screenshots in ${SHOTS}`)
+    await atTop(page.getByRole('button', { name: /All files/ }))
+    await shot('board-explain')
+    const detail = await page.evaluate(() => {
+      const box = el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height } }
+      const visible = el => el.getBoundingClientRect().height > 0
+      const button = text => box([...document.querySelectorAll('button')].find(b => visible(b) && b.textContent.trim() === text))
+      const para = lead => box([...document.querySelectorAll('strong, b')].find(s => visible(s) && s.textContent.trim() === lead).parentElement)
+      return { buttons: ['Explain this', 'Why here?', 'How it connects'].map(button), paras: ['What it does.', 'Why here.', 'How it connects.'].map(para) }
+    })
+    regions.buttons = detail.buttons.map(b => frac(b, 0))
+    regions.paras = detail.paras.map(b => frac(b, 6))
+    regions.explain = frac(union([...detail.buttons, ...detail.paras]), 24)
+    writeFileSync(join(HERE, 'regions.js'), `window.REGIONS = ${JSON.stringify(regions, null, 2)}\n`)
+    console.log(`shots: 6 screenshots in ${SHOTS}, regions in regions.js`)
   } finally {
     await browser?.close()
     server.kill()
