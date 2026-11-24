@@ -239,9 +239,11 @@ your reason; the human decides.
   Each one is in *How (Proposed)* and named at the sign-off.
 - **Feature flag.** Ask whether the change ships behind a flag. With a flag,
   the matrix has a check for both arms (flag on, flag off).
-- **Diff budget.** Each lane has one (`graph.json`, `lanes`). The quality gate
-  flags a diff over it: a story that outgrows its lane is split or re-signed,
-  not quietly grown.
+- **Diff budget.** Each lane has one (`graph.json`, `lanes`), in lines of
+  code: test files are reported beside it, not counted against it, because a
+  test is sized by the behaviour it protects (test review judges that). The
+  quality gate flags code over the budget: a story that outgrows its lane is
+  split or re-signed, not quietly grown.
 
 ### Show the plan, do not only tell it
 
@@ -346,7 +348,8 @@ as complexity come from them. It records, for this exact code tree:
   `lint-disable` (a linter or type checker switched off in place),
   `skipped-test` (skipped, pending or focused), `workaround-comment` (a comment
   that explains a shortcut instead of removing it: "for now", "hack", TODO),
-  and `size` (the diff is over the lane's budget).
+  and `size` (the diff's code, test files not counted, is over the lane's
+  budget).
 
 Each signal has an id (`file:line:kind`, or `size`). Remove it (a worker fixes
 the root cause; then `LOOP back quality build "<what>"` if code changes, commit,
@@ -444,8 +447,9 @@ first time; the output says how many were carried over, and the report says so.
 a new test changes the code after the quality gate passed. Before passing test
 review, run `QUALITY` again with the same lint commands: a clean run brings the
 passed gate up to date, so the push does not find it stale and send the run
-back. The human's acceptance of the story's size carries over while the diff
-has grown by at most a quarter; past that it is asked again.
+back. Test files do not count against the budget, and the human's acceptance
+of the story's size carries over while its code has grown by at most a
+quarter; past that it is asked again.
 
 Never delete a test because of a mutation result. A test goes only when it is
 wrong or truly redundant on its own merits, and then name the test that still
@@ -923,8 +927,8 @@ to write. Lead with what they should look at, in this order: what needs their
 decision (parked findings, accepted quality signals, hard decisions as
 built), the flow chart from `.start-story/<story>/flow.md` in a `mermaid`
 block (GitHub renders it) with what changed in it marked, then the evidence.
-Say how large the diff is against the lane's budget and which files to read
-first.
+Say how large the diff is against the lane's budget (lines of code, and the
+lines in tests beside them) and which files to read first.
 
 Write the report from the run state (`LOOP json`), not from memory: the final
 head, the lane, per Test Step the checks and verdicts (n of the approved m),

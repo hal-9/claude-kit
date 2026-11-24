@@ -806,8 +806,8 @@ test('tests added in test review are checked by the quality gate then, not found
   assert.deepEqual(staleStages(dir, load(dir)), [])
   assert.equal(passProblem(dir, load(dir), 'test_review'), null)
 
-  // Grown by more than a quarter: the human is asked again, and the gate stays stale until then.
-  commit('more_spec.rb', lines(60))
+  // Code grown by more than a quarter: the human is asked again, and the gate stays stale until then.
+  commit('more.rb', lines(60))
   assert.equal(quality(dir, '--lint', 'true').status, 1)
   assert.equal(load(dir).evidence.quality.dispositions.size, undefined)
   assert.deepEqual(staleStages(dir, load(dir)), ['quality'])
@@ -818,8 +818,9 @@ test('a diff larger than the signed-off lane is a signal the human has to accept
   withRun(dir, { lane: { ...LANE, lane: 'light' } })
   commit('big.rb', Array.from({ length: 200 }, (_, i) => `puts ${i}`).join('\n') + '\n')
   commit('Gemfile.lock', 'x\n'.repeat(900)) // generated files do not count
+  commit('big_spec.rb','x\n'.repeat(300)) // tests are reported, not budgeted
   const out = quality(dir, '--no-lint', 'no linter here')
-  assert.match(out.stdout, /SIGNAL\s+size\s+200 changed lines; the light lane was signed off for 150/)
+  assert.match(out.stdout, /SIGNAL\s+size\s+200 changed lines of code \(\+300 in tests\); the light lane was signed off for 150/)
   assert.match(qualityProblem(load(dir).evidence.quality), /size \(size\)/)
   assert.match(cli(dir, 'quality', 'accept', 'size', 'it is fine').stderr, /only on the human's word/)
   assert.equal(cli(dir, 'quality', 'accept', 'size', 'human: generated fixtures, keep it in one PR').status, 0)

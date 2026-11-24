@@ -8,7 +8,7 @@
 //   lint-disable        a linter or type checker switched off in place
 //   skipped-test        a test skipped, pending or focused
 //   workaround-comment  a comment that explains a shortcut instead of removing it
-//   size                the diff is larger than the lane the human signed off
+//   size                the diff's code (test files not counted) is larger than the lane the human signed off
 // The result is this attempt's evidence for the code tree it ran on.
 // ponytail: textual signals, one regex per kind. Structural measures (complexity,
 // duplication) are the repo's linter's job: pass it with --lint.
@@ -68,16 +68,19 @@ function main(argv) {
       const lines = source.split('\n').map((text, i) => [i + 1, text]).filter(([n]) => wanted.has(n))
       flags = { ...flags, ...signalsFor(file, lines) }
     }
-    const size = { files: 0, added: 0, removed: 0 }
+    // Tests are sized by the behaviour they protect, not by a line budget: the lane budgets the code only.
+    const size = { files: 0, added: 0, removed: 0, tests: 0 }
     for (const row of git('diff', '--numstat', range).split('\n').filter(Boolean)) {
       const [added, removed, file] = row.split('\t')
       if (GENERATED.test(file)) continue
       size.files += 1; size.added += Number(added) || 0; size.removed += Number(removed) || 0
+      if (IS_TEST.test(file)) size.tests += (Number(added) || 0) + (Number(removed) || 0)
     }
+    const code = s => (s?.added ?? 0) + (s?.removed ?? 0) - (s?.tests ?? 0)
     const lane = run.lane?.lane ?? null
     const budget = GRAPH.lanes[lane]?.diff_lines ?? null
-    if (budget !== null && size.added + size.removed > budget)
-      flags.size = { kind: 'size', text: `${size.added + size.removed} changed lines; the ${lane} lane was signed off for ${budget}. Split the story, or have the human accept the size` }
+    if (budget !== null && code(size) > budget)
+      flags.size = { kind: 'size', text: `${code(size)} changed lines of code (+${size.tests} in tests); the ${lane} lane was signed off for ${budget}. Split the story, or have the human accept the size` }
     const lint = opt.lint.map(command => {
       // ponytail: the command is the conductor's, run as written in the repo root.
       const r = spawnSync('sh', ['-c', command], { cwd: root, encoding: 'utf8', timeout: 10 * 60_000, maxBuffer: 32 << 20 })
@@ -88,10 +91,10 @@ function main(argv) {
       const earlier = r.evidence?.quality
       // A reason was given for one line of one tree; on other code it has to be given again.
       const kept = earlier?.tree === tree ? Object.fromEntries(Object.entries(earlier.dispositions ?? {}).filter(([id]) => id in flags)) : {}
-      // The human's yes to the story's size outlives the tests added after it, up to a quarter more.
+      // The human's yes to the story's size outlives code added after it, up to a quarter more.
       const accepted = earlier?.dispositions?.size
-      const was = (earlier?.size?.added ?? 0) + (earlier?.size?.removed ?? 0)
-      if (flags.size && !kept.size && /^human:/i.test(accepted ?? '') && size.added + size.removed <= was * SIZE_CARRY)
+      const was = code(earlier?.size)
+      if (flags.size && !kept.size && /^human:/i.test(accepted ?? '') && code(size) <= was * SIZE_CARRY)
         kept.size = `${accepted.replace(/ \(carried from \d+ lines\)$/, '')} (carried from ${was} lines)`
       const quality = { tree, commit: headCommit(root), base: baseName(base), lint, no_lint: opt.noLint ?? null, flags, dispositions: kept, size: { ...size, lane, budget }, at: new Date().toISOString() }
       return { ...r, evidence: { ...r.evidence, quality } }
@@ -99,7 +102,7 @@ function main(argv) {
     const q = next.evidence.quality
     for (const l of lint) console.log(`lint ${l.exit === 0 ? 'clean ' : 'FAILED'}  ${l.command}${l.exit === 0 ? '' : `\n${l.output}`}`)
     if (opt.noLint) console.log(`no lint: ${opt.noLint}`)
-    console.log(`${size.files} files, +${size.added} −${size.removed}${budget === null ? '' : ` (${lane} lane: ${budget})`}`)
+    console.log(`${size.files} files, +${size.added} −${size.removed}: ${code(size)} lines of code, ${size.tests} in tests${budget === null ? '' : ` (${lane} lane: ${budget} lines of code)`}`)
     for (const [id, f] of Object.entries(flags)) console.log(`${q.dispositions[id] ? 'accepted' : 'SIGNAL  '}  ${id}  ${f.text}`)
     const problem = qualityProblem(q)
     // Run again after a later stage changed the code (tests for surviving mutants): a clean

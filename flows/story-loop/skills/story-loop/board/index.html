@@ -1364,7 +1364,7 @@ function stageFacts(id, run) {
   if (id === 'quality' && ev.quality) {
     const q = ev.quality
     add('Lint', q.no_lint ? `none: ${q.no_lint}` : list((q.lint ?? []).map(l => `${l.exit === 0 ? 'clean' : `exit ${l.exit}`}: ${String(l.command).slice(0, 120)}`)))
-    add('Size', q.size ? `${q.size.files} files, +${q.size.added} −${q.size.removed} (${q.size.lane} lane: ${q.size.budget} lines)` : null)
+    add('Size', q.size ? `${q.size.files} files, +${q.size.added} −${q.size.removed}${q.size.tests == null ? '' : `, ${q.size.tests} of them in tests`} (${q.size.lane} lane: ${q.size.budget} lines of code)` : null)
     add('Signals', list(Object.entries(q.flags ?? {}).map(([k, f]) => `${f.text}${q.dispositions?.[k] ? ` → ${q.dispositions[k]}` : ''}`)))
   }
   if (id === 'test_review' && ev.mutants) {
