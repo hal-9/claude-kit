@@ -770,6 +770,9 @@ export function passProblem(root, run, stage) {
       const m = run.evidence?.mutants
       if (!m) return 'no mutation results for this attempt (run mutate.mjs)'
       if (m.tree !== tree) return 'the mutation results cover older code; run mutate.mjs again'
+      // Results under one lane's budget say nothing about a lane signed off later.
+      const lane = run.lane?.lane ?? 'standard'
+      if (m.lane && m.lane !== lane) return `the mutants ran under the ${m.lane} lane, the story is now ${lane}; run mutate.mjs again`
       return mutantsProblem(m) ?? (dirty(root) ? 'commit the test changes first' : null)
     }
     case 'verify': {

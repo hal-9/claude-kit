@@ -63,6 +63,80 @@ test('a weak test lets a boundary mutant survive; the checkout is untouched and 
   assert.equal(readdirSync(tmpdir()).filter(n => n.startsWith(`story-loop-mut-${run.pid}`)).length, 0)
 })
 
+test('--jobs runs mutants side by side in separate copies and reports exactly what one slot would', () => {
+  const source = 'export const big = n => n > 10 && n < 100\nexport const small = n => n <= 3 || n === 7\n'
+  const probe = mkdtempSync(join(tmpdir(), 'sl-slots-'))
+  // Each run says which slot it is and how many runs were going at that moment.
+  const check = `import { big, small } from './calc.mjs'
+import { writeFileSync, readdirSync, rmSync, appendFileSync } from 'node:fs'
+const me = ${JSON.stringify(probe)} + '/running-' + process.env.STORY_LOOP_SLOT
+writeFileSync(me, '')
+await new Promise(r => setTimeout(r, 250))
+appendFileSync(${JSON.stringify(probe)} + '/log', process.env.STORY_LOOP_SLOT + ':' + JSON.stringify(process.env.TEST_ENV_NUMBER) + ':' + readdirSync(${JSON.stringify(probe)}).filter(n => n.startsWith('running-')).length + '\\n')
+rmSync(me)
+if (!big(11) || big(5) || !small(2) || small(5)) process.exit(1)
+`
+  const { dir } = fixture(source, check)
+  const serial = mutate(dir, '--test', 'node check.mjs', 'calc.mjs')
+  assert.equal(serial.status, 0, serial.stderr)
+  writeFileSync(join(probe, 'log'), '')
+  const parallel = mutate(dir, '--test', 'node check.mjs', '--jobs', '3', 'calc.mjs')
+  assert.equal(parallel.status, 0, parallel.stderr)
+  const lines = out => out.split('\n').filter(l => /^(killed|SURVIVED|invalid|timeout|not run)/.test(l)).join('\n')
+  assert.equal(lines(parallel.stdout), lines(serial.stdout), 'same mutants, same outcomes, same order')
+  assert.deepEqual(result(parallel.stdout), result(serial.stdout))
+
+  const seen = readFileSync(join(probe, 'log'), 'utf8').trim().split('\n').map(l => l.split(':'))
+  assert.deepEqual([...new Set(seen.map(([slot]) => slot))].sort(), ['1', '2', '3'], 'every slot ran')
+  assert.ok(seen.some(([, , running]) => Number(running) > 1), 'runs overlapped')
+  assert.deepEqual([...new Set(seen.map(([slot, env]) => `${slot}=${env}`))].sort(), ['1=""', '2="2"', '3="3"'], 'TEST_ENV_NUMBER in the parallel_tests convention')
+  assert.equal(readFileSync(join(dir, 'calc.mjs'), 'utf8'), source)
+  assert.equal(readdirSync(tmpdir()).filter(n => n.startsWith(`story-loop-mut-${parallel.pid}`)).length, 0, 'every slot copy removed')
+})
+
+test('--jobs: a slot that cannot run green next to the others stops the call before any mutant counts', () => {
+  const { dir } = fixture('export const big = n => n > 10\n', "if (process.env.STORY_LOOP_SLOT === '2') process.exit(1)\n")
+  withRun(dir)
+  const run = mutate(dir, '--test', 'node check.mjs', '--jobs', '2', 'calc.mjs')
+  assert.notEqual(run.status, 0)
+  assert.match(run.stderr, /fails on unmutated code.*--jobs 1/s)
+  assert.equal(load(dir).evidence?.mutants, undefined, 'no evidence from a run whose slots disagree')
+  for (const bad of ['0', '2.5', '9'])
+    assert.match(mutate(dir, '--test', 'node check.mjs', '--jobs', bad, 'calc.mjs').stderr, /--jobs/)
+})
+
+test('the lane sets the budget: light mutates up to 10 front-end mutants, heavy has no cap, a changed lane needs a new run', async () => {
+  const { passProblem } = await import('../skills/story-loop/scripts/loop.mjs')
+  const { LANE } = await import('./helpers.mjs')
+  // 4 lines, each with several operators: more than 10 mutants.
+  const source = 'export const big = n => n > 10 && n < 100\nexport const a = n => n >= 2 || n === 7\nexport const b = n => n <= 3 && n !== 9\nexport const c = n => n < 5 || true\n'
+  const r = fixture(source, "import { big } from './calc.mjs'\nif (!big(11)) process.exit(1)\n")
+  writeFileSync(join(r.dir, 'model.rb'), 'def big(n) = n > 10\n'); r.git('add', '.'); r.git('commit', '-qm', 'ruby too')
+  const { dir } = r
+
+  withRun(dir, { lane: { ...LANE, lane: 'light' } })
+  const light = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'model.rb')
+  assert.equal(light.status, 0, light.stderr)
+  const l = result(light.stdout)
+  assert.equal(l.killed + l.survived + l.invalid + l.unverified + l.timeout, 10, 'light runs 10')
+  assert.ok(l.skipped > 0, 'the rest is visible as not run')
+  assert.match(light.stdout, /skip model\.rb \(the light lane mutates/)
+  const m = load(dir).evidence.mutants
+  assert.deepEqual([m.lane, m.lane_skipped, m.scope], ['light', ['model.rb'], ['calc.mjs']])
+  assert.doesNotMatch(passProblem(dir, load(dir), 'test_review') ?? '', /not mutated: model\.rb/, 'a file the lane leaves out does not block')
+
+  // The story is re-signed as standard: the light results say nothing about it.
+  update(dir, run => ({ ...run, lane: { ...LANE, lane: 'standard' } }))
+  assert.match(passProblem(dir, load(dir), 'test_review'), /ran under the light lane, the story is now standard/)
+
+  update(dir, run => ({ ...run, lane: { ...LANE, lane: 'heavy' }, evidence: {} }))
+  const heavy = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'model.rb')
+  assert.equal(heavy.status, 0, heavy.stderr)
+  assert.equal(result(heavy.stdout).skipped, 0, 'heavy runs every mutant')
+  assert.ok(result(heavy.stdout).total > 10)
+  assert.deepEqual(load(dir).evidence.mutants.lane_skipped, [])
+})
+
 test('an import-only test gets no kill credit from unparsable mutants', () => {
   const { dir } = fixture('export const same = (a, b) => a === b && 10\n', "import './calc.mjs'\n")
   const run = mutate(dir, '--test', 'node check.mjs', 'calc.mjs')
@@ -366,4 +440,44 @@ test('R10: a baseline that fails is kept with its output, and leaves no evidence
   assert.deepEqual([load(dir).evidence, load(dir).ops], [{}, {}])
   for (const bad of [['--timeout', 'soon'], ['--max', '0'], ['--timeout', '-1']])
     assert.match(mutate(dir, '--test', 'node check.mjs', ...bad, 'calc.mjs').stderr, /needs a positive number/, bad.join(' '))
+})
+
+test('a second attempt takes over kills that still hold and runs only what can have changed; an edited test runs everything', () => {
+  const source = 'export const big = n => n > 10 && n < 100\n'
+  const r = fixture(source, "import { big } from './calc.mjs'\nimport { small } from './other.mjs'\nif (!big(11) || big(5) || big(500) || !small(1)) process.exit(1)\n")
+  writeFileSync(join(r.dir, 'other.mjs'), 'export const small = n => n < 3\n')
+  writeFileSync(join(r.dir, 'helper.test.mjs'), '// a test file the rule watches\n')
+  r.git('add', '.'); r.git('commit', '-qm', 'other and a test')
+  const { dir } = r
+  withRun(dir)
+  const first = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'other.mjs')
+  assert.equal(first.status, 0, first.stderr)
+  const killedFirst = Object.entries(load(dir).evidence.mutants.outcomes).filter(([id, o]) => o === 'killed' && id.startsWith('calc.mjs:')).length
+  assert.ok(killedFirst > 0)
+
+  // The run goes back to build: the evidence becomes history, as `back` does.
+  const sendBack = () => update(dir, run => ({ ...run, history: [...(run.history ?? []), { at: 'x', from: 'second_review', to: 'build', evidence: run.evidence }], evidence: {} }))
+  sendBack()
+  // Round 2 changes other.mjs and only adds a test.
+  writeFileSync(join(dir, 'other.mjs'), 'export const small = n => n < 4\n')
+  writeFileSync(join(dir, 'more.test.mjs'), '// added\n')
+  r.git('add', '.'); r.git('commit', '-qm', 'round 2')
+  const second = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'other.mjs')
+  assert.equal(second.status, 0, second.stderr)
+  assert.match(second.stdout, new RegExp(`${killedFirst} mutants? killed on \\w{7} and unchanged since: taken over`))
+  assert.match(second.stdout, /^carried {2}calc\.mjs:1/m)
+  assert.doesNotMatch(second.stdout, /^carried {2}other\.mjs/m, 'the changed file runs again')
+  const m = load(dir).evidence.mutants
+  assert.equal(m.carried.length, killedFirst)
+  assert.ok(m.carried.every(id => id.startsWith('calc.mjs:') && m.outcomes[id] === 'killed'))
+  assert.equal(result(second.stdout).carried, killedFirst)
+
+  // Round 3 edits an existing test: a weaker test could let a mutant through, so nothing carries.
+  sendBack()
+  writeFileSync(join(dir, 'helper.test.mjs'), '// edited\n')
+  r.git('commit', '-qam', 'round 3')
+  const third = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'other.mjs')
+  assert.equal(third.status, 0, third.stderr)
+  assert.match(third.stdout, /nothing taken over from the earlier results: tests were changed or removed since \(helper\.test\.mjs\)/)
+  assert.equal(result(third.stdout).carried, 0)
 })

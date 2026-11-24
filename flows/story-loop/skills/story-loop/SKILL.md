@@ -341,6 +341,24 @@ says so). The result is recorded as this attempt's evidence, for the code tree
 it ran on. Every mutant has an id (`file:line:hash`); several runs on one tree
 merge by id, so a second run of the same mutant replaces its first outcome.
 
+**Run them side by side where the tests share nothing.** Mutants run one at a
+time by default, each running the covering tests again, which is most of this
+stage's time. `--jobs <n>` (at most 8) runs n at once, each slot in its own
+copy, and every slot first proves the unmutated tests pass there. Make one call
+per kind of test, run them in parallel (background both, wait for both), and
+pick `--jobs` by what the tests share outside the checkout:
+
+- tests that touch no database, port or shared file (Jest, Vitest, `bun test`,
+  plain unit tests): `--jobs 4`;
+- tests on one shared database (Rails request, model and service specs, unless
+  the repo's `config/database.yml` names the test database after
+  `TEST_ENV_NUMBER`, which the script sets per slot): `--jobs 1`. Specs on a
+  shared database fail by accident when run together, and an accidental failure
+  would count as a kill.
+
+If a slot's baseline fails, the call stops before any mutant counts; run it
+again with `--jobs 1`, never with fewer tests.
+
 The scope is every changed file the script can mutate (Ruby, JS, TS; not test
 files), taken from the diff against `--base`, not from the files you name. The
 stage passes only when all of it is accounted for:
@@ -369,6 +387,26 @@ stage passes only when all of it is accounted for:
   per behaviour, see which test fails — and name them in the report.
 - A file that is a symlink out of the disposable copy is skipped, never
   written through.
+
+**The lane sets how much mutation the story gets** (`graph.json`, `lanes.*.mutants`),
+read from the run, so you pass no `--max` unless you mean to change it:
+
+| Lane | Mutants per call | Files |
+| --- | --- | --- |
+| `light` | 10 | front-end only (JS, TS); Ruby files are listed as not mutated in this lane and do not block |
+| `standard` | 25 | all |
+| `heavy` | no cap | all |
+
+Results under one lane do not count after the story is re-signed into
+another: run the mutants again. Name the lane's left-out files in the report.
+
+**A second attempt runs only what can have changed.** After a round back to
+build (or new commits in this stage), the script takes over every earlier kill
+whose file is unchanged since, on the same base, and runs the rest: changed
+files, and every earlier survivor, timeout or unclear result. When a test file
+was edited or deleted since (not only added), nothing is taken over and every
+mutant runs: a weakened test could let one through. Run the same calls as the
+first time; the output says how many were carried over, and the report says so.
 
 Never delete a test because of a mutation result. A test goes only when it is
 wrong or truly redundant on its own merits, and then name the test that still
