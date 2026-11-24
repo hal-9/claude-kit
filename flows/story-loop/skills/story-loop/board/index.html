@@ -171,6 +171,22 @@ h1 { font-size: clamp(1.6rem, 1.2rem + 1.2vw, 2.25rem); line-height: 1.15; font-
 
 .now-line { margin-top: 22px; font-size: 14.5px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
 .now-line b { color: var(--ink); font-weight: 600; }
+/* A station opens what its stage ended with. */
+.stage-hit { position: absolute; inset: -4px 0; border: 0; background: none; border-radius: 14px; cursor: pointer; padding: 0; }
+.stage-hit:disabled { cursor: default; }
+.stage-hit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.stage[data-open] .dot { outline: 2px solid var(--accent); outline-offset: 3px; }
+.stage-detail { margin-top: 18px; background: var(--surface); border-radius: 14px; box-shadow: var(--shadow, none); border: 1px solid var(--line); padding: 16px 18px; display: grid; gap: 10px; font-size: 14px; }
+.stage-detail:focus { outline: none; }
+.sd-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.sd-head h3 { font-size: 15px; color: var(--ink); }
+.sd-head .sd-meta { color: var(--ink-3); font-size: 13px; }
+.sd-head .link { margin-left: auto; }
+.stage-detail dl { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: 6px 14px; margin: 0; }
+.stage-detail dt { color: var(--ink-3); }
+.stage-detail dd { margin: 0; color: var(--ink-2); overflow-wrap: anywhere; }
+.stage-detail ul { margin: 0; padding-left: 1.1em; display: grid; gap: 3px; }
+@media (max-width: 640px) { .stage-detail dl { grid-template-columns: 1fr; gap: 2px; } .stage-detail dt { margin-top: 6px; } }
 
 @keyframes ring { 0% { transform: scale(0.92); opacity: 0.6; } 70%, 100% { transform: scale(1.18); opacity: 0; } }
 @keyframes pulse { 0% { transform: scale(1); opacity: 0.55; } 70%, 100% { transform: scale(1.9); opacity: 0; } }
@@ -757,6 +773,7 @@ details.history .h-ev { display: block; font-size: 12px; color: var(--ink-3); }
     <ol class="stages" id="stages"></ol>
     <div class="crew" id="crew" aria-hidden="true"></div>
     <p class="now-line" id="now" aria-live="polite"></p>
+    <section class="stage-detail" id="stage-detail" hidden tabindex="-1" aria-labelledby="sd-title"></section>
     <details class="activity history" id="history" hidden>
       <summary><b>Earlier attempts</b><span class="a-latest" id="history-latest"></span></summary>
       <ol class="feed" id="history-list"></ol>
@@ -1044,9 +1061,11 @@ function buildStages() {
     const sub = el('span', { class: 'stage-sub' })
     const ext = el('span', { class: 'stage-ext' })
     const state = el('span', { class: 'vh' })
+    const hit = el('button', { type: 'button', class: 'stage-hit', disabled: true, 'aria-controls': 'stage-detail', 'aria-expanded': 'false',
+      'aria-label': `${s.label}: show what this stage ended with`, onclick: () => toggleStageDetail(s.id) })
     const li = el('li', { class: 'stage', title: s.hint, dataset: { id: s.id, status: 'pending' } },
-      dot, el('span', { class: 'stage-label', text: s.label }), result, ext, sub, state)
-    stageEls[s.id] = { li, dot, sub, round, state, badge, result, ext }
+      dot, el('span', { class: 'stage-label', text: s.label }), result, ext, sub, state, hit)
+    stageEls[s.id] = { li, dot, sub, round, state, badge, result, ext, hit }
     list.append(li)
   }
 }
@@ -1129,7 +1148,9 @@ function renderStages() {
     e.sub.textContent = stale ? 'stale \u00b7 covered older code' : ['passed', 'running'].includes(st.status) || st.attempt > 1 ? stageSub(st) : ''
     e.round.textContent = st.rounds > 0 ? `round ${st.rounds + 1}` : ''
     e.state.textContent = `: ${st.status}${stale ? ', stale: covered older code' : ''}${st.rounds ? `, round ${st.rounds + 1}` : ''}${result ? `. ${result}` : ''}${ext?.[0] ? `. ${ext[0]}` : ''}`
+    e.hit.disabled = st.status === 'pending'
   })
+  renderStageDetail()
   renderHistory()
   const now = $('now')
   if (!run) { now.replaceChildren(); return }
@@ -1157,6 +1178,71 @@ function renderHistory() {
     el('span', null, `${label(h.from)} sent work back to ${label(h.to)}${h.reason ? `: ${h.reason}` : ''}`,
       evidenceSummary(h.evidence) ? el('span', { class: 'h-ev', text: `Evidence of that attempt (kept, no longer counted): ${evidenceSummary(h.evidence)}` }) : null))))
 }
+
+// ---------- what a stage ended with ----------
+// One station open at a time; it follows the run as it changes and closes with
+// a second click, Escape or the close link.
+let openStage = null
+function toggleStageDetail(id) {
+  openStage = openStage === id ? null : id
+  renderStageDetail()
+  if (openStage) $('stage-detail').focus({ preventScroll: true })
+  else stageEls[id]?.hit.focus({ preventScroll: true })
+}
+const countBy = (list, key) => Object.entries(list.reduce((n, x) => ({ ...n, [x[key] ?? 'open']: (n[x[key] ?? 'open'] ?? 0) + 1 }), {})).map(([k, v]) => `${v} ${k.replace('_', ' ')}`).join(' · ')
+const FINDING_STAGE = { copilot: 'fix_comments', 'human-review': 'human_review' }
+function stageFacts(id, run) {
+  const ev = run.evidence ?? {}
+  const rows = []
+  // A list of lines renders as a list; an empty one, like a missing value, is left out.
+  const add = (k, v) => { if (v == null || v === '' || (Array.isArray(v) && !v.length)) return; rows.push([k, Array.isArray(v) ? el('ul', null, v.map(t => el('li', { text: t }))) : v]) }
+  const list = items => items
+  if (id === 'contract') { add('Pull request', run.pr ? `#${run.pr}` : null); add('Branch', run.branch); add('Lane', run.lane?.lane ? `${run.lane.lane}${run.lane.why ? `: ${run.lane.why}` : ''}` : null) }
+  if (id === 'build') add('Tasks', list((run.tasks ?? []).map(t => `${t.title} · ${t.tier ?? ''} · ${t.status}${t.returns ? ` · returned ${t.returns}×` : ''}`)))
+  if (id === 'quality' && ev.quality) {
+    const q = ev.quality
+    add('Lint', q.no_lint ? `none: ${q.no_lint}` : list((q.lint ?? []).map(l => `${l.exit === 0 ? 'clean' : `exit ${l.exit}`}: ${String(l.command).slice(0, 120)}`)))
+    add('Size', q.size ? `${q.size.files} files, +${q.size.added} −${q.size.removed} (${q.size.lane} lane: ${q.size.budget} lines)` : null)
+    add('Signals', list(Object.entries(q.flags ?? {}).map(([k, f]) => `${f.text}${q.dispositions?.[k] ? ` → ${q.dispositions[k]}` : ''}`)))
+  }
+  if (id === 'test_review' && ev.mutants) {
+    const m = ev.mutants
+    add('Mutants', `${m.killed} of ${m.valid} killed · ${m.survived} survived · ${m.invalid} invalid · ${m.timeout} timed out`)
+    add('Carried over', m.carried?.length ? `${m.carried.length} kills from the earlier attempt (${shortSha(m.carried_from)}), in files unchanged since; the rest ran again` : null)
+    add('Files', `${m.scope?.length ?? 0} mutated${m.outside?.length ? `, ${m.outside.length} not mutated (no operators)` : ''}`)
+  }
+  if (id === 'verify') add('Checks', $('tested-count').textContent || null)
+  if (['second_review', 'fix_comments', 'human_review'].includes(id)) {
+    const mine = (run.findings ?? []).filter(f => (FINDING_STAGE[f.source] ?? 'second_review') === id)
+    add('Findings', mine.length ? countBy(mine, 'verdict') : 'none')
+    add('Sources', [...new Set(mine.map(f => f.source))].join(', ') || null)
+  }
+  if (id === 'push') add('Published', run.pushed?.sha ? `${shortSha(run.pushed.sha)} (${run.pushed.state})` : null)
+  if (id === 'copilot_review') add('Copilot', run.copilot ? `${run.copilot.state} for ${shortSha(run.copilot.head)}` : null)
+  if (id === 'report') { add('CI', run.ci ? `${run.ci.state} on ${shortSha(run.ci.sha)}` : null); add('Report', run.report?.comment_id ? `comment ${run.report.comment_id} (${run.report.state})` : run.report?.state) }
+  if (id === 'retro') add('Lessons', list((run.lessons ?? []).map(l => `${l.pattern} → ${l.check}: ${l.proposal ?? l.note ?? ''}`)))
+  const backs = (run.history ?? []).filter(h => h.from === id || h.to === id)
+  add('Rounds back', list(backs.map(h => `${clock(h.at)} ${label(h.from)} → ${label(h.to)}${h.reason ? `: ${h.reason}` : ''}`)))
+  return rows
+}
+function renderStageDetail() {
+  const box = $('stage-detail')
+  for (const [sid, e] of Object.entries(stageEls)) { e.li.toggleAttribute('data-open', sid === openStage); e.hit.setAttribute('aria-expanded', String(sid === openStage)) }
+  const run = S.run
+  const st = openStage && run?.stages?.[openStage]
+  if (!st || st.status === 'pending') { box.hidden = true; box.replaceChildren(); openStage = null; return }
+  const when = [st.started_at && `started ${clock(st.started_at)}`, st.ended_at && `ended ${clock(st.ended_at)}`, stageTime(st)].filter(Boolean).join(' · ')
+  const meta = [st.status, st.attempt > 1 && `attempt ${st.attempt}`, st.rounds && `round ${st.rounds + 1}`, (run.stale ?? []).includes(openStage) && 'stale: covered older code', st.commit && `at ${shortSha(st.commit)}`].filter(Boolean).join(' · ')
+  box.hidden = false
+  box.replaceChildren(
+    el('div', { class: 'sd-head' }, el('h3', { id: 'sd-title', text: label(openStage) }), el('span', { class: 'sd-meta', text: meta }),
+      el('button', { type: 'button', class: 'link', onclick: () => toggleStageDetail(openStage) }, 'Close')),
+    el('dl', null,
+      ...(st.reason ? [el('dt', { text: 'Result' }), el('dd', { text: cap(st.reason) })] : []),
+      ...(when ? [el('dt', { text: 'Time' }), el('dd', { text: when })] : []),
+      ...stageFacts(openStage, run).flatMap(([k, v]) => [el('dt', { text: k }), el('dd', null, v)])))
+}
+$('stage-detail').addEventListener('keydown', e => { if (e.key === 'Escape' && openStage) toggleStageDetail(openStage) })
 
 // Back-edges: only arcs that really fired, kept (settled) until their target station passes again.
 function visibleBacks() {
