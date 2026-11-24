@@ -455,6 +455,18 @@ Never delete a test because of a mutation result. A test goes only when it is
 wrong or truly redundant on its own merits, and then name the test that still
 protects the behaviour.
 
+**Mutants find missing tests; read the new tests for redundant ones.** For
+every test this story added, ask what plausible change to the code would make
+it fail, and whether another test already fails for it: the same rule proven
+again one layer up (a controller spec repeating the service spec's refusal),
+inputs that differ only in data written as separate tests, a framework or
+type guarantee restated, an expected value rebuilt with the code's own logic.
+Have a worker fold a redundant test into the one that already covers it (merge,
+do not just delete), then commit and run the mutants again like any test
+change. Never trimmed: authorization, input validation, personal data, money,
+data integrity, and regression tests for a real bug (a review finding
+included).
+
 The stage passes only with at least one valid mutant and no inconclusive
 runs; with nothing to mutate (only templates, say), skip it with the reason.
 Changed tests → commit, run the mutants again (the evidence must cover the
@@ -928,7 +940,9 @@ decision (parked findings, accepted quality signals, hard decisions as
 built), the flow chart from `.start-story/<story>/flow.md` in a `mermaid`
 block (GitHub renders it) with what changed in it marked, then the evidence.
 Say how large the diff is against the lane's budget (lines of code, and the
-lines in tests beside them) and which files to read first.
+lines in tests beside them), which files to read first, and for the tests
+this story added: the behaviour each one protects, and what was deliberately
+left untested.
 
 Write the report from the run state (`LOOP json`), not from memory: the final
 head, the lane, per Test Step the checks and verdicts (n of the approved m),

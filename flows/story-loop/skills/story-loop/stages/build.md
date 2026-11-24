@@ -72,6 +72,19 @@ names. If it lists none, `LOOP block build "story-loop workers not loaded; start
   design specs, the constraints that matter, and the exact verification.
 - **Red first.** Every behaviour change starts with a test that fails for the
   right reason; the worker shows the failing run, then the passing one.
+- **Tests to the point.** The brief sizes tests by what the change decides
+  (each branch, boundary or default), not by its methods or inputs. Put both
+  questions into it: *for each decision, would a test fail if it broke?* (no
+  → a test is missing) and *for each new test, what plausible change makes it
+  fail, and does another test already catch that?* (no answer, or already
+  caught → do not write it). Prove each behaviour once, at the lowest layer
+  that can: the service or model spec owns the rule, the request or controller
+  spec only its mapping to HTTP (status, message), the component test only
+  what the user sees. Inputs that differ only in data → one parametrized test.
+  Never trimmed: authorization, input validation, personal data, money, data
+  integrity, and regression tests for a real bug (a review finding included).
+  When the repo has a `writing-tests` skill, the brief names it. The worker's
+  report names the behaviour each new test protects.
 - Do not implement in parallel with workers. While they run, prepare the next
   briefs or the review checklist, then end your turn. Each worker's report
   arrives as a notification that wakes you; the stop gate lets you end the
@@ -93,7 +106,8 @@ Treat a worker report as a claim to check.
 2. Against the brief: scope creep, missing parts, silent assumptions, design
    deviations, anything that departs from the PR description.
 3. What a careful reviewer would catch: edge cases, error paths, broken
-   invariants, regressions next door, missing verification.
+   invariants, regressions next door, missing verification, and tests that
+   repeat a behaviour another test (or another layer) already proves.
    And what the quality gate will flag next: a linter switched off in place,
    a skipped test, a comment that justifies a shortcut. Return those now; a
    workaround is fixed at its cause, not explained.
