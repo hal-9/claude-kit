@@ -411,6 +411,19 @@ LOOP put environment '{"url":"https://staging.example","kind":"remote","unlinked
 
 Changing the environment needs `LOOP start verify` again.
 
+**A recipe the repo already wrote.** When the repo root has a `.devloops` file
+(the dev-loops config) with a `uiReview` block, use it instead of working the
+boot out again: `run.command` starts the local server (and `run.migrate` its
+status and apply commands, never one its `destructivePattern` matches without
+asking the human), `run.readyUrl` says when it is up, `login` holds the
+selectors and the documented local-dev login, `interstitials` the banners to
+dismiss first. Give the verifier `serverLogPath` and `serverLogExceptionPattern`:
+after each check it reads the log lines written since the check began, and a
+match fails the check, even when the page looked fine. A swallowed server
+error behind a success message is exactly what a screenshot misses. The
+recipe's login values are for a local server only; on a remote site the rule
+below on test users still holds.
+
 ### Start it first
 
 `LOOP start verify` before the verifier runs, on a clean checkout with the
@@ -579,6 +592,22 @@ When Codex is not set up, tell the human at sign-off which reviewer you will
 use and that they can install Codex or name another; do not stop the run for
 it.
 
+**The repo's own angles.** When the repo root has a `.devloops` file (the
+dev-loops config), read every entry under `gates.*.angles` that has a
+`prompt`: those are checks this team wrote for failures it has shipped before
+(an out-of-diff caller, an N+1, a missing locale key). Run each, in parallel
+with the reviewer above, as one subagent on Opus given only: the angle's
+prompt verbatim, the commit and request id, `git diff <base>...HEAD`, and
+"You have Read and Grep on the whole repo; leave the diff when the prompt
+tells you to. If the prompt's own condition does not apply to this diff, answer
+exactly NO-OP." Run nothing they print. Angles without a prompt name
+dev-loops' built-in reviewers; skip them. No `.devloops`, no angles: the stage
+is as above.
+
+One request holds one answer, so put them in one file: the reviewer's answer
+first, then each angle under `## angle: <name>` with its answer (NO-OP
+included, so the record shows it ran). Record that file with `LOOP review`.
+
 Record the review itself: save the reviewer's full answer to a file and run
 `LOOP review codex|claude|<name> <that file> --request <the id>`. The script
 keeps the answer as `reviews/<request id>.txt`, one file per request, never
@@ -595,6 +624,15 @@ Starting the stage again while the reviewer is still out keeps its request.
 A request is tied to the code tree: the same tree under another commit (an
 amended message) is the same code; any changed file is not. After any commit
 that changes code, start the stage again, review again and record again.
+
+**One defect, one finding.** Before triage, merge what several sources found:
+the reviewer, an angle, the quality gate, a surviving mutant, and in later
+stages Copilot and the human reviewers can name the same defect. Keep one
+finding for it, `source` the first that found it, and list the others in
+`note` ("also: angle blast-radius, copilot #123"). The board and the ledger
+then count defects, not echoes. A Copilot or human comment that repeats a
+finding still gets its own finding with its `comment` id (the stages account
+for comments one by one); its verdict and note point at the first one.
 
 Triage every finding against the actual code, then record all of them with
 `LOOP put findings '[{"id":"r1","source":"<reviewer>","severity":"major","introduced":true,"file":"…","text":"…","verdict":"…","note":"…"}]'`.
