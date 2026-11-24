@@ -8,15 +8,16 @@ import {
   statSync, realpathSync, openSync, readSync, closeSync,
 } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { bind, record, toggle, exportBundle, diagDir, readEvents, readManifest } from './diag.mjs'
 
 export const GRAPH = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'graph.json'), 'utf8'))
 export const SCHEMA = 2
 export const LEASE_MS = 15 * 60_000
 const DONE = new Set(['passed', 'skipped'])
-const PUT_KEYS = new Set(['title', 'branch', 'pr', 'base', 'repo', 'tasks', 'findings', 'browser', 'required_checks'])
+const PUT_KEYS = new Set(['title', 'branch', 'pr', 'base', 'repo', 'tasks', 'findings', 'browser', 'environment', 'required_checks'])
 // Which stages may be skipped, and on whose word. Everything else needs only a reason.
 const SKIP = {
   contract: 'never', build: 'never', second_review: 'never', push: 'never', report: 'never',
@@ -39,6 +40,8 @@ export function storyId(input = '') {
 // owner/name of a GitHub issue URL or a git remote URL, lowercased; null otherwise.
 export const issueRepo = input => String(input).match(/github\.com\/([^/\s]+\/[^/\s]+)\/issues\/\d+/i)?.[1].toLowerCase() ?? null
 export const remoteRepo = url => String(url).trim().match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i)?.[1].toLowerCase() ?? null
+// A base is recorded as "main" or "origin/main"; both name the branch main.
+export const baseName = base => String(base ?? '').replace(/^origin\//, '')
 
 export function newRun(story, now = new Date().toISOString()) {
   return {
@@ -173,12 +176,41 @@ export const paths = root => ({
   lock: join(root, '.start-story', '.lock'),
 })
 export const runDir = (root, run) => join(root, '.start-story', run.story)
+// What names one run: two runs of the same story are different runs.
+export const runKey = run => run.id ?? run.started_at
+
+// Valid JSON is not yet a run or a list of notes: {} parses and is neither.
+// Reading, keeping a backup and recovering all ask these two the same question.
+export function runProblem(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return 'not a run object'
+  if (typeof data.story !== 'string' || !data.story) return 'it names no story'
+  if (!data.stages || typeof data.stages !== 'object') return 'it has no stages'
+  const missing = ids().filter(id => typeof data.stages[id]?.status !== 'string')
+  return missing.length ? `stage ${missing[0]} has no status` : null
+}
+export function notesProblem(data) {
+  if (!Array.isArray(data)) return 'not a list of notes'
+  const bad = data.findIndex(n => !n || typeof n !== 'object' || typeof n.id !== 'string' || typeof n.status !== 'string')
+  return bad < 0 ? null : `entry ${bad + 1} is not a note (id and status)`
+}
+// The parsed file when it is what `problem` accepts; throws with the reason otherwise.
+function readValid(file, problem) {
+  const data = JSON.parse(readFileSync(file, 'utf8'))
+  const why = problem(data)
+  if (why) throw new Error(why)
+  return data
+}
 
 export function load(root) {
   const file = paths(root).active
   let text
   try { text = readFileSync(file, 'utf8') } catch (error) { fail(`no run state at ${file} (${error.code})`) }
-  try { return migrate(JSON.parse(text)) } catch (error) {
+  try {
+    const run = migrate(JSON.parse(text))
+    const why = runProblem(run)
+    if (why) throw new Error(why)
+    return run
+  } catch (error) {
     fail(`the run state ${file} is unreadable (${error.message}); restore the last good copy with: loop.mjs recover`)
   }
 }
@@ -187,11 +219,13 @@ export function save(root, run) {
   const p = paths(root)
   const tmp = `${p.active}.${process.pid}.tmp`
   writeFileSync(tmp, JSON.stringify(run, null, 2) + '\n')
-  try { JSON.parse(readFileSync(p.active, 'utf8')); copyFileSync(p.active, p.prev) } catch { /* no good state to keep */ }
+  try { readValid(p.active, data => runProblem(migrate(data))); copyFileSync(p.active, p.prev) } catch { /* no good state to keep */ }
   renameSync(tmp, p.active)
 }
 export function emit(root, event) {
   appendFileSync(paths(root).events, JSON.stringify({ ts: new Date().toISOString(), ...event }) + '\n')
+  // The board feed is emptied by every init; the diagnostic stream of a run is not.
+  if (event.kind === 'note' || event.kind === 'session') record(root, 'feed', { feed: event.kind, phase: event.phase, text: event.text })
 }
 
 const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
@@ -245,6 +279,90 @@ export function update(root, fn) {
   })
 }
 
+// ---- operations ------------------------------------------------------------------
+// A helper that takes time (tests, polling, a push, a gh call) notes who it works
+// for before it starts and is checked against that, under the lock, before its
+// result becomes run state. A result that comes back to another run or a newer
+// attempt is kept under its own identity and changes nothing.
+
+export function opContext(root, run, kind, stage, extra = {}) {
+  return {
+    op: randomUUID().slice(0, 8), kind, run: runKey(run), story: run.story, stage, attempt: run.stages[stage]?.attempt ?? 1,
+    generation: run.owner?.generation ?? 0, tree: headTree(root), commit: headCommit(root), base: run.base ?? null,
+    started_at: new Date().toISOString(), ...extra,
+  }
+}
+const alive = pid => { try { process.kill(pid, 0); return true } catch (error) { return error.code !== 'ESRCH' } }
+// For the helpers that run long: also listed in the run, so status, a takeover and `end` can see them.
+export function opStart(root, kind, stage, extra = {}) {
+  let ctx
+  const run = update(root, r => {
+    ctx = opContext(root, r, kind, stage, extra)
+    // A helper that was killed hard never said it ended; its entry goes when the next one starts.
+    const ops = Object.fromEntries(Object.entries(r.ops ?? {}).filter(([, o]) => alive(o.pid)))
+    return { ...r, ops: { ...ops, [ctx.op]: { kind, stage, attempt: ctx.attempt, pid: process.pid, started_at: ctx.started_at } } }
+  })
+  bind(root, run, ctx)
+  record(root, 'op.start', { kind, pid: process.pid, ...extra })
+  return ctx
+}
+export function staleReason(run, ctx) {
+  if (runKey(run) !== ctx.run) return `run ${ctx.run} (${ctx.story}) is no longer the active run; ${run.story} run ${runKey(run)} is`
+  const attempt = run.stages[ctx.stage]?.attempt ?? 1
+  return attempt === ctx.attempt ? null : `${ctx.stage} is on attempt ${attempt}; this ${ctx.kind} started in attempt ${ctx.attempt}`
+}
+// Applies fn only while ctx still names the active run and attempt (and `also`
+// finds nothing else changed). Otherwise `result` is kept under the identity it
+// was produced for, and the caller gets an error of kind "stale".
+export function opUpdate(root, ctx, fn, result, also = () => null) {
+  let why = null
+  let next
+  try {
+    next = update(root, r => {
+      why = staleReason(r, ctx) ?? also(r)
+      return why ? undefined : fn(r)
+    })
+  } catch (error) {
+    if (existsSync(paths(root).active)) throw error
+    why = `run ${ctx.run} (${ctx.story}) has ended`
+  }
+  if (!why) return next
+  const dir = join(root, '.start-story', ctx.story, 'stale')
+  const file = join(dir, `${ctx.kind}-${ctx.op}.json`)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(file, JSON.stringify({ why, at: new Date().toISOString(), context: ctx, result }, null, 2) + '\n')
+  record(root, 'op.stale', { kind: ctx.kind, op: ctx.op, stage: ctx.stage, attempt: ctx.attempt, reason: why, kept: file })
+  const error = new Error(`this ${ctx.kind} finished for ${ctx.story} run ${ctx.run}, attempt ${ctx.attempt}, but ${why}. Its result changes nothing here and is kept in ${file}`)
+  error.kind = 'stale'
+  throw error
+}
+export function opEnd(root, ctx, outcome, reason) {
+  let changed = false
+  try {
+    update(root, r => {
+      if (runKey(r) !== ctx.run || !r.ops?.[ctx.op]) return undefined
+      changed = (r.owner?.generation ?? 0) !== ctx.generation
+      const { [ctx.op]: _, ...ops } = r.ops
+      return { ...r, ops }
+    })
+  } catch { /* the run ended or is unreadable: there is no entry left to clear */ }
+  record(root, 'op.end', { kind: ctx.kind, op: ctx.op, stage: ctx.stage, attempt: ctx.attempt, outcome, reason, ownership_changed: changed,
+    elapsed_ms: Date.now() - Date.parse(ctx.started_at) })
+}
+// `end` asks the helpers of the run it ends to stop. Only a process that still is
+// one of ours is signalled; whatever it had already done outside stays done.
+function cancelOps(run) {
+  const out = []
+  for (const [op, o] of Object.entries(run.ops ?? {})) {
+    let command = ''
+    try { command = execFileSync('ps', ['-p', String(o.pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) } catch {}
+    const ours = /(mutate|github|publish)\.mjs/.test(command)
+    if (ours) { try { process.kill(o.pid, 'SIGTERM') } catch {} }
+    out.push({ op, kind: o.kind, pid: o.pid, signalled: ours })
+  }
+  return out
+}
+
 // ---- git -----------------------------------------------------------------------
 
 export const gitIn = root => (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
@@ -274,7 +392,8 @@ export function readInbox(root, run) {
   // An unreadable inbox is never an empty one: the notes in it are the human's instructions.
   try {
     const notes = JSON.parse(text)
-    return Array.isArray(notes) ? notes : fail('not a list of notes')
+    const why = notesProblem(notes)
+    return why ? fail(why) : notes
   } catch (error) {
     fail(`the notes file ${file} is unreadable (${error.message}); nothing was changed. Restore the last good copy with: loop.mjs recover`)
   }
@@ -285,7 +404,7 @@ export function writeInbox(root, run, notes) {
   const file = inboxFile(root, run)
   const tmp = `${file}.${process.pid}.tmp`
   writeFileSync(tmp, JSON.stringify(notes, null, 2) + '\n')
-  try { JSON.parse(readFileSync(file, 'utf8')); copyFileSync(file, `${file}.prev`) } catch { /* no good copy to keep */ }
+  try { readValid(file, notesProblem); copyFileSync(file, `${file}.prev`) } catch { /* no good copy to keep */ }
   renameSync(tmp, file)
 }
 
@@ -316,22 +435,28 @@ export function addNote(root, note) {
     const id = `n${notes.length + 1}`
     writeInbox(root, run, [...notes, { id, ts: new Date().toISOString(), status: 'queued', ...note }])
     emit(root, { kind: 'note', text: `note ${id} queued for the agent` })
+    record(root, 'note.queued', { note: id, note_kind: note.kind })
     return id
   })
 }
 
 // Hands every note the agent has not received to it. via 'copy' only marks them
 // copied (a clipboard is not a receipt) and includes earlier copied ones again.
-export function deliver(root, via) {
+// A delivery is to one session: a note that was handed to an earlier owner and
+// never marked done is handed to the session that owns the run now, once, under
+// the same id.
+export function deliver(root, via, session) {
   return withLock(root, () => {
     const run = load(root)
     const notes = readInbox(root, run)
     const copy = via === 'copied from the board'
-    const open = notes.filter(n => n.status === 'queued' || n.status === 'copied')
+    const open = notes.filter(n => n.status === 'queued' || n.status === 'copied' ||
+      (!copy && session && n.status === 'delivered' && n.delivered_to !== session))
     if (!open.length) return null
     const status = copy ? 'copied' : 'delivered'
-    writeInbox(root, run, notes.map(n => open.includes(n) ? { ...n, status, via } : n))
+    writeInbox(root, run, notes.map(n => open.includes(n) ? { ...n, status, via, ...(copy ? {} : { delivered_to: session ?? null }) } : n))
     emit(root, { kind: 'note', text: `${open.length} note${open.length > 1 ? 's' : ''} ${copy ? 'copied for the agent' : `handed to the agent (${via})`}` })
+    for (const n of open) record(root, copy ? 'note.copied' : 'note.delivered', { note: n.id, via, session: session ?? null, generation: run.owner?.generation ?? 0, again: n.status === 'delivered' })
     return handover(run, open)
   })
 }
@@ -352,11 +477,41 @@ export const readResults = (root, run) => readResultsFile(root, run)?.results ??
 
 // What `start verify` hands the verifier: the run, attempt, check list and code
 // tree these results are for. Results carrying another id are not this attempt's.
-export function verifyRequest(run, tree) {
+export function verifyRequest(run, tree, commit = null) {
   const attempt = run.stages.verify.attempt ?? 1
   const checks_revision = run.checks_revision ?? 0
-  return { id: `${run.id ?? run.started_at}-a${attempt}-c${checks_revision}-${String(tree).slice(0, 12)}`, tree, attempt, checks_revision }
+  const environment = run.environment ? requestEnvironment(run.environment, tree, commit) : null
+  const env = environment ? `-e${createHash('sha1').update(JSON.stringify(run.environment)).digest('hex').slice(0, 6)}` : ''
+  return { id: `${runKey(run)}-a${attempt}-c${checks_revision}-${String(tree).slice(0, 12)}${env}`, tree, attempt, checks_revision, environment }
 }
+
+// Where the browser will test, and what ties that place to the code under review.
+//   {"url":"http://127.0.0.1:3000","kind":"local","server":"bin/dev, started from this checkout"}
+//   {"url":"https://pr-12.preview.example","kind":"remote","revision":"<commit the deployment reports>"}
+//   {"url":"https://staging.example","kind":"remote","unlinked":"human: <why testing other code is acceptable>"}
+const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\]|.+\.localhost|.+\.test)$/i
+const urlOf = text => { try { const u = new URL(String(text)); return /^https?:$/.test(u.protocol) ? u : null } catch { return null } }
+export function environmentProblem(env) {
+  if (!env || typeof env !== 'object' || Array.isArray(env)) return 'environment is a JSON object: {"url":…,"kind":"local"|"remote",…}'
+  const url = urlOf(env.url)
+  if (!url) return 'environment needs the base URL the browser opens (url, http or https)'
+  if (env.kind === 'local') return LOCAL_HOST.test(url.hostname) ? null : `"${url.hostname}" is not a local address; a deployed environment is "kind":"remote" with the revision it serves`
+  if (env.kind !== 'remote') return 'environment needs "kind": "local" (a server started from this checkout) or "remote" (a deployment)'
+  if (env.revision !== undefined) return /^[0-9a-f]{7,40}$/i.test(String(env.revision)) ? null : 'revision is the commit the deployment reports (7 to 40 hex characters)'
+  return /^human:/i.test(String(env.unlinked ?? '')) ? null
+    : 'a remote environment needs "revision" (the commit it serves, read from the deployment), or "unlinked": "human: <their reason>" when nothing ties it to this code'
+}
+// What the request records. provenance says how far the browser's page is tied to the reviewed code:
+//   local-checkout       the conductor's word that the server at url runs this checkout (commit and tree recorded)
+//   deployment-revision  the deployment reported the commit under review
+//   unlinked             nothing ties the page to this code; the human accepted that. Never exact-code verification.
+function requestEnvironment(env, tree, commit) {
+  const base = { url: env.url, kind: env.kind }
+  if (env.kind === 'local') return { ...base, provenance: 'local-checkout', build: { commit, tree }, server: env.server ?? null }
+  if (env.revision !== undefined) return { ...base, provenance: 'deployment-revision', build: { commit: String(env.revision) } }
+  return { ...base, provenance: 'unlinked', unlinked: env.unlinked }
+}
+const sameEnvironment = (a, b) => String(a ?? '').trim().replace(/\/+$/, '') === String(b ?? '').trim().replace(/\/+$/, '')
 
 const MAGIC = [[0x89, 0x50, 0x4e, 0x47], [0xff, 0xd8, 0xff]]
 // A screenshot must be a real PNG/JPEG/WebP file inside the evidence folder.
@@ -383,37 +538,62 @@ export function imageProblem(dir, file) {
 }
 
 // The approved check list is the denominator: every check exactly once, nothing invented.
-export function verifyProblem(root, run) {
+// Returns what the gate decides and why, row by row, so the board shows the same
+// decision instead of its own reading of the file:
+//   problem  why verify cannot pass, or null
+//   rows     one per reported result: { id, accepted, reason }; accepted means it
+//            counts as passing evidence for the current request
+//   accepted / total  against the approved list
+export function verifyReport(root, run) {
   const checks = run.checks
-  if (!Array.isArray(checks)) return 'no approved check list yet (loop.mjs checks set \'[{"id":…,"step":…}]\')'
-  if (!checks.length) return 'the approved check list is empty: no user journey, so verify is skipped on the human\'s say-so, not passed'
-  const request = run.stages?.verify?.request
-  if (!request) return 'verify was not started on this attempt; loop.mjs start verify prints the request id the results must carry'
-  if (request.checks_revision !== (run.checks_revision ?? 0)) return 'the check list changed since verify started; run loop.mjs start verify again and verify against the new list'
+  const request = run.stages?.verify?.request ?? null
   const written = readResultsFile(root, run)
-  const results = written?.results
-  if (!Array.isArray(results) || !results.length) return `0 of ${checks.length} checks reported; the verifier has not written ${resultsFile(root, run)}`
+  const results = Array.isArray(written?.results) ? written.results : []
+  const out = (problem, rows = results.map((r, i) => ({ id: r?.id ?? `invalid-${i + 1}`, accepted: false, reason: problem }))) => ({
+    problem, rows, request: request?.id ?? null, results_request: written?.request ?? null,
+    accepted: rows.filter(r => r.accepted).length, total: Array.isArray(checks) ? checks.length : 0,
+    provenance: request?.environment?.provenance ?? null,
+  })
+  if (!Array.isArray(checks)) return out('no approved check list yet (loop.mjs checks set \'[{"id":…,"step":…}]\')')
+  if (!checks.length) return out('the approved check list is empty: no user journey, so verify is skipped on the human\'s say-so, not passed')
+  if (!request) return out('verify was not started on this attempt; loop.mjs start verify prints the request id the results must carry')
+  if (request.checks_revision !== (run.checks_revision ?? 0)) return out('the check list changed since verify started; run loop.mjs start verify again and verify against the new list')
+  if (!request.environment) return out('this verify request names no environment; record it (loop.mjs put environment \'{"url":…,"kind":"local"}\') and run loop.mjs start verify again')
+  if (!results.length) return out(`0 of ${checks.length} checks reported; the verifier has not written ${resultsFile(root, run)}`)
   if (written.request !== request.id)
-    return `the results carry request "${written.request ?? 'none'}", not this attempt's "${request.id}"; they belong to another attempt, check list or run`
-  const expected = new Set(checks.map(c => c.id))
-  const seen = new Set()
-  for (const r of results) {
-    if (!expected.has(r?.id)) return `result "${r?.id}" is not in the approved check list`
-    if (seen.has(r.id)) return `check "${r.id}" is reported twice`
-    seen.add(r.id)
-  }
-  const missing = checks.filter(c => !seen.has(c.id)).map(c => c.id)
-  if (missing.length) return `${seen.size} of ${checks.length} checks reported; missing: ${missing.join(', ')}`
-  for (const r of results) {
+    return out(`the results carry request "${written.request ?? 'none'}", not this attempt's "${request.id}"; they belong to another attempt, check list or run`)
+  const approved = new Map(checks.map(c => [c.id, c]))
+  const count = new Map()
+  for (const r of results) count.set(r?.id, (count.get(r?.id) ?? 0) + 1)
+  const rowProblem = r => {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return 'this result is not an object'
+    const check = approved.get(r.id)
+    if (!check) return `result "${r.id}" is not in the approved check list`
+    if (count.get(r.id) > 1) return `check "${r.id}" is reported twice`
     if (r.verdict !== 'pass') return `check "${r.id}" is "${r.verdict}", not pass`
+    if (r.step !== check.step) return `check "${r.id}" reports Test Step ${r.step ?? '(none)'}; the approved list has it under step ${check.step}`
+    if ((r.case ?? null) !== (check.case ?? null)) return `check "${r.id}" reports case "${r.case ?? '(none)'}"; the approved list says "${check.case ?? '(none)'}"`
+    if (typeof r.text !== 'string' || !r.text.trim()) return `check "${r.id}" does not quote the goal it checked (text)`
+    if (!urlOf(r.url)) return `check "${r.id}" does not record the URL it ended on (url)`
+    if (!sameEnvironment(r.environment, request.environment.url))
+      return `check "${r.id}" ran against "${r.environment ?? '(none)'}", not the requested environment "${request.environment.url}"`
     if (!Array.isArray(r.evidence) || !r.evidence.length) return `check "${r.id}" has no screenshot`
     for (const file of r.evidence) {
       const problem = imageProblem(evidenceDir(root, run), file)
       if (problem) return `check "${r.id}": ${problem}`
     }
+    return null
   }
-  return null
+  const rows = results.map((r, i) => { const reason = rowProblem(r); return { id: r?.id ?? `invalid-${i + 1}`, accepted: !reason, reason } })
+  // The order of the first reported problem: nothing invented or doubled, then nothing missing, then each row.
+  const structural = rows.find(r => /not in the approved check list|reported twice|not an object/.test(r.reason ?? ''))
+  if (structural) return out(structural.reason, rows)
+  const seen = new Set(rows.map(r => r.id))
+  const missing = checks.filter(c => !seen.has(c.id)).map(c => c.id)
+  if (missing.length) return out(`${seen.size} of ${checks.length} checks reported; missing: ${missing.join(', ')}`, rows)
+  return out(rows.find(r => r.reason)?.reason ?? null, rows)
 }
+export const verifyProblem = (root, run) => verifyReport(root, run).problem
 
 export function checksProblem(checks) {
   if (!Array.isArray(checks)) return 'checks must be a JSON array'
@@ -504,14 +684,19 @@ export function passProblem(root, run, stage) {
       const request = run.stages.verify.request
       if (request && request.tree !== tree) return 'the code changed since verify started; run loop.mjs start verify again so the browser tests this code'
       if (dirty(root)) return 'the checkout has uncommitted changes; the browser must have tested committed code'
+      if (request && run.environment && verifyRequest(run, tree, head).id !== request.id && request.checks_revision === (run.checks_revision ?? 0))
+        return 'the environment changed since verify started; run loop.mjs start verify again so the results name where they ran'
       return verifyProblem(root, run) ??
         (run.browser ? null : 'record the browser that was used (loop.mjs put browser chrome|browseros|playwright)')
     }
     case 'second_review': {
       const review = run.review
-      const usage = 'loop.mjs review codex|claude|<name> <file with the reviewer\'s output>'
+      const request = run.stages.second_review.request
+      const usage = 'loop.mjs review codex|claude|<name> <file with the reviewer\'s output> --request <id>'
+      if (!request) return 'second_review was not started on this attempt; loop.mjs start second_review prints the request id the review is recorded under'
+      if (request.tree !== tree) return 'the code changed since this review was requested; run loop.mjs start second_review again and review this code'
       if (!review) return `record the review of this code (${usage})`
-      if (review.attempt !== (run.stages.second_review.attempt ?? 1) || review.tree !== tree)
+      if (review.request !== request.id || review.attempt !== (run.stages.second_review.attempt ?? 1) || review.tree !== tree)
         return `the recorded review covered older code or an earlier attempt; review this code and record it (${usage})`
       return findingsProblem((run.findings ?? []).filter(f => f.source !== 'copilot')) ?? (dirty(root) ? 'commit first' : null)
     }
@@ -540,9 +725,10 @@ export function passProblem(root, run, stage) {
 }
 
 // What a passing stage stamps on itself so later changes can be detected.
-export function passStamp(root, stage) {
+export function passStamp(root, stage, run) {
   if (!FRESH.includes(stage)) return {}
-  return { tree: headTree(root), commit: headCommit(root) }
+  const provenance = stage === 'verify' ? { provenance: run?.stages.verify.request?.environment?.provenance ?? null } : {}
+  return { tree: headTree(root), commit: headCommit(root), ...provenance }
 }
 
 // ---- CLI ---------------------------------------------------------------------
@@ -552,12 +738,15 @@ function status(run) {
   const rows = GRAPH.stages.map(({ id, label }) => {
     const s = run.stages[id]
     const extra = [s.rounds ? `round ${s.rounds + 1}` : '', s.waiting_on ? `waiting on ${s.waiting_on}` : '', s.reason ?? '',
-      s.status === 'running' && s.request ? `request ${s.request.id}` : '']
+      s.status === 'running' && s.request ? `request ${s.request.id}` : '',
+      id === 'verify' && (s.provenance ?? s.request?.environment?.provenance) === 'unlinked' ? 'environment NOT linked to this code' : '']
       .filter(Boolean).join(' · ')
     return `${id === cur ? '>' : ' '} ${label.padEnd(15)} ${s.status.padEnd(8)} ${extra}`
   })
   const owner = run.owner?.session ? `owner ${run.owner.session}` : 'no owner yet'
-  return [`story-loop ${run.story}${run.branch ? ` · ${run.branch}` : ''}${run.pr ? ` · PR ${run.pr}` : ''} · ${owner}`, ...rows,
+  // Helpers still at work for this run: a new owner should know before starting the same thing again.
+  const ops = Object.entries(run.ops ?? {}).map(([op, o]) => `outstanding: ${o.kind} ${op} for ${o.stage} attempt ${o.attempt}, started ${o.started_at} (${alive(o.pid) ? `pid ${o.pid}, still running` : 'its process is gone'})`)
+  return [`story-loop ${run.story}${run.branch ? ` · ${run.branch}` : ''}${run.pr ? ` · PR ${run.pr}` : ''} · ${owner}${run.diagnostics?.enabled ? ' · diagnostics on' : ''}`, ...rows, ...ops,
     cur ? `next: ${cur}` : 'all stages done'].join('\n')
 }
 
@@ -565,8 +754,16 @@ function repoRoot() {
   try { return execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch { return process.cwd() }
 }
 
-function init(input) {
-  const story = storyId(input) ?? fail('usage: loop.mjs init SC-12345 | gh-123 | <story or issue URL>')
+// Recording on or off for the active run; the run state carries the switch so hooks and helpers find it.
+function setDiagnostics(root, enabled) {
+  return update(root, r => {
+    if (Boolean(r.diagnostics?.enabled) === enabled) return undefined
+    return { ...r, diagnostics: toggle(root, r, enabled) }
+  })
+}
+
+function init(input, diagnostics = false) {
+  const story = storyId(input) ?? fail('usage: loop.mjs init SC-12345 | gh-123 | <story or issue URL> [--diagnostics]')
   const root = repoRoot()
   let origin = null
   try { origin = remoteRepo(gitIn(root)('remote', 'get-url', 'origin')) } catch {}
@@ -579,7 +776,12 @@ function init(input) {
     if (existsSync(p.active)) {
       const old = load(root)
       old.story === story || current(old) === null || fail(`another run is active here (${old.story}); finish it or run: loop.mjs end`)
-      if (old.story === story) return old
+      if (old.story === story) {
+        if (!diagnostics || old.diagnostics?.enabled) return old
+        const next = { ...old, diagnostics: toggle(root, old, true), revision: (old.revision ?? 0) + 1 }
+        save(root, next)
+        return next
+      }
       if (existsSync(legacyInbox(root))) writeInbox(root, old, readInbox(root, old))
       archive(root, old)
     }
@@ -587,14 +789,19 @@ function init(input) {
     if (existsSync(legacyInbox(root))) renameSync(legacyInbox(root), `${legacyInbox(root)}.old-${Date.now()}`)
     writeFileSync(p.events, '')
     const run = { ...newRun(story), source: String(input), repo: repo ?? origin }
+    if (diagnostics) run.diagnostics = toggle(root, run, true)
     save(root, run)
     emit(root, { kind: 'stage', text: `run started for ${story}` })
+    record(root, 'run.start', { source: String(input), repo: run.repo, schema: SCHEMA, lease_minutes: LEASE_MS / 60_000, max_rounds: GRAPH.maxRounds, models: GRAPH.models })
     return run
   })))
 }
 
-// An ended run is kept next to its evidence, never deleted.
+// An ended run is kept next to its evidence, never deleted. Helpers still working
+// for it are asked to stop; a result that arrives anyway is refused as stale.
 function archive(root, run) {
+  const cancelled = cancelOps(run)
+  record(root, 'run.end', { cancelled, stage: current(run) })
   mkdirSync(runDir(root, run), { recursive: true })
   renameSync(paths(root).active, join(runDir(root, run), `run-${Date.now()}.json`))
 }
@@ -610,10 +817,14 @@ function archiveAttempt(root, run, name) {
   }
 }
 
-// Puts the last good copy back in place of an unreadable file; the broken one is kept.
-function restore(file, prev) {
-  try { JSON.parse(readFileSync(file, 'utf8')); return null } catch (error) { if (error.code === 'ENOENT') return null }
-  try { JSON.parse(readFileSync(prev, 'utf8')) } catch { fail(`no readable backup at ${prev}; the broken file is still at ${file}`) }
+// Puts the last good copy back in place of a file that is not what `problem`
+// accepts (cut off, or valid JSON of the wrong shape); the broken one is kept.
+// A backup is restored only when it is itself valid.
+function restore(file, prev, problem, what) {
+  try { readValid(file, problem); return null } catch (error) { if (error.code === 'ENOENT') return null }
+  try { readValid(prev, problem) } catch (error) {
+    fail(`${what}: ${file} is unreadable and there is no valid backup at ${prev} (${error.code === 'ENOENT' ? 'none was kept' : error.message}). Nothing was changed; the broken file is still there`)
+  }
   const kept = `${file}.broken-${Date.now()}`
   renameSync(file, kept)
   copyFileSync(prev, file)
@@ -622,25 +833,76 @@ function restore(file, prev) {
 function recover(root) {
   const p = paths(root)
   withLock(root, () => {
-    const state = restore(p.active, p.prev)
+    const state = restore(p.active, p.prev, data => runProblem(migrate(data)), 'the run state')
     const inbox = inboxFile(root, load(root))
-    const notes = restore(inbox, `${inbox}.prev`)
+    const notes = restore(inbox, `${inbox}.prev`, notesProblem, 'the notes')
     if (!state && !notes) return console.log('the run state and the notes are readable; nothing to recover')
+    record(root, 'recover', { state: Boolean(state), notes: Boolean(notes) })
     emit(root, { kind: 'note', text: `${[state && 'run state', notes && 'notes'].filter(Boolean).join(' and ')} restored from the last good copy` })
     for (const kept of [state, notes].filter(Boolean)) console.log(`restored the last good copy; the broken file is kept at ${kept}`)
     if (notes) console.log('a note typed after that copy was made is only in the broken file; read it there')
   })
 }
 
-function main([verb, ...args]) {
-  if (verb === 'init') return init(args.join(' '))
+// `diagnostics export` works for any run that recorded, the active one or one that ended long ago.
+function exportDiagnostics(args) {
+  const opt = name => { const i = args.indexOf(`--${name}`); return i < 0 ? undefined : args[i + 1] }
+  const root = findRoot() ?? repoRoot()
+  let id = opt('run')
+  if (!id) { try { id = runKey(load(root)) } catch { fail('no active run here; name the run: loop.mjs diagnostics export --run <run id> (the ids are the folder names under .start-story/<story>/diagnostics/)') } }
+  const out = exportBundle(root, id, { screenshots: args.includes('--screenshots'), out: opt('out') && resolve(opt('out')) })
+  console.log(`diagnostics of run ${id} exported to ${out.dest}`)
+  console.log(`${out.events} events, ${out.artifacts} files copied, ${out.omitted} listed but not copied${out.complete ? '' : '; the recording is INCOMPLETE, see "Recording limitations" in summary.md'}`)
+  console.log('Nothing was uploaded. Read summary.md first; it ends with the prompt for the agent that analyses the bundle.')
+}
+
+function diagnostics(root, run, [sub, ...rest]) {
+  if (sub === 'on' || sub === 'off') {
+    const next = setDiagnostics(root, sub === 'on')
+    if (sub === 'on') record(root, 'diagnostics.on', { stage: current(next) })
+    return console.log(`diagnostics ${sub} for run ${runKey(next)}${sub === 'on' ? `; events go to ${diagDir(root, next.story, runKey(next))}` : '; what was recorded so far is kept'}`)
+  }
+  // What no script can see (a capability the human confirmed, a setup result): the conductor's own note in the stream.
+  if (sub === 'mark') {
+    rest.length >= 2 || fail('usage: loop.mjs diagnostics mark <kind> "<what>"')
+    return console.log(record(root, `mark.${rest[0]}`, { text: rest.slice(1).join(' '), stage: current(run) }) ? 'recorded' : 'diagnostics are off; nothing recorded')
+  }
+  if (sub && sub !== 'status') fail('usage: loop.mjs diagnostics status | on | off | mark <kind> "<what>" | export [--run <id>] [--screenshots] [--out <dir>]')
+  const dir = diagDir(root, run.story, runKey(run))
+  const manifest = readManifest(dir)
+  if (!manifest) return console.log(`diagnostics are off for run ${runKey(run)} and nothing was recorded (loop.mjs diagnostics on)`)
+  const { events, unreadable } = readEvents(dir)
+  console.log(`diagnostics ${run.diagnostics?.enabled ? 'on' : 'off'} for run ${runKey(run)} · ${events.length} events${unreadable ? ` · ${unreadable} unreadable line(s)` : ''}`)
+  console.log(`coverage: ${manifest.coverage}`)
+  console.log(`stream: ${dir}`)
+}
+
+function main(argv) {
+  const [verb, ...args] = argv
+  if (verb === 'init') return init(args.filter(a => a !== '--diagnostics').join(' '), args.includes('--diagnostics'))
+  if (verb === 'diagnostics' && args[0] === 'export') return exportDiagnostics(args.slice(1))
   const root = findRoot() ?? fail('no active story-loop run here (loop.mjs init SC-12345)')
   if (verb === 'recover') return recover(root)
   const run = load(root)
   if (!verb || verb === 'status') return console.log(status(run))
   if (verb === 'json') return console.log(JSON.stringify(run))
+  if (verb === 'diagnostics') return diagnostics(root, run, args)
   // The hook does the actual acquire, because only it knows the session id.
   if (verb === 'acquire') return console.log(status(run))
+  const started = Date.now()
+  // Every command that can change the run leaves one record: what was asked and whether it was accepted or refused, and why.
+  try {
+    const result = command(root, run, verb, args)
+    if (!MOVES.has(verb)) record(root, 'cli', { verb, outcome: 'accepted', args, elapsed_ms: Date.now() - started })
+    return result
+  } catch (error) {
+    record(root, MOVES.has(verb) ? 'transition' : 'cli', { verb, stage: MOVES.has(verb) ? args[0] : undefined, outcome: 'rejected', reason: error.message, args, elapsed_ms: Date.now() - started })
+    throw error
+  }
+}
+const MOVES = new Set(['start', 'pass', 'skip', 'block', 'wait', 'back'])
+
+function command(root, run, verb, args) {
   if (verb === 'inbox') {
     const open = readInbox(root, run).filter(n => n.status !== 'done')
     return console.log(open.length ? handover(run, open) : 'no open notes')
@@ -651,33 +913,50 @@ function main([verb, ...args]) {
     return withLock(root, () => {
       const notes = readInbox(root, run)
       notes.some(n => n.id === id) || fail(`no note "${id}"`)
-      writeInbox(root, run, notes.map(n => n.id === id ? { ...n, status: 'done', result: what.join(' ') } : n))
+      writeInbox(root, run, notes.map(n => n.id === id ? { ...n, status: 'done', result: what.join(' '), done_at: new Date().toISOString() } : n))
       emit(root, { kind: 'note', text: `note ${id} handled: ${what.join(' ')}` })
+      record(root, 'note.done', { note: id })
       console.log(`note ${id} done`)
     })
   }
   if (verb === 'end') {
     const ended = withLock(root, () => { const now = load(root); archive(root, now); return now })
+    const left = Object.values(ended.ops ?? {})
+    if (left.length) console.log(`${left.length} helper${left.length === 1 ? ' was' : 's were'} still working for it (${left.map(o => o.kind).join(', ')}) and asked to stop; anything one still reports is kept under .start-story/${ended.story}/stale/ and counts for nothing`)
     return console.log(`run ${ended.story} ended; its record is kept in ${runDir(root, ended)}`)
   }
-  // The review as an artifact: who reviewed which code in which attempt, and what they said.
+  // The review as an artifact: who reviewed which code under which request, and what they said.
+  // The request exists before the reviewer runs (start second_review); an answer is
+  // recorded for that request and that code, never stamped with whatever HEAD is later.
   if (verb === 'review') {
-    const [reviewer, file] = args
-    reviewer && file || fail('usage: loop.mjs review codex|claude|<name> <file with the reviewer\'s output>')
+    const at = args.indexOf('--request')
+    const id = at < 0 ? undefined : args[at + 1]
+    const [reviewer, file] = args.filter((_, i) => at < 0 || (i !== at && i !== at + 1))
+    const usage = 'loop.mjs review codex|claude|<name> <file with the reviewer\'s output> --request <id from start second_review>'
+    reviewer && file || fail(`usage: ${usage}`)
     let output = ''
     try { output = readFileSync(resolve(file), 'utf8') } catch { fail(`cannot read the reviewer's output at ${file}`) }
     output.trim() || fail(`${file} is empty; a review that said nothing still says so`)
+    const sha256 = createHash('sha256').update(output).digest('hex')
     const next = update(root, r => {
       current(r) === 'second_review' && r.stages.second_review.status === 'running' || fail('a review is recorded while second_review is running (loop.mjs start second_review)')
+      const request = r.stages.second_review.request ?? fail('this attempt has no review request; run loop.mjs start second_review, then start the reviewer')
+      id || fail(`name the request this answer is for (it is ${request.id} now): ${usage}`)
+      id === request.id || fail(`that answer is for request "${id}"; the review requested now is "${request.id}". An answer to an earlier request is history, not this review: run the reviewer again on this code`)
       dirty(root) && fail('commit first; a review is recorded for committed code')
-      const attempt = r.stages.second_review.attempt ?? 1
-      const kept = join(runDir(root, r), `review-${attempt}.txt`)
-      mkdirSync(runDir(root, r), { recursive: true })
+      request.tree === headTree(root) || fail(`the code changed since request ${request.id} was made (${request.commit?.slice(0, 7)} then, ${headCommit(root)?.slice(0, 7)} now); that answer reviewed the older code. Run loop.mjs start second_review again and review this code`)
+      const earlier = (r.reviews ?? []).find(v => v.sha256 === sha256)
+      earlier && fail(`this exact answer is already recorded for request ${earlier.request}; reading an old answer again is not a new review`)
+      const kept = join(runDir(root, r), 'reviews', `${request.id}.txt`)
+      existsSync(kept) && fail(`request ${request.id} already has its answer on record; for another review run loop.mjs start second_review again`)
+      mkdirSync(dirname(kept), { recursive: true })
       writeFileSync(kept, output)
-      return { ...r, reviewer, review: { reviewer, attempt, tree: headTree(root), commit: headCommit(root), output: kept, at: new Date().toISOString() } }
+      const review = { reviewer, request: request.id, attempt: request.attempt, tree: request.tree, commit: request.commit, sha256, output: kept, at: new Date().toISOString() }
+      return { ...r, reviewer, review, reviews: [...(r.reviews ?? []), review] }
     })
+    record(root, 'review.recorded', { reviewer, request: next.review.request, tree: next.review.tree, commit: next.review.commit, sha256, stage: 'second_review', attempt: next.review.attempt })
     emit(root, { kind: 'note', text: `review by ${reviewer} recorded for ${next.review.commit?.slice(0, 7)}` })
-    return console.log(`review by ${reviewer} recorded for ${next.review.commit?.slice(0, 7)}`)
+    return console.log(`review by ${reviewer} recorded for ${next.review.commit?.slice(0, 7)} (request ${next.review.request})`)
   }
   // A mutant that did not die, or a changed file that was not mutated, stands only with a reason.
   if (verb === 'mutant') {
@@ -712,39 +991,90 @@ function main([verb, ...args]) {
     PUT_KEYS.has(key) || fail(`put takes one of: ${[...PUT_KEYS].join(', ')}`)
     let value = raw
     try { value = JSON.parse(raw) } catch { /* a bare string such as a branch name */ }
+    if (key === 'environment') { const problem = environmentProblem(value); problem && fail(problem) }
+    if (key === 'required_checks') Array.isArray(value) && value.every(n => typeof n === 'string' && n.trim()) || fail('required_checks is a JSON list of check names, e.g. \'["rspec","lint"]\', or \'[]\' for none')
+    let dropped = false
     update(root, r => {
       key === 'branch' && r.branch && r.branch !== value && r.pushed &&
         fail(`the story branch is "${r.branch}" and was published; it does not change mid-run`)
       key === 'repo' && r.repo && r.repo !== value && fail(`this run belongs to ${r.repo}; the repository does not change mid-run`)
-      return { ...r, [key]: value }
+      const next = { ...r, [key]: value }
+      // The human approved a list for one repository and one base branch; it says nothing about another.
+      if (key === 'required_checks') {
+        r.repo && r.base || fail('record the repository and the base branch first (loop.mjs put base <branch>); the list is approved for that base')
+        next.required_checks_for = { repo: r.repo, base: baseName(r.base), at: new Date().toISOString() }
+      }
+      if ((key === 'base' || key === 'repo') && r[key] && baseName(r[key]) !== baseName(value)) {
+        dropped = Array.isArray(r.required_checks)
+        delete next.required_checks; delete next.required_checks_for; delete next.ci
+      }
+      return next
     })
     emit(root, { kind: 'note', text: `${key} updated` })
+    if (dropped) console.log(`the required checks the human named were approved for the old ${key}; they are dropped. Ask again for this one: loop.mjs put required_checks '[…]'`)
     return console.log(`${key} set`)
   }
   // wait and back take a second positional (who / target) before the reason.
   const [stage, ...rest] = args
   const arg = verb === 'wait' || verb === 'back' ? rest.shift() : undefined
   const reason = rest.join(' ') || undefined
+  MOVES.has(verb) || fail(`unknown verb "${verb}" (start | pass | skip | block | wait | back)`)
+  let before
   const next = update(root, r => {
+    before = r.stages[stage]
     if (verb === 'pass') {
+      const report = stage === 'verify' ? verifyReport(root, r) : null
       const problem = passProblem(root, r, stage)
+      if (report) record(root, 'verify.report', { stage, attempt: r.stages.verify.attempt ?? 1, request: report.request, outcome: problem ? 'rejected' : 'accepted', reason: problem,
+        accepted: report.accepted, total: report.total, results_request: report.results_request, provenance: report.provenance, rows: report.rows })
       problem && fail(`${stage} cannot pass: ${problem}`)
     }
     const moved = move(r, verb, stage, arg, reason)
     if (verb === 'start' && stage === 'verify') {
       // The request exists before the browser runs; results are checked against it, never stamped afterwards.
       dirty(root) && fail('verify starts on committed code; the checkout has uncommitted changes')
-      const request = verifyRequest(r, headTree(root) ?? fail('not a git checkout'))
+      const env = r.environment ?? fail('record where the browser will test, and what ties it to this code, before verify starts: ' +
+        'loop.mjs put environment \'{"url":"http://127.0.0.1:3000","kind":"local","server":"<how it was started from this checkout>"}\' ' +
+        '(a deployment: "kind":"remote" with "revision":"<the commit it reports>")')
+      const head = headCommit(root) ?? fail('not a git checkout')
+      // A deployment that reports another commit serves other code: its checks would say nothing about this one.
+      env.revision !== undefined && !head.startsWith(String(env.revision).toLowerCase()) &&
+        fail(`the environment ${env.url} reports revision ${env.revision}, but the code under review is ${head.slice(0, 12)}; the browser would test other code. Deploy this commit there and record its revision, or use a local server started from this checkout`)
+      const request = verifyRequest(r, headTree(root) ?? fail('not a git checkout'), head)
       if (readResultsFile(root, r)?.request !== request.id) archiveAttempt(root, r, `${request.attempt}-superseded`)
       moved.stages.verify.request = request
     }
-    if (verb === 'pass') Object.assign(moved.stages[stage], passStamp(root, stage))
+    if (verb === 'start' && stage === 'second_review') {
+      // Made before the reviewer is started: the code it is asked to review, under an id no earlier answer can carry.
+      dirty(root) && fail('the second review starts on committed code; the checkout has uncommitted changes')
+      const attempt = r.stages.second_review.attempt ?? 1
+      const tree = headTree(root) ?? fail('not a git checkout')
+      const open = r.stages.second_review.request
+      // Starting again while the reviewer is still out keeps its request; changed code, or an answer already on record, gets a new one.
+      const keep = open && open.attempt === attempt && open.tree === tree && !(r.reviews ?? []).some(v => v.request === open.id)
+      moved.stages.second_review.request = keep ? open
+        : { id: `${runKey(r)}-r${attempt}-${randomUUID().slice(0, 8)}`, attempt, tree, commit: headCommit(root), at: new Date().toISOString() }
+    }
+    if (verb === 'pass') Object.assign(moved.stages[stage], passStamp(root, stage, r))
     if (verb === 'back') archiveAttempt(root, r, r.stages.verify.attempt ?? 1)
     return moved
   })
+  const now = next.stages[stage]
+  record(root, 'transition', { verb, stage, attempt: before.attempt ?? 1, to: arg, outcome: 'accepted', reason, revision: next.revision,
+    request: now.request?.id, tree: headTree(root), commit: headCommit(root), base: next.base ?? null,
+    from_status: before.status, to_status: now.status, rounds: now.rounds, waiting_on: now.waiting_on })
   emit(root, { kind: 'stage', stage, verb, to: arg, text: reason })
   console.log(status(next))
-  if (verb === 'start' && stage === 'verify') console.log(`verify request: ${next.stages.verify.request.id}  (results.json must carry it as "request")`)
+  if (verb === 'start' && stage === 'verify') {
+    const { id, environment } = next.stages.verify.request
+    console.log(`verify request: ${id}  (results.json must carry it as "request")`)
+    console.log(`environment: ${environment.url}  (every result names it as "environment"; link to this code: ${environment.provenance})`)
+    if (environment.provenance === 'unlinked') console.log('This environment is not tied to the code under review. The checks are not exact-code verification; say so in the report.')
+  }
+  if (verb === 'start' && stage === 'second_review') {
+    const { id, commit } = next.stages.second_review.request
+    console.log(`review request: ${id}  for commit ${commit?.slice(0, 12)}  (record the answer with: loop.mjs review <reviewer> <file> --request ${id})`)
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

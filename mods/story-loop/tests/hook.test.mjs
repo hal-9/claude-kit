@@ -204,6 +204,40 @@ test('H17: a worker\'s activity renews the lease, and after a takeover the old s
   assert.equal(edit('s1', 'w1').status, 0)
 })
 
+// ---- regressions from the 0.8.0 review -------------------------------------------
+
+test('R7: a note handed to a session that never finished it is handed to the next owner, once', () => {
+  const LOOP = fileURLToPath(new URL('../skills/story-loop/scripts/loop.mjs', import.meta.url))
+  const root = runDirWith(owned('A'))
+  writeInbox(root, load(root), [
+    { id: 'n1', kind: 'change', text: 'Use a scope instead', status: 'queued' },
+    { id: 'n2', kind: 'note', text: 'Already handled', status: 'done', result: 'renamed it' }])
+  const post = session => fire(root, { hook_event_name: 'PostToolUse', session_id: session }).stdout
+  const take = session => fire(root, { ...bash(`node loop.mjs acquire --takeover "human: continue in ${session}"`), session_id: session })
+  const inbox = () => spawnSync('node', [LOOP, 'inbox'], { cwd: root, encoding: 'utf8' }).stdout
+  // the reviewed reproduction: delivered to A, not done, then B acquires the run
+  assert.match(post('A'), /Use a scope instead/)
+  assert.equal(post('A'), '')
+  assert.deepEqual([readInbox(root, load(root))[0].status, readInbox(root, load(root))[0].delivered_to], ['delivered', 'A'])
+  assert.equal(take('B').status, 0)
+  assert.equal(load(root).owner.generation, 1)
+  const again = JSON.parse(post('B')).hookSpecificOutput.additionalContext
+  assert.match(again, /\[n1\] change request\n  Use a scope instead/, 'the same id, so a note handled twice is recognised')
+  assert.doesNotMatch(again, /n2|Already handled/, 'a finished note is never handed over as new work')
+  assert.equal(post('B'), '', 'once per owner')
+  assert.equal(readInbox(root, load(root))[0].delivered_to, 'B')
+  assert.match(inbox(), /\[n1\]/, 'and loop.mjs inbox lists it either way')
+  // B stops without handling it and C takes over: the stop gate hands it to C as well
+  assert.equal(take('C').status, 0)
+  assert.match(JSON.parse(fire(root, { hook_event_name: 'Stop', session_id: 'C' }).stdout).reason, /Use a scope instead/)
+  assert.equal(post('C'), '')
+  // handled: no later owner hears of it again
+  assert.equal(spawnSync('node', [LOOP, 'note', 'done', 'n1', 'used a scope'], { cwd: root }).status, 0)
+  assert.equal(take('D').status, 0)
+  assert.equal(post('D'), '')
+  assert.equal(inbox(), 'no open notes\n')
+})
+
 test('H20: notes the hook cannot read are said to the conductor, not treated as none', () => {
   const root = runDirWith(owned())
   writeInbox(root, load(root), [{ id: 'n1', status: 'queued', kind: 'note', text: 'use a scope' }])

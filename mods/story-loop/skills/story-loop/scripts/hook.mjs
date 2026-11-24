@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { GRAPH, LEASE_MS, findRoot, load, update, emit, stopReason, deliver, current, ownerState } from './loop.mjs'
+import { bind, record } from './diag.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const MAX_STOP_BLOCKS = 3
@@ -74,7 +75,43 @@ export function checkAgent({ subagent_type: type = 'general-purpose', model } = 
   return null
 }
 
-const deny = message => { console.error(message); process.exit(2) }
+// A refusal never reaches the tool, so no later hook sees it: it is recorded here,
+// before the exit. record() cannot throw, so a recording failure never weakens a denial.
+let DENIED = null // { root, tool, tool_use_id } once the checkout of the event is known
+const deny = message => {
+  if (DENIED) record(DENIED.root, 'guard.denied', { reason: message, tool: DENIED.tool, tool_use_id: DENIED.tool_use_id })
+  console.error(message)
+  process.exit(2)
+}
+
+// What a tool call was, small enough to keep: no file contents, no full output.
+function toolSummary(root, input) {
+  const ti = input.tool_input ?? {}
+  const tr = input.tool_response
+  const response = tr == null ? undefined : typeof tr === 'string' ? tr.slice(0, 500)
+    : { status: tr.status, agent_id: tr.agentId, resolved_model: tr.resolvedModel, total_tokens: tr.totalTokens, total_duration_ms: tr.totalDurationMs, exit_code: tr.exitCode ?? tr.exit_code, interrupted: tr.interrupted }
+  return {
+    tool: input.tool_name ?? null, tool_use_id: input.tool_use_id ?? null,
+    file: ti.file_path ? relative(root, resolve(root, ti.file_path)) : undefined,
+    command: typeof ti.command === 'string' ? ti.command.slice(0, 300) : undefined,
+    subagent: ti.subagent_type, model: ti.model, description: ti.description, response,
+  }
+}
+// One diagnostic record per hook event. Pre and post of a tool call share its
+// tool_use_id; a start with no end is a call that was cancelled or cut off.
+function diagnose(root, input, model) {
+  const event = input.hook_event_name
+  const elapsed_ms = Number.isFinite(input.duration_ms) ? input.duration_ms : null
+  switch (event) {
+    case 'PreToolUse': return record(root, 'tool.start', toolSummary(root, input))
+    case 'PostToolUse': return record(root, 'tool.end', { ...toolSummary(root, input), outcome: 'ok', elapsed_ms })
+    case 'PostToolUseFailure': return record(root, 'tool.failed', { ...toolSummary(root, input), outcome: input.is_interrupt ? 'interrupted' : 'error', reason: String(input.error ?? '').slice(0, 1000), elapsed_ms })
+    case 'SubagentStart': case 'SubagentStop': return record(root, event === 'SubagentStart' ? 'agent.start' : 'agent.stop', { agent_type: input.agent_type ?? null, agent_id: input.agent_id ?? null })
+    case 'SessionStart': return record(root, 'session.start', { source: input.source ?? null, model: input.model ?? model })
+    case 'SessionEnd': return record(root, 'session.end', { reason: input.reason ?? null })
+    case 'PreModelSwitch': case 'PostModelSwitch': return record(root, 'model.switch', { phase: event, to: input.to_model ?? input.requested_model ?? null, from: model })
+  }
+}
 
 // `loop.mjs acquire [--takeover "<reason>"]`: only the hook knows the session id.
 function acquire(root, session, command) {
@@ -91,7 +128,11 @@ function acquire(root, session, command) {
     emit(root, { kind: 'session', phase: 'acquired', text: `session ${session} took over from ${run.owner?.session ?? 'nobody'} (${state}${takeover ? `: ${takeover}` : ''})` })
     // The session that lost the run is retired: its workers may still be running, and their edits are refused from here on.
     const retired = [...new Set([...(run.retired ?? []), run.owner?.session])].filter(s => s && s !== session)
-    return { ...run, retired, owner: { session, since: new Date().toISOString(), heartbeat: Date.now() }, stop_blocks: 0 }
+    // Each change of owner is a new generation: notes handed to the old owner are handed over
+    // again, and a helper the old owner started is known to have outlived it.
+    const generation = (run.owner?.generation ?? 0) + 1
+    record(root, 'ownership', { outcome: 'acquired', from: run.owner?.session ?? null, to: session, lease: state, reason: takeover ?? null, generation, outstanding: Object.keys(run.ops ?? {}) })
+    return { ...run, retired, owner: { session, since: new Date().toISOString(), heartbeat: Date.now(), generation }, stop_blocks: 0 }
   })
   if (refused) deny(refused)
 }
@@ -107,13 +148,14 @@ function main() {
   if (event === 'SessionStart' && input.model) writeFileSync(modelFile(input.session_id), String(input.model))
   if (event === 'PostModelSwitch' && input.to_model) writeFileSync(modelFile(input.session_id), String(input.to_model))
   // A run is started and advanced on the conductor's model only. An unknown model passes: we cannot see it.
+  const root = findRoot(input.cwd || process.cwd())
+  if (root) DENIED = { root, tool: input.tool_name ?? null, tool_use_id: input.tool_use_id ?? null }
   if (event === 'PreToolUse' && input.tool_name === 'Bash' && !input.agent_id && /loop\.mjs["']?\s+(init|start)\b/.test(command)) {
     const model = knownModel(input.session_id)
     if (model && !isConductorModel(model))
       deny(`story-loop: the conductor runs on ${MODELS.conductor}, this session is on ${model}. Ask the human to switch with /model, then continue.`)
   }
 
-  const root = findRoot(input.cwd || process.cwd())
   if (!root) return
   let run
   try { run = load(root) } catch (error) {
@@ -124,6 +166,9 @@ function main() {
   }
   const state = ownerState(run, input.session_id)
   const ours = state === 'ours'
+  // Recording is the run's own switch (loop.mjs diagnostics on); with it off this binds to nothing.
+  bind(root, run, { session: input.session_id ?? null, agent: input.agent_id ? `${input.agent_type ?? 'agent'}:${input.agent_id}` : 'conductor', stage: current(run) })
+  diagnose(root, input, knownModel(input.session_id))
 
   // The human cannot switch the conductor away mid-run by accident; ending the run lifts this.
   if (event === 'PreModelSwitch') {
@@ -202,24 +247,26 @@ function main() {
       if (!ours) return
       // Notes that cannot be read are said out loud, never treated as no notes.
       let notes
-      try { notes = deliver(root, 'while working') } catch (error) { notes = `story-loop: ${error.message}. Tell the human: notes they typed on the board may be waiting in that file.` }
+      try { notes = deliver(root, 'while working', input.session_id) } catch (error) { notes = `story-loop: ${error.message}. Tell the human: notes they typed on the board may be waiting in that file.` }
       if (notes) console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: notes } }))
       return
     }
     case 'Stop': {
       if (!ours) return
-      const notes = deliver(root, 'before stopping')
-      if (notes) return console.log(JSON.stringify({ decision: 'block', reason: notes }))
+      const notes = deliver(root, 'before stopping', input.session_id)
+      if (notes) { record(root, 'stop', { outcome: 'blocked', reason: 'notes from the board were waiting' }); return console.log(JSON.stringify({ decision: 'block', reason: notes })) }
       const reason = stopReason(run)
-      if (!reason) return emit(root, { kind: 'session', phase: 'idle' })
+      if (!reason) { record(root, 'stop', { outcome: 'allowed' }); return emit(root, { kind: 'session', phase: 'idle' }) }
       if ((run.stop_blocks ?? 0) >= MAX_STOP_BLOCKS) {
         // Give way, but say so in the run: the stage is blocked, not quietly pending.
         const cur = current(run)
         const why = `stop gate: the conductor stopped ${MAX_STOP_BLOCKS + 1} times without moving "${cur}"; resume with loop.mjs start ${cur}`
         update(root, r => ({ ...r, stop_blocks: 0, stages: { ...r.stages, [cur]: { ...r.stages[cur], status: 'blocked', reason: why } } }))
+        record(root, 'transition', { verb: 'block', stage: cur, outcome: 'accepted', reason: why, by: 'stop gate' })
         return emit(root, { kind: 'stage', stage: cur, verb: 'block', text: why })
       }
       update(root, r => ({ ...r, stop_blocks: (r.stop_blocks ?? 0) + 1 }))
+      record(root, 'stop', { outcome: 'blocked', reason })
       console.log(JSON.stringify({ decision: 'block', reason }))
     }
   }

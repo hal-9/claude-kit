@@ -8,9 +8,9 @@ import { fileURLToPath } from 'node:url'
 import {
   newRun, move, current, stopReason, GRAPH, verifyProblem, resultsFile, evidenceDir, storyId, issueRepo, remoteRepo,
   load, save, update, withLock, migrate, passProblem, findingsProblem, readInbox, addNote, deliver, staleStages,
-  verifyRequest, commentsProblem, mutantsProblem, imageProblem,
+  verifyRequest, commentsProblem, mutantsProblem, imageProblem, verifyReport, environmentProblem,
 } from '../skills/story-loop/scripts/loop.mjs'
-import { repo, withRun, PNG, B } from './helpers.mjs'
+import { repo, withRun, PNG, B, ENV, META } from './helpers.mjs'
 
 const LOOP = fileURLToPath(new URL('../skills/story-loop/scripts/loop.mjs', import.meta.url))
 const done = (run, ...stages) => stages.reduce((r, s) => move(move(r, 'start', s), 'pass', s), run)
@@ -83,14 +83,14 @@ test('skips follow the per-stage policy', () => {
 
 test('verify counts against the approved check list, and only real screenshots in the folder count', () => {
   const root = mkdtempSync(join(tmpdir(), 'sl-verify-'))
-  let run = { ...newRun('sc-1'), checks: [{ id: 'a', step: 1 }, { id: 'b', step: 1, case: 'mobile' }], checks_revision: 1 }
+  let run = { ...newRun('sc-1'), checks: [{ id: 'a', step: 1 }, { id: 'b', step: 1, case: 'mobile' }], checks_revision: 1, environment: ENV }
   assert.match(verifyProblem(root, run), /verify was not started on this attempt/)
   run.stages.verify.request = verifyRequest(run, 'tree-a')
   const write = (results, request = run.stages.verify.request.id) => writeFileSync(resultsFile(root, run), written(request, results))
   mkdirSync(evidenceDir(root, run), { recursive: true })
   writeFileSync(join(evidenceDir(root, run), 'a.png'), PNG)
   writeFileSync(join(evidenceDir(root, run), 'b.png'), PNG)
-  const pass = (id, evidence = [`${id}.png`]) => ({ id, step: 1, verdict: 'pass', evidence })
+  const pass = (id, evidence = [`${id}.png`]) => ({ id, step: 1, ...(id === 'b' ? { case: 'mobile' } : {}), verdict: 'pass', evidence, ...META })
 
   assert.match(verifyProblem(root, run), /0 of 2 checks reported/)
   write([pass('a')])
@@ -139,12 +139,12 @@ test('verify counts against the approved check list, and only real screenshots i
 
 test('going back archives browser results, so an old attempt never passes the next one', () => {
   const { dir } = repo()
-  const run = withRun(dir, { checks: [{ id: 'a', step: 1 }] })
+  const run = withRun(dir, { checks: [{ id: 'a', step: 1 }], environment: ENV })
   run.stages.verify.request = verifyRequest(run, 'tree-a')
   save(dir, run)
   mkdirSync(evidenceDir(dir, run), { recursive: true })
   writeFileSync(join(evidenceDir(dir, run), 'a.png'), PNG)
-  writeFileSync(resultsFile(dir, run), written(run.stages.verify.request.id, [{ id: 'a', step: 1, verdict: 'pass', evidence: ['a.png'] }]))
+  writeFileSync(resultsFile(dir, run), written(run.stages.verify.request.id, [{ id: 'a', step: 1, verdict: 'pass', evidence: ['a.png'], ...META }]))
   assert.equal(verifyProblem(dir, run), null)
   update(dir, r => {
     for (const id of ['contract', 'build', 'test_review', 'verify']) r.stages[id].status = 'passed'
@@ -253,10 +253,14 @@ test('stages pass on evidence, not on a success message', () => {
   assert.equal(passProblem(dir, run, 'test_review'), null)
 
   run.findings = [{ id: 'c1', source: 'codex', severity: 'major', verdict: 'open' }]
+  assert.match(passProblem(dir, run, 'second_review'), /second_review was not started on this attempt/)
+  run.stages.second_review.request = { id: 'q1', attempt: 1, tree }
   assert.match(passProblem(dir, run, 'second_review'), /record the review of this code/)
-  run.review = { reviewer: 'codex', attempt: 1, tree: 'older' }
+  run.review = { reviewer: 'codex', request: 'q1', attempt: 1, tree: 'older' }
   assert.match(passProblem(dir, run, 'second_review'), /covered older code or an earlier attempt/)
-  run.review = { reviewer: 'codex', attempt: 1, tree }
+  run.review = { reviewer: 'codex', request: 'q0', attempt: 1, tree } // the same code, answered for another request
+  assert.match(passProblem(dir, run, 'second_review'), /covered older code or an earlier attempt/)
+  run.review = { reviewer: 'codex', request: 'q1', attempt: 1, tree }
   assert.match(passProblem(dir, run, 'second_review'), /c1 is open/)
 
   assert.match(passProblem(dir, run, 'push'), /nothing published/)
@@ -329,13 +333,13 @@ test('the CLI refuses a pass without evidence', () => {
 // A run in a real checkout, at the verify stage, with one approved check.
 function atVerify() {
   const r = repo()
-  withRun(r.dir, { checks: [{ id: 'a', step: 1 }], checks_revision: 1, browser: 'chrome' })
+  withRun(r.dir, { checks: [{ id: 'a', step: 1 }], checks_revision: 1, browser: 'chrome', environment: ENV })
   update(r.dir, run => { run.stages.contract.status = 'passed'; run.stages.build.status = 'passed'; Object.assign(run.stages.test_review, { status: 'skipped', reason: 'template only' }); return run })
-  const report = request => {
+  const report = (request, row = {}) => {
     const run = load(r.dir)
     mkdirSync(evidenceDir(r.dir, run), { recursive: true })
     writeFileSync(join(evidenceDir(r.dir, run), 'a.png'), PNG)
-    writeFileSync(resultsFile(r.dir, run), written(request, [{ id: 'a', step: 1, verdict: 'pass', evidence: ['a.png'] }]))
+    writeFileSync(resultsFile(r.dir, run), written(request, [{ id: 'a', step: load(r.dir).checks[0].step, verdict: 'pass', evidence: ['a.png'], ...META, ...row }]))
   }
   const requestId = out => out.match(/verify request: (\S+)/)[1]
   return { ...r, report, requestId }
@@ -388,7 +392,7 @@ test('H01: a new run of the same story never passes on the previous run\'s brows
   assert.equal(cli(dir, 'end').status, 0)
   assert.equal(cli(dir, 'init', 'sc-1').status, 0)
   assert.ok(existsSync(join(dir, '.start-story', 'sc-1', 'results.json')), 'the old results are still on disk')
-  update(dir, run => { Object.assign(run, { checks: [{ id: 'a', step: 1 }], checks_revision: 1, browser: 'chrome' }); run.stages.contract.status = 'passed'; run.stages.build.status = 'passed'; run.stages.test_review.status = 'skipped'; return run })
+  update(dir, run => { Object.assign(run, { checks: [{ id: 'a', step: 1 }], checks_revision: 1, browser: 'chrome', environment: ENV }); run.stages.contract.status = 'passed'; run.stages.build.status = 'passed'; run.stages.test_review.status = 'skipped'; return run })
   assert.equal(cli(dir, 'start', 'verify').status, 0)
   assert.match(cli(dir, 'pass', 'verify').stderr, /0 of 1 checks reported/)
 })
@@ -396,33 +400,60 @@ test('H01: a new run of the same story never passes on the previous run\'s brows
 test('H02: a review is an artifact for one attempt and one code tree; the last attempt\'s never passes the next', () => {
   const { dir, git, commit } = repo()
   withRun(dir, { findings: [{ id: 'r1', source: 'codex', severity: 'minor', verdict: 'rejected', note: 'out of scope' }] })
-  const at = stage => update(dir, run => {
+  const before = stage => update(dir, run => {
     for (const id of GRAPH.stages.map(s => s.id)) { if (id === stage) break; run.stages[id].status = 'passed' }
-    run.stages[stage].status = 'running'
     return run
   })
-  at('second_review')
-  writeFileSync(join(dir, '.start-story', 'out.txt'), 'No blocking findings. One minor: r1.')
+  const answer = (name, text) => { const file = join(dir, '.start-story', name); writeFileSync(file, text); return file }
+  const requestId = out => out.match(/review request: (\S+)/)[1]
+  before('second_review')
+  const out = answer('out.txt', 'No blocking findings. One minor: r1.')
+  // the request is made before the reviewer runs, and names the code it is for
+  const first = requestId(cli(dir, 'start', 'second_review').stdout)
+  const A = git('rev-parse', 'HEAD')
+  assert.deepEqual([load(dir).stages.second_review.request.commit, load(dir).stages.second_review.request.tree], [A, git('rev-parse', 'HEAD^{tree}')])
   assert.match(cli(dir, 'put', 'reviewer', 'codex').stderr, /recorded with its output/)
   assert.match(cli(dir, 'pass', 'second_review').stderr, /record the review of this code/)
-  assert.match(cli(dir, 'review', 'codex', join(dir, '.start-story', 'empty.txt')).stderr, /cannot read/)
-  assert.equal(cli(dir, 'review', 'codex', join(dir, '.start-story', 'out.txt')).status, 0)
+  assert.match(cli(dir, 'review', 'codex', join(dir, '.start-story', 'empty.txt'), '--request', first).stderr, /cannot read/)
+  assert.match(cli(dir, 'review', 'codex', out).stderr, /name the request this answer is for/)
+  assert.match(cli(dir, 'review', 'codex', out, '--request', 'someone-elses').stderr, /An answer to an earlier request is history/)
+  // the reviewer answered for A; meanwhile changed source was committed as B: its answer cannot be recorded for B
+  commit()
+  const late = cli(dir, 'review', 'codex', out, '--request', first)
+  assert.equal(late.status, 1)
+  assert.match(late.stderr, /the code changed since request .* was made.*that answer reviewed the older code/)
+  assert.equal(load(dir).review, undefined)
+  assert.match(cli(dir, 'pass', 'second_review').stderr, /code changed since this review was requested/)
+  // a new request for B; the answer for A, read again under the new id, is not a fresh review once it is on record
+  const second = requestId(cli(dir, 'start', 'second_review').stdout)
+  assert.notEqual(second, first)
+  assert.equal(cli(dir, 'review', 'codex', answer('b.txt', 'Reviewed B. No blocking findings.'), '--request', second).status, 0)
   const review = load(dir).review
-  assert.deepEqual([review.reviewer, review.attempt, review.tree, review.commit], ['codex', 1, git('rev-parse', 'HEAD^{tree}'), git('rev-parse', 'HEAD')])
-  assert.match(readFileSync(review.output, 'utf8'), /One minor/)
+  assert.deepEqual([review.reviewer, review.request, review.attempt, review.tree, review.commit], ['codex', second, 1, git('rev-parse', 'HEAD^{tree}'), git('rev-parse', 'HEAD')])
+  assert.match(readFileSync(review.output, 'utf8'), /Reviewed B/)
+  assert.match(review.output, new RegExp(`reviews/${second}\\.txt$`), 'one immutable file per request')
   assert.equal(cli(dir, 'pass', 'second_review').status, 0)
   // back to build, a new commit, forward again: reviewer name and settled findings are all still there
   update(dir, run => { run.stages.push.status = 'running'; return run })
   assert.equal(cli(dir, 'back', 'push', 'build', 'defect found').status, 0)
   commit()
-  at('second_review')
+  before('second_review')
   assert.equal(load(dir).reviewer, 'codex')
+  assert.match(cli(dir, 'pass', 'second_review').stderr, /was not started on this attempt/)
+  const third = requestId(cli(dir, 'start', 'second_review').stdout)
   const refused = cli(dir, 'pass', 'second_review')
   assert.equal(refused.status, 1)
   assert.match(refused.stderr, /covered older code or an earlier attempt/)
-  assert.equal(cli(dir, 'review', 'codex', join(dir, '.start-story', 'out.txt')).status, 0)
+  // the previous attempt's reviewer answers late, and the old answer file is offered again: neither is this attempt's review
+  assert.match(cli(dir, 'review', 'codex', out, '--request', second).stderr, /An answer to an earlier request is history/)
+  assert.match(cli(dir, 'review', 'codex', join(dir, '.start-story', 'b.txt'), '--request', third).stderr, /already recorded for request .*not a new review/)
+  // starting again while the reviewer is still out keeps its request
+  update(dir, run => { run.stages.second_review.status = 'blocked'; return run })
+  assert.equal(requestId(cli(dir, 'start', 'second_review').stdout), third)
+  assert.equal(cli(dir, 'review', 'codex', answer('c.txt', 'Reviewed the fix. Nothing new.'), '--request', third).status, 0)
   assert.equal(cli(dir, 'pass', 'second_review').status, 0)
-  assert.equal(load(dir).review.attempt, 2)
+  assert.deepEqual([load(dir).review.attempt, load(dir).reviews.map(r => r.request)], [2, [second, third]])
+  assert.ok(load(dir).reviews.every(r => existsSync(r.output)), 'the earlier answer is kept as history')
 })
 
 test('H12, H13: every fetched Copilot comment needs a finding, and fix_comments is never skipped', () => {
@@ -548,4 +579,134 @@ test('H06: mutation results count only with every changed file mutated and every
   // 0 killed, 25 survived, 5 not run is not a pass
   const weak = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`a.js:${i}:ffffff`, i < 25 ? 'survived' : 'skipped']))
   assert.match(mutantsProblem({ scope: ['a.js'], covered: ['a.js'], outcomes: weak }), /30 mutants need a decision/)
+})
+
+// ---- regressions from the 0.8.0 review -------------------------------------------
+
+test('R5: a passing result must say where it ended, which goal it checked, and match the approved step and case', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sl-meta-'))
+  const run = { ...newRun('sc-1'), checks: [{ id: 'a', step: 1 }, { id: 'b', step: 2, case: 'mobile' }], checks_revision: 1, environment: ENV }
+  run.stages.verify.request = verifyRequest(run, 'tree-a')
+  mkdirSync(evidenceDir(root, run), { recursive: true })
+  for (const id of ['a', 'b']) writeFileSync(join(evidenceDir(root, run), `${id}.png`), PNG)
+  const a = { id: 'a', step: 1, verdict: 'pass', evidence: ['a.png'], ...META }
+  const b = { id: 'b', step: 2, case: 'mobile', verdict: 'pass', evidence: ['b.png'], ...META }
+  const problem = (...rows) => { writeFileSync(resultsFile(root, run), written(run.stages.verify.request.id, rows)); return verifyProblem(root, run) }
+  const without = (row, key) => { const { [key]: _, ...rest } = row; return rest }
+  assert.equal(problem(a, b), null)
+  // the reviewed reproduction: id, verdict, screenshot and the request envelope, nothing else
+  assert.match(problem({ id: 'a', verdict: 'pass', evidence: ['a.png'] }, b), /"a" reports Test Step \(none\); the approved list has it under step 1/)
+  assert.match(problem(without(a, 'url'), b), /"a" does not record the URL it ended on/)
+  assert.match(problem({ ...a, url: 'the settings page' }, b), /does not record the URL/)
+  assert.match(problem(without(a, 'environment'), b), /ran against "\(none\)", not the requested environment "http:\/\/127\.0\.0\.1:3000"/)
+  assert.match(problem({ ...a, environment: 'https://staging.example' }, b), /ran against "https:\/\/staging\.example"/)
+  assert.match(problem(without(a, 'text'), b), /does not quote the goal it checked/)
+  assert.match(problem({ ...a, step: 2 }, b), /"a" reports Test Step 2; the approved list has it under step 1/)
+  assert.match(problem(a, { ...b, case: 'desktop' }), /"b" reports case "desktop"; the approved list says "mobile"/)
+  assert.match(problem(a, without(b, 'case')), /"b" reports case "\(none\)"/)
+  assert.match(problem({ ...a, case: 'mobile' }, b), /"a" reports case "mobile"; the approved list says "\(none\)"/)
+  assert.equal(problem({ ...a, environment: 'http://127.0.0.1:3000/' }, b), null, 'a trailing slash is the same environment')
+  // the gate says row by row what it accepted, for the board and the diagnostics
+  problem(without(a, 'url'), b)
+  const report = verifyReport(root, run)
+  assert.deepEqual([report.accepted, report.total, report.rows.map(r => r.accepted)], [1, 2, [false, true]])
+  // a request made before environments were recorded cannot pass
+  const old = { ...run, stages: { ...run.stages, verify: { ...run.stages.verify, request: { ...run.stages.verify.request, environment: null } } } }
+  assert.match(verifyProblem(root, old), /names no environment/)
+})
+
+test('R5: the environment is recorded before verify starts, and only a linked one is exact-code verification', () => {
+  for (const [env, why] of [
+    ['{"url":"http://127.0.0.1:3000"}', /needs "kind"/], ['{"kind":"local"}', /needs the base URL/],
+    ['{"url":"https://staging.example","kind":"local"}', /not a local address/],
+    ['{"url":"https://staging.example","kind":"remote"}', /needs "revision" .* or "unlinked": "human:/],
+    ['{"url":"https://staging.example","kind":"remote","unlinked":"it is fine"}', /"unlinked": "human:/],
+    ['{"url":"https://staging.example","kind":"remote","revision":"latest"}', /7 to 40 hex/]])
+    assert.match(environmentProblem(JSON.parse(env)), why, env)
+  const { dir, git, report, requestId } = atVerify()
+  update(dir, run => { delete run.environment; return run })
+  assert.match(cli(dir, 'start', 'verify').stderr, /record where the browser will test, and what ties it to this code/)
+  assert.equal(load(dir).stages.verify.status, 'pending', 'nothing started')
+  // a deployment that reports another commit serves other code
+  assert.equal(cli(dir, 'put', 'environment', '{"url":"https://pr-7.preview.example","kind":"remote","revision":"0123456789abcdef"}').status, 0)
+  assert.match(cli(dir, 'start', 'verify').stderr, /reports revision 0123456789abcdef, but the code under review is .*the browser would test other code/)
+  // a deployment nothing ties to this code passes only on the human's word, and is never called exact
+  assert.match(cli(dir, 'put', 'environment', '{"url":"https://staging.example","kind":"remote"}').stderr, /needs "revision"/)
+  assert.equal(cli(dir, 'put', 'environment', '{"url":"https://staging.example","kind":"remote","unlinked":"human: staging only deploys main; accepted for copy changes"}').status, 0)
+  const unlinked = cli(dir, 'start', 'verify')
+  assert.match(unlinked.stdout, /link to this code: unlinked/)
+  assert.match(unlinked.stdout, /not exact-code verification/)
+  report(requestId(unlinked.stdout), { environment: 'https://staging.example', url: 'https://staging.example/page' })
+  assert.equal(cli(dir, 'pass', 'verify').status, 0)
+  assert.equal(load(dir).stages.verify.provenance, 'unlinked')
+  assert.match(cli(dir, 'status').stdout, /environment NOT linked to this code/)
+  // the deployment that reports the commit under review, and a local server from this checkout, are linked
+  for (const [env, provenance] of [[`{"url":"https://pr-7.preview.example","kind":"remote","revision":"${git('rev-parse', 'HEAD').slice(0, 12)}"}`, 'deployment-revision'],
+    ['{"url":"http://app.localhost:3000","kind":"local","server":"bin/dev from this checkout"}', 'local-checkout']]) {
+    update(dir, run => { run.stages.verify.status = 'pending'; return run })
+    assert.equal(cli(dir, 'put', 'environment', env).status, 0)
+    const started = cli(dir, 'start', 'verify')
+    const request = load(dir).stages.verify.request
+    assert.equal(request.environment.provenance, provenance)
+    // results written for the earlier environment are another request's
+    assert.match(cli(dir, 'pass', 'verify').stderr, /0 of 1 checks reported/)
+    report(requestId(started.stdout), { environment: JSON.parse(env).url, url: `${JSON.parse(env).url}/page` })
+    assert.equal(cli(dir, 'pass', 'verify').status, 0)
+    assert.equal(load(dir).stages.verify.provenance, provenance)
+  }
+  assert.deepEqual([load(dir).stages.verify.request.environment.build.tree, load(dir).stages.verify.request.environment.server], [git('rev-parse', 'HEAD^{tree}'), 'bin/dev from this checkout'])
+  // the environment changed after verify started: the results no longer say where they ran
+  update(dir, run => { run.stages.verify.status = 'running'; run.environment = ENV; return run })
+  assert.match(cli(dir, 'pass', 'verify').stderr, /environment changed since verify started/)
+})
+
+test('R8: recover checks what a file is, not only that it parses, and restores only a valid backup', () => {
+  const state = dir => join(dir, '.start-story', 'active.json')
+  const inbox = dir => join(dir, '.start-story', 'sc-1', 'inbox.json')
+  const withNotes = () => { const { dir } = repo(); withRun(dir); addNote(dir, { kind: 'note', text: 'first' }); addNote(dir, { kind: 'note', text: 'second' }); return dir }
+  // the reviewed reproduction: a valid backup, and {} where the notes were
+  let dir = withNotes()
+  writeFileSync(inbox(dir), '{}')
+  assert.throws(() => readInbox(dir, load(dir)), /unreadable \(not a list of notes\).*loop\.mjs recover/)
+  const recovered = cli(dir, 'recover')
+  assert.equal(recovered.status, 0, recovered.stderr)
+  assert.doesNotMatch(recovered.stdout, /nothing to recover/)
+  assert.deepEqual(readInbox(dir, load(dir)).map(n => n.text), ['first'])
+  assert.ok(readdirSync(join(dir, '.start-story', 'sc-1')).some(f => f.startsWith('inbox.json.broken-')), 'the broken original is kept')
+  // a list whose entries are not notes
+  dir = withNotes()
+  writeFileSync(inbox(dir), '[1, 2]')
+  assert.throws(() => readInbox(dir, load(dir)), /entry 1 is not a note/)
+  assert.equal(cli(dir, 'recover').status, 0)
+  // cut-off JSON, as before
+  dir = withNotes()
+  writeFileSync(inbox(dir), '[{"id":"n1","te')
+  assert.equal(cli(dir, 'recover').status, 0)
+  assert.equal(readInbox(dir, load(dir)).length, 1)
+  // a backup that is itself the wrong shape is not restored, and nothing is touched
+  dir = withNotes()
+  writeFileSync(inbox(dir), '{}'); writeFileSync(`${inbox(dir)}.prev`, '{"also":"wrong"}')
+  const refused = cli(dir, 'recover')
+  assert.equal(refused.status, 1)
+  assert.match(refused.stderr, /the notes: .* is unreadable and there is no valid backup .*not a list of notes.*Nothing was changed/)
+  assert.equal(readFileSync(inbox(dir), 'utf8'), '{}')
+  // no backup at all
+  dir = repo().dir; withRun(dir); addNote(dir, { kind: 'note', text: 'only' })
+  writeFileSync(inbox(dir), '{}')
+  assert.match(cli(dir, 'recover').stderr, /no valid backup .*none was kept/)
+  // the run state: valid JSON that is not a run
+  dir = repo().dir; withRun(dir); update(dir, r => ({ ...r, title: 'second' }))
+  for (const broken of ['{}', '[]', '{"story":"sc-1"}', '{"story":"sc-1","stages":{"contract":{}}}']) {
+    writeFileSync(state(dir), broken)
+    assert.throws(() => load(dir), /unreadable.*loop\.mjs recover/, broken)
+    assert.equal(cli(dir, 'status').status, 1)
+    assert.equal(cli(dir, 'recover').status, 0)
+    assert.equal(load(dir).story, 'sc-1')
+  }
+  // a wrong-shaped file never becomes the backup that recover would trust
+  writeFileSync(state(dir), '{}')
+  save(dir, { ...newRun('sc-1'), title: 'written over a broken file' })
+  assert.equal(JSON.parse(readFileSync(join(dir, '.start-story', 'active.prev.json'), 'utf8')).story, 'sc-1')
+  // already valid: nothing to do
+  assert.match(cli(dir, 'recover').stdout, /nothing to recover/)
 })

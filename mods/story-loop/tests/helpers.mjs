@@ -6,7 +6,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { newRun, save, load, FRESH } from '../skills/story-loop/scripts/loop.mjs'
 
+// The publisher refuses any push URL that is not the run's GitHub repository. The
+// tests publish to bare repositories on disk; only a local path is let through by this.
+process.env.STORY_LOOP_LOCAL_REMOTE = '1'
+
 export const B = 'feat/sc-1-thing'
+// Where the browser tests in these tests: a local server from this checkout.
+export const ENV = { url: 'http://127.0.0.1:3000', kind: 'local' }
+// What every result row must say besides its verdict and screenshot.
+export const META = { text: 'A reader sees the page.', url: 'http://127.0.0.1:3000/page', environment: ENV.url }
 
 export function repo({ remote = false, branch = B } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'sl-repo-'))
