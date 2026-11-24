@@ -341,6 +341,8 @@ if (DEMO) {
     () => tool('a1', 'Bash', undefined, 'bundle exec rspec spec/queries/reading_lists'),
     () => { tool('a2', 'Edit', DEMO_CHANGES[2].file); emit(ROOT, { kind: 'agent', phase: 'stop', agent: 'story-loop:worker-opus', agent_id: 'a1' }) },
     () => { emit(ROOT, { kind: 'agent', phase: 'stop', agent: 'story-loop:worker-sonnet', agent_id: 'a2' }); put({ tasks: run.tasks.map(t => ({ ...t, status: 'accepted' })) }); step('pass', 'build') },
+    () => { step('start', 'quality'); tool('conductor', 'Bash', undefined, 'node quality.mjs --lint "bundle exec rubocop app spec"') },
+    () => step('pass', 'quality', undefined, 'lint clean · no signals'),
     () => step('start', 'test_review'),
     () => { put({ evidence: { mutants: { killed: 14, total: 15 } } }); step('pass', 'test_review', undefined, '14 of 15 mutants killed') },
     () => step('start', 'verify'),
@@ -360,6 +362,7 @@ if (DEMO) {
       put({ findings: run.findings.map(f => f.id === 'c1' ? { ...f, verdict: 'fixed', commit: DEMO_FIX } : f), stale: ['verify', 'second_review'] })
       step('pass', 'build')
     },
+    () => { step('start', 'quality'); step('pass', 'quality', undefined, 'lint clean · no signals') },
     () => step('start', 'test_review'),
     // The session stops without moving the stage; the stop gate blocks it until someone restarts it.
     () => { emit(ROOT, { kind: 'session', phase: 'idle' }); step('block', 'test_review', undefined, STOP) },
