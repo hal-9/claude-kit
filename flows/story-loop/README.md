@@ -93,7 +93,7 @@ Then open http://127.0.0.1:4317. It replays a scripted run in about 40 seconds.
 ### 1. Install
 
 ```
-/plugin install story-loop --marketplace hal-9/claude-mods
+/plugin install story-loop --marketplace hal-9/claude-kit
 ```
 
 Start a new Claude Code session afterwards, so the hooks load.

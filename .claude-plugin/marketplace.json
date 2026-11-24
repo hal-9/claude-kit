@@ -1,5 +1,5 @@
 {
-  "name": "claude-mods",
+  "name": "hal-9",
   "owner": {
     "name": "hal-9"
   },
@@ -26,14 +26,14 @@
     },
     {
       "name": "savvy-flow",
-      "source": "./mods/savvy-flow",
+      "source": "./flows/savvy-flow",
       "description": "Fork of johnnyvizz/claude-kit savvy-flow: tiered workers build test-first at named seams; a code-review pass closes the flow."
     },
     {
       "name": "story-loop",
-      "source": "./mods/story-loop",
+      "source": "./flows/story-loop",
       "description": "One Shortcut story, ticket to reviewed draft PR, behind a stage graph, a push guard and a live board."
     }
   ],
-  "description": "Private marketplace of Claude Code mods by hal-9."
+  "description": "Claude Code mods and workflows by hal-9."
 }

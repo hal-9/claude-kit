@@ -5,15 +5,15 @@ import type { Engine } from 'claude-code/testing'
 const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 
 const cache = (id: string) => `/home/t/.claude/plugins/cache/${id}`
-// baton, relay and mod-switch from claude-mods, filetree from another marketplace, and a skills-only plugin with no hooks module.
+// baton, relay and mod-switch from the hal-9 marketplace, filetree from another marketplace, and a skills-only plugin with no hooks module.
 const INSTALLED = {
   plugins: Object.fromEntries(
-    ['baton@claude-mods', 'relay@claude-mods', 'mod-switch@claude-mods', 'filetree@claude-code-filetree', 'skills@other'].map(id => [id, [{ scope: 'user', installPath: cache(id) }]]),
+    ['baton@hal-9', 'relay@hal-9', 'mod-switch@hal-9', 'filetree@claude-code-filetree', 'skills@other'].map(id => [id, [{ scope: 'user', installPath: cache(id) }]]),
   ),
 }
 const FILES: Record<string, string> = {
   '/home/t/.claude/plugins/installed_plugins.json': JSON.stringify(INSTALLED),
-  ...Object.fromEntries(['baton@claude-mods', 'relay@claude-mods', 'mod-switch@claude-mods', 'filetree@claude-code-filetree'].map(id => [`${cache(id)}/hooks/hooks.json`, '{"modules":["./register.tsx"]}'])),
+  ...Object.fromEntries(['baton@hal-9', 'relay@hal-9', 'mod-switch@hal-9', 'filetree@claude-code-filetree'].map(id => [`${cache(id)}/hooks/hooks.json`, '{"modules":["./register.tsx"]}'])),
 }
 
 // The engine beneath the plugin: four mods installed, relay and filetree enabled at user scope.
@@ -31,7 +31,7 @@ function engineBelow(on: On, surface: 'desktop' | 'terminal') {
     if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
     return { value: text }
   })
-  on('settings.read', () => ({ value: { enabledPlugins: { 'relay@claude-mods': true, 'mod-switch@claude-mods': true, 'filetree@claude-code-filetree': true } } }))
+  on('settings.read', () => ({ value: { enabledPlugins: { 'relay@hal-9': true, 'mod-switch@hal-9': true, 'filetree@claude-code-filetree': true } } }))
   on('command.run', ($, e) => {
     commands.push(e.command)
     return { text: '' }
@@ -73,7 +73,7 @@ test('a switch flips at once, then runs the CLI and says the change lands next s
   expect((await band.find({ key: 'toggle-baton' }))?.text).toMatch(/\[…\]/)
 
   await clock.advance(1)
-  expect(runs).toEqual([['/home/t/.local/bin/claude', 'plugin', 'enable', 'baton@claude-mods', '--scope', 'user']])
+  expect(runs).toEqual([['/home/t/.local/bin/claude', 'plugin', 'enable', 'baton@hal-9', '--scope', 'user']])
   expect((await band.find({ key: 'toggle-baton' }))?.text).toMatch(/\[■\]/)
   expect(await band.find({ text: /3 of 3 on/ })).toBeDefined()
   expect(await band.find({ text: /new session/ })).toBeDefined()
@@ -82,7 +82,7 @@ test('a switch flips at once, then runs the CLI and says the change lands next s
 
   await band.press({ key: 'toggle-relay' })
   await clock.advance(1)
-  expect(runs[1]).toEqual(['/home/t/.local/bin/claude', 'plugin', 'disable', 'relay@claude-mods', '--scope', 'user'])
+  expect(runs[1]).toEqual(['/home/t/.local/bin/claude', 'plugin', 'disable', 'relay@hal-9', '--scope', 'user'])
   expect((await band.find({ key: 'toggle-relay' }))?.text).toMatch(/\[ \]/)
 
   await band.press({ key: 'close' })

@@ -11,7 +11,7 @@ const healthy = (over = {}) => ({
     if (over.run?.[key]) return over.run[key]
     if (key === 'short --version') return { ok: true, out: '5.0.0\n' }
     if (key === 'git config --get commit.gpgsign') return { ok: true, out: 'true\n' }
-    if (key === 'claude plugin list') return { ok: true, out: '  ❯ savvy-flow@claude-kit\n    Version: 1.2.0\n    Status: ✘ disabled\n\n  ❯ savvy-flow@claude-mods\n    Version: 1.3.0\n    Scope: user\n    Status: ✔ enabled\n' }
+    if (key === 'claude plugin list') return { ok: true, out: '  ❯ savvy-flow@claude-kit\n    Version: 1.2.0\n    Status: ✘ disabled\n\n  ❯ savvy-flow@hal-9\n    Version: 1.3.0\n    Scope: user\n    Status: ✔ enabled\n' }
     if (args.includes('setup')) return { ok: true, out: JSON.stringify({ codex: { available: true, detail: 'codex-cli 0.166.0' }, auth: { loggedIn: true } }) }
     return { ok: true, out: '' }
   },

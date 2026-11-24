@@ -27,7 +27,7 @@ All measurements live in the session's plugin state under `baton` (`main`, `agen
 ## Install
 
 ```
-/plugin install baton --marketplace hal-9/claude-mods
+/plugin install baton --marketplace hal-9/claude-kit
 ```
 
 Answer `y` to add the marketplace, pick the user scope, accept or change the three limits.

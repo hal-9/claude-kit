@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { IsOpen, Switch } from '../types'
 
 // Your mods are the user-scope plugins that ship a hooks module, from any marketplace; on/off is their enabledPlugins entry.
-const SELF = 'mod-switch@claude-mods'
+const SELF = 'mod-switch@hal-9'
 const IS_OPEN = { plugin: 'mod-switch', key: 'isOpen' } as const
 const SWITCHES = { plugin: 'mod-switch', key: 'switches' } as const
 const NEEDS_NEW_SESSION = { plugin: 'mod-switch', key: 'needsNewSession' } as const

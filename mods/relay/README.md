@@ -16,7 +16,7 @@ A pane (`relay`) lists the last three runs: elapsed time and the Codex log tail 
 ## Install
 
 ```
-/plugin install relay --marketplace hal-9/claude-mods
+/plugin install relay --marketplace hal-9/claude-kit
 ```
 
 ## Requirements

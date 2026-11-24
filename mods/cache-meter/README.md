@@ -43,7 +43,7 @@ The engine does not expose which cache TTL a session uses, so pick the one your 
 ## Install
 
 ```
-/plugin install cache-meter --marketplace hal-9/claude-mods
+/plugin install cache-meter --marketplace hal-9/claude-kit
 ```
 
 Plays along with `relay`: whichever of the two draws the band embeds the other's.
