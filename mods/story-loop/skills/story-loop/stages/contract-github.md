@@ -73,8 +73,9 @@ matrix with a stable id per check), and wait: `LOOP wait contract human "sign-of
 git fetch origin <base>
 git switch -c <branch> origin/<base>
 LOOP put branch <branch>          # fixed from the first publish on
+LOOP put base <base>              # before the first publish: the branch the story is never pushed to
 git commit --allow-empty -m "chore(gh-<n>): start issue [skip ci]"
-PUBLISH                           # a raw git push is refused during a run
+PUBLISH                           # a raw git push is refused during a run; it checks the push URL is <repo> first
 gh pr create --repo <repo> --draft --base <base> --head <branch> --title "<title>" --body-file <the seven sections> --assignee @me
 gh issue edit <n> --repo <repo> --add-assignee @me
 ```
@@ -82,7 +83,7 @@ gh issue edit <n> --repo <repo> --add-assignee @me
 Check the PR is a draft, then record it and pass the stage:
 
 ```bash
-LOOP put title "<issue title>"; LOOP put pr <number>; LOOP put base <base>
+LOOP put title "<issue title>"; LOOP put pr <number>
 LOOP checks set '<the agreed matrix as [{"id":…,"step":…,"case":…}]>'
 LOOP pass contract "signed off, draft PR <number>"
 ```

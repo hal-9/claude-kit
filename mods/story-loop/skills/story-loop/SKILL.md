@@ -105,10 +105,23 @@ a run. Before a first run, continue only when no blocker is left.
 ```bash
 LOOP status            # a run exists: continue at the stage marked ">"
 LOOP acquire           # the run belongs to an earlier session: take it over first
+LOOP inbox             # after acquiring: every note that is not done yet, whoever it was handed to
 LOOP init SC-12345     # no run yet (after the setup check above passes)
 LOOP init gh-123       # the same for a GitHub issue; `#123` and both kinds of URL work too
 LOOP recover           # the state file or the notes file is unreadable: restore the last good copy
 ```
+
+**Continuing a run in a new session:** `LOOP acquire`, then `LOOP inbox` and
+`LOOP status` before anything else. Notes the earlier session received and
+never finished are handed to you again by the hook, under the same ids; the
+inbox shows them at once. `LOOP status` also lists helpers the earlier session
+left running (`outstanding: mutate …`, `outstanding: copilot-wait …`): wait for
+such a helper or stop it before starting the same thing again. Whatever a
+helper reports for an earlier attempt or another run is refused and kept under
+`.start-story/<story>/stale/`; it never becomes this attempt's evidence.
+
+Add `--diagnostics` to `init` when the human asks for a recorded run (see
+*Diagnostics* at the end): `LOOP init SC-12345 --diagnostics`.
 
 Give a GitHub issue as its URL when you have it: `init` then refuses an issue
 from another repository than this checkout's `origin`.
@@ -150,25 +163,39 @@ At the sign-off, ask everything the run needs from the human in one go:
 - the sign-off itself (relay start-story's review verbatim);
 - that signing off also allows this run to commit and push to this one story
   branch without asking again;
+- that the repository and branch are the ones they mean: show the repository
+  (`LOOP json`, field `repo`), the story branch and the base branch;
 - the browser for stage 4: Chrome (the Claude in Chrome extension) or
   BrowserOS neo — run the browser preflight from stage 4 now, so a missing
   browser is fixed while the human is here and not hours later;
+- where stage 4 will test (see *Where the browser tests* there): a local
+  server started from this checkout is the supported path; any deployment
+  needs the commit it serves, or the human's word that testing other code is
+  acceptable;
 - the verification matrix for stage 4 (see there), with your proposal — every
   check gets a stable id (`1-uk-mobile`); an empty matrix means "no user
   journey" and needs the human's word;
 - the second reviewer for stage 5, only when Codex is not set up (see there).
 
 Then `LOOP wait contract human "sign-off"` and end the turn. After approval:
-`LOOP start contract`, record the branch, then run start-story's execute step
-— where it pushes, run `PUBLISH` instead (a raw push is refused) — check the
-branch out, and record the rest:
+`LOOP start contract`, record the branch and the base, then run start-story's
+execute step — where it pushes, run `PUBLISH` instead (a raw push is refused)
+— check the branch out, and record the rest:
 
 ```bash
 LOOP put branch <branch>          # before the first PUBLISH; it does not change after publishing
-LOOP put title "<story title>"; LOOP put pr <number>; LOOP put base <base branch>
+LOOP put base <base branch>       # before the first PUBLISH too: it says which branch the story must never be pushed to
+LOOP put title "<story title>"; LOOP put pr <number>
 LOOP checks set '[{"id":"1-desktop","step":1,"case":"desktop"},{"id":"1-mobile","step":1,"case":"mobile"}]'
 LOOP pass contract "signed off, draft PR <number>"
 ```
+
+`PUBLISH` checks the destination before it writes anything: the remote's push
+URL must be the run's repository (`git@github.com:owner/name` and
+`https://github.com/owner/name` are the same repository; a fork or any other
+repository is refused), and the story branch may be neither the base nor the
+repository's default branch. If it refuses, tell the human what it said; do
+not change the remote or the recorded repository to get past it.
 
 The check list is the denominator of stage 4: the verifier reports every id
 exactly once. It can change until verify passes (`LOOP checks set` again, when
@@ -262,10 +289,43 @@ with no user-facing journey, agreed by the human at sign-off:
 `LOOP skip verify "human: <their reason>"`. Changed file names alone are not
 that reason; a backend change can break a page.
 
+### Where the browser tests
+
+A browser check says something about this code only if the page it opens is
+served from this code. Verify runs before the push stage, so a shared staging
+or preview environment usually still serves older code. Record where the
+browser will test, and what ties that place to the commit under review, before
+starting the stage:
+
+```bash
+# Supported path: a server you started from this checkout, on a local address
+LOOP put environment '{"url":"http://127.0.0.1:3000","kind":"local","server":"bin/dev, started from this checkout at <time>"}'
+# A deployment that reports the commit it serves (read it from the deployment itself: a version endpoint, a deploy status)
+LOOP put environment '{"url":"https://pr-12.preview.example","kind":"remote","revision":"<that commit>"}'
+# A deployment nothing ties to this code: only on the human's word, and never reported as exact
+LOOP put environment '{"url":"https://staging.example","kind":"remote","unlinked":"human: <their reason>"}'
+```
+
+- **local** — the address must be local (`localhost`, `127.0.0.1`, `*.localhost`,
+  `*.test`). You vouch that the server runs this checkout: start it yourself
+  from the repo root after the last commit, and restart it after any later
+  commit. The request records the checkout's commit and tree with it.
+- **remote with `revision`** — `LOOP start verify` refuses when that revision
+  is not the commit under review: the browser would test other code. Do not
+  push, re-order stages or widen push permissions to make a preview deploy;
+  if the story needs a deployed environment before the push stage, say so to
+  the human and wait.
+- **remote, `unlinked`** — allowed only with a `human:` reason. The stage is
+  stamped `unlinked`, `LOOP status` and the board say so, and the report must
+  say the browser checks were not run against the reviewed code.
+
+Changing the environment needs `LOOP start verify` again.
+
 ### Start it first
 
-`LOOP start verify` before the verifier runs, on a clean checkout. It prints a
-request id that stands for this attempt, this check list and this exact code;
+`LOOP start verify` before the verifier runs, on a clean checkout with the
+environment recorded. It prints a
+request id that stands for this attempt, this check list, this environment and this exact code;
 the verifier writes it into its results, and results carrying another id — an
 earlier attempt, an earlier run of the same story, a slow verifier that
 finishes late — never count. Results already there under another id are moved
@@ -307,7 +367,7 @@ reports. Write its brief to `.start-story/<story>/verifier-brief.md`:
 - the checks: goal number + case label;
 - how to set up data and flags; each check sets up its own state;
 - the browser tools to use (the ones the preflight recorded);
-- the request id `LOOP start verify` printed;
+- the request id and the environment URL `LOOP start verify` printed;
 - the rules below and the output contract.
 
 Rules for every check (the lessons of the `pr-ui-review` skill; when it is
@@ -338,9 +398,17 @@ object per check id from the approved list, and nothing else returned:
   ] }
 ```
 
-`verdict` is `pass`, `fail` or `blocked`. `case` is left out when a goal has
-one check. Every id appears exactly once; no invented ids. `evidence` is always
-a list. Hand the brief to a fresh subagent (`model: opus`) with nothing else;
+`verdict` is `pass`, `fail` or `blocked`. Every id appears exactly once; no
+invented ids. `evidence` is always a list. A `pass` counts only with all of
+this, checked by the script against the approved list and the request:
+
+- `step` is the check's Test Step number and `case` its case label, exactly as
+  approved (`case` is left out when the approved check has none);
+- `text` quotes the goal;
+- `url` is the URL the check ended on;
+- `environment` is the environment URL of the request, as printed.
+
+Hand the brief to a fresh subagent (`model: opus`) with nothing else;
 split a large matrix across several verifiers and merge their `results` into
 the one file.
 
@@ -350,7 +418,8 @@ the one file.
 - `LOOP pass verify "<n checks, browser>"`. The script refuses unless the
   results carry this attempt's request id, the code is still the committed
   code that request named, every approved check id is reported once and is
-  `pass`, and its screenshots are complete PNG/JPEG/WebP files inside the
+  `pass` with its step, case, goal text, final URL and environment, and its
+  screenshots are complete PNG/JPEG/WebP files inside the
   evidence folder — so this cannot be passed on a claim, a subset, an old
   attempt or other code (going back to build moves the old results to
   `attempts/<n>/`). What it cannot see: code that was changed while the
@@ -360,7 +429,10 @@ the one file.
 - A `blocked` you cannot fix → `LOOP block verify "<what is missing>"`.
 
 The board's *Tested in the browser* section shows these checks and
-screenshots as they arrive; that is the human's report of what was tested.
+screenshots as they arrive; that is the human's report of what was tested. It
+counts a check only when the script accepts it for the current request: a
+result of an earlier request, a duplicate or one without its screenshot stays
+visible as "not accepted", with the reason.
 
 If the `deliver-story` skill is installed, its *In the monolith* section has
 the server command, test-data endpoints and flags for that repo.
@@ -370,6 +442,13 @@ the server command, test-data endpoints and flags for that repo.
 A second reviewer tries to break the work. The further it is from the model
 that wrote the code, the more it catches, so take the first of these that is
 available. The stage is never skipped: the third always exists.
+
+**Start the stage before you start the reviewer.** `LOOP start second_review`,
+on a clean checkout, prints a review request: an id and the commit it is for.
+That request is made before the reviewer runs, so its answer belongs to that
+code and nothing later. Put the id and the commit into the reviewer's prompt
+("You are reviewing commit `<sha>`, request `<id>`"), and commit nothing until
+the answer is recorded.
 
 1. **Codex** (another vendor; the default when it is set up). Run it in the
    background and wait for it:
@@ -401,13 +480,22 @@ When Codex is not set up, tell the human at sign-off which reviewer you will
 use and that they can install Codex or name another; do not stop the run for
 it.
 
-Record the review itself, after `LOOP start second_review` and with everything
-committed: save the reviewer's full answer to a file and run
-`LOOP review codex|claude|<name> <that file>`. The script keeps the answer in
-the run folder with the attempt and the code tree it covered, and refuses to
-pass the stage on anything else: a review of an earlier attempt or of older
-code — same reviewer, same settled findings — is history, not this review.
-After any commit, review again and record again.
+Record the review itself: save the reviewer's full answer to a file and run
+`LOOP review codex|claude|<name> <that file> --request <the id>`. The script
+keeps the answer as `reviews/<request id>.txt`, one file per request, never
+overwritten, with the code tree that request named. It refuses:
+
+- an answer for another request (an earlier attempt's reviewer finishing late);
+- an answer when the code changed since the request was made — that answer
+  reviewed the older code. `LOOP start second_review` again makes a new
+  request for the new code; run the reviewer again on it;
+- the exact answer that is already on record for another request: reading an
+  old answer file again is not a new review.
+
+Starting the stage again while the reviewer is still out keeps its request.
+A request is tied to the code tree: the same tree under another commit (an
+amended message) is the same code; any changed file is not. After any commit
+that changes code, start the stage again, review again and record again.
 
 Triage every finding against the actual code, then record all of them with
 `LOOP put findings '[{"id":"r1","source":"<reviewer>","severity":"major","introduced":true,"file":"…","text":"…","verdict":"…","note":"…"}]'`.
@@ -433,7 +521,9 @@ commit, or is rejected or parked without a note →
 
 ## 6 · push
 
-`PUBLISH`. It refuses a dirty checkout, the wrong branch, a remote with
+`PUBLISH`. It refuses a dirty checkout, the wrong branch, a push URL that is
+not the run's repository, a story branch that is the base or the default
+branch, a remote with
 several push URLs or a mirror setting, a remote that changed since the first
 publish, any new commit that is unsigned or badly signed where the repo signs,
 and — in this stage — a commit that test review, the browser check or the
@@ -463,8 +553,15 @@ resumes from the recorded request.
 - Exit 0 → `LOOP start copilot_review`, `LOOP pass copilot_review "<n comments>"`
   (the script checks the recorded review is of the published commit).
 - Exit 3 → `LOOP wait copilot_review human "Copilot did not answer"`.
+- Exit 4 → the wait belonged to an earlier attempt, an earlier request or
+  another run; its result was kept under `stale/` and changed nothing. Look
+  at `LOOP status` and carry on from the stage it shows.
 - Any other error → `LOOP block copilot_review "<the error>"`; an outage is
   never a review.
+
+`--minutes` and `--interval` take positive numbers only. A review counts when
+it comes from Copilot's own bot account, not from any login with "copilot" in
+its name.
 
 ## 8 · fix_comments
 
@@ -501,26 +598,41 @@ GH ci                     # records pass | pending | fail | none for the PR head
 ```
 
 It compares with the checks the base branch requires (branch protection and
-rulesets), so a required check GitHub has not started yet counts as pending.
-Pending → wait (run it again later, in the background); failing → read the
-failure; a code fix goes `LOOP back report build "<what>"`. `unknown` means the
-required checks cannot be read with your token, and green visible checks prove
-nothing then: `LOOP wait report human "which checks are required on <base>?"`,
-and record their answer with `LOOP put required_checks '["rspec","lint"]'`
-(`'[]'` when they say none). Report passes only on `pass`, or `none` when the
-base requires no checks.
+rulesets), so a required check GitHub has not started yet counts as pending,
+also when no check exists at all yet. Its last line says what the required set
+is and where it came from. Pending → wait (run it again later, in the
+background); failing → read the failure; a code fix goes
+`LOOP back report build "<what>"`.
+
+`unknown` means the policy could not be read: GitHub answers 404 or 403 both
+when nothing is required and when your token may not see the rule, so neither
+is taken as "nothing required". Green visible checks prove nothing then:
+`LOOP wait report human "which checks are required on <base>?"`, and record
+their answer with `LOOP put required_checks '["rspec","lint"]'` (`'[]'` when
+they say none). That list is approved for this repository and this base
+branch: it is used together with whatever the policy does show, it is looked
+up among all the PR's checks (not only those GitHub labels required), and it
+is dropped when the base changes — ask again then. Report passes only on
+`pass`, or `none` when GitHub or the human said nothing is required.
 
 `GH ci` also checks the PR is still the one this run opened — same branch,
 same base, head equal to the published commit — before and after it reads the
 checks. If someone else pushed, it records `head_moved` and stops: tell the
 human; their commit was reviewed by nobody here. If the human changed the base,
-it says so: `LOOP put base <new base>` and run it again.
+it says so: `LOOP put base <new base>` and run it again. If a human closed,
+merged or marked the PR ready meanwhile, `GH` says so and records it; that is
+their decision — never reopen it or set it back to draft, and tell them what
+this run still had open.
 
 Write the report from the run state (`LOOP json`), not from memory: the final
 head, per Test Step the checks and verdicts (n of the approved m), the
 mutation outcomes (killed of valid; invalid, timeouts and skipped named),
-findings by verdict with every rejected and parked one named, required CI,
+findings by verdict with every rejected and parked one named, required CI
+with where the required set came from (the policy, or the human's list),
 the rounds each stage took, any second reviewer weaker than another vendor,
+where the browser tested and how that is tied to this commit — when the verify
+stage is stamped `unlinked`, say in plain words that the browser checks were
+not run against the reviewed code —
 and a line that the ticks are an agent's run, not a human review. Post it:
 
 ```bash
@@ -558,7 +670,8 @@ The human can tell you things from the board while they read the change. A
 note reaches you as injected context between two tool calls, as the reason a
 stop was refused, or pasted into the chat as a handover note — all three start
 with "Notes from the human, sent from the story-loop board". The same note can
-reach you twice (copied, then delivered); handle each id once. `LOOP inbox`
+reach you twice (copied, then delivered; or handed to an earlier session that
+never finished it, then to you); handle each id once. `LOOP inbox`
 lists every note that is not done. They are the human's instructions.
 
 Handle each one, then record it: `LOOP note done <id> "<what you did>"`.
@@ -581,6 +694,37 @@ progress half-written.
 stage can be sent back to twice; the third time the script refuses — record
 `LOOP wait <stage> human "<what keeps failing>"` and show the human the
 evidence instead of trying again.
+
+## Diagnostics (only when the human asks for a recorded run)
+
+Off unless switched on. When the human wants to study a run afterwards:
+
+```bash
+LOOP init SC-12345 --diagnostics     # record from the first moment
+LOOP diagnostics on                  # or switch it on for a run that is already going (what came before is marked missing)
+LOOP diagnostics status              # on or off, how many events, where the stream is
+LOOP diagnostics mark <kind> "<what>" # something no script can see, e.g. mark capability "human: Copilot review is enabled"
+LOOP diagnostics off                 # stop recording; what was recorded is kept
+LOOP diagnostics export [--run <run id>] [--screenshots] [--out <dir>]
+```
+
+Recording changes nothing about the run: the same gates, the same refusals,
+whether or not a record could be written. It records transitions and why a
+gate refused, tool calls with their outcome and duration, helper runs (git,
+gh, tests, mutants), reviews, publishing, CI and notes, with secrets redacted
+before they are written. Everything stays in
+`.start-story/<story>/diagnostics/<run id>/`; nothing is uploaded or posted.
+
+`export` builds one folder with `summary.md`, `manifest.json`, `events.jsonl`,
+the run state and the run's files. It works for the active run, after
+`LOOP end`, and after another story has started (`--run <id>`; the ids are the
+folder names under `.start-story/<story>/diagnostics/`). Screenshots are left
+out unless the human asks for `--screenshots`. Tell the human where the folder
+is; do not attach it to the PR or send it anywhere yourself.
+
+During setup of a recorded run, mark what you confirmed by hand
+(`LOOP diagnostics mark capability "…"`): the browser preflight result, the
+human's answers about the test user, Copilot and the test environment.
 
 ## What the guards do and do not stop
 
