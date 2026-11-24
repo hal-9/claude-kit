@@ -59,9 +59,27 @@ the advisor, or an agent that names `opus`, `sonnet` or `haiku`.
 
 Unsure between two → the higher one; a task returned once goes up a tier.
 Insight and thoroughness both needed → two tasks: `worker-opus-max`
-investigates and writes a precise brief, `worker-opus` implements it. If the
-Agent tool lists the workers without the `story-loop:` prefix, use those
-names. If it lists none, `LOOP block build "story-loop workers not loaded; start a new session"`.
+investigates and writes a precise brief, `worker-opus` implements it.
+
+**A bug story, or a defect sent back whose cause is not obvious** (or one that
+survived a first fix): the brief prescribes the diagnosis, in this order, and
+the report shows each step.
+
+1. **A command that fails on this bug** before any theory: a test, a curl, a
+   script, run at least once with its output shown. It reproduces the exact
+   symptom reported, the same way every run, in seconds. No such command →
+   the worker says what it tried and stops; it does not guess.
+2. **Shrink it** until every remaining input or step is needed to fail.
+3. **Three to five ranked hypotheses**, each saying what result would prove it
+   wrong; probe one variable at a time. Temporary logs carry one tag
+   (`[DEBUG-<4 hex>]`) and a grep for it removes them before the report.
+4. **The regression test goes where the bug really happens** (the call path
+   that triggered it), written before the fix. When no such place exists in
+   the code, the report says so: that is a lesson for the retro.
+5. The report names the hypothesis that held; it goes into the commit message.
+
+If the Agent tool lists the workers without the `story-loop:` prefix, use
+those names. If it lists none, `LOOP block build "story-loop workers not loaded; start a new session"`.
 
 ## 3. Delegate
 
