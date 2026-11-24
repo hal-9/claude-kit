@@ -5,71 +5,81 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>story-loop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
+/* The board as a bench instrument: warm graphite (or warm paper), one ink, and amber only when it needs you. */
 :root {
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: 'Archivo', ui-sans-serif, system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, "SF Mono", Menlo, monospace;
 
-  --bg: oklch(98.4% 0.004 85);
-  --surface: oklch(100% 0 0);
-  --sunk: oklch(96.2% 0.005 85);
-  --ink: oklch(23% 0.012 265);
-  --ink-2: oklch(42% 0.012 265);
-  --ink-3: oklch(52% 0.01 265);
-  --line: oklch(91% 0.006 265);
-  --line-2: oklch(84% 0.008 265);
-  --accent: oklch(52% 0.2 268);
-  --accent-ink: oklch(46% 0.2 268);
-  --accent-soft: oklch(95% 0.025 268);
-  --on-accent: oklch(99% 0 0);
-  --ok: oklch(50% 0.12 155);
-  --ok-soft: oklch(95.5% 0.03 155);
+  --bg: oklch(97.6% 0.006 80);
+  --bg-warn: oklch(95% 0.035 80);
+  --surface: oklch(99.2% 0.004 80);
+  --sunk: oklch(94.6% 0.007 80);
+  --ink: oklch(22% 0.008 70);
+  --ink-2: oklch(38% 0.008 70);
+  --ink-3: oklch(50% 0.008 70);
+  --line: oklch(89% 0.007 75);
+  --line-2: oklch(80% 0.008 75);
+  --accent: oklch(24% 0.008 70);
+  --accent-ink: oklch(22% 0.008 70);
+  --accent-soft: oklch(92% 0.008 75);
+  --on-accent: oklch(97% 0.006 80);
+  --ok: oklch(48% 0.11 150);
+  --ok-soft: oklch(94% 0.03 150);
   --warn: oklch(72% 0.15 70);
   --warn-ink: oklch(47% 0.11 60);
-  --warn-soft: oklch(96.5% 0.035 80);
-  --bad: oklch(55% 0.19 27);
-  --bad-soft: oklch(96% 0.025 27);
-  --add-bg: oklch(95.5% 0.04 155);
-  --del-bg: oklch(95.5% 0.03 27);
-  --shadow: 0 1px 2px oklch(20% 0.02 265 / 0.05), 0 6px 20px -8px oklch(20% 0.02 265 / 0.12);
+  --warn-soft: oklch(94% 0.045 80);
+  --bad: oklch(53% 0.18 28);
+  --bad-soft: oklch(95% 0.03 28);
+  --wait: oklch(48% 0.07 240);
+  --add-bg: oklch(94% 0.04 150);
+  --del-bg: oklch(94.5% 0.03 28);
+  --shadow: 0 1px 2px oklch(20% 0.01 70 / 0.05), 0 8px 24px -12px oklch(20% 0.01 70 / 0.14);
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --spring: linear(0, 0.009, 0.035 2.1%, 0.141 4.4%, 0.723 12.9%, 0.938 16.7%, 1.017 19.4%, 1.067, 1.099 24.3%, 1.108 26%, 1.103, 1.085 31.2%, 1.006 38.5%, 0.983 42.4%, 0.976 46.4%, 0.985 54.5%, 1.001 63.4%, 1.004 70.7%, 1);
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: oklch(16.5% 0.008 265);
-    --surface: oklch(20.5% 0.009 265);
-    --sunk: oklch(18.5% 0.008 265);
-    --ink: oklch(94% 0.006 265);
-    --ink-2: oklch(78% 0.008 265);
-    --ink-3: oklch(66% 0.01 265);
-    --line: oklch(28% 0.01 265);
-    --line-2: oklch(36% 0.012 265);
-    --accent: oklch(70% 0.15 268);
-    --accent-ink: oklch(78% 0.12 268);
-    --accent-soft: oklch(27% 0.05 268);
-    --on-accent: oklch(17% 0.02 268);
-    --ok: oklch(76% 0.13 155);
-    --ok-soft: oklch(26% 0.04 155);
-    --warn: oklch(80% 0.14 75);
-    --warn-ink: oklch(84% 0.12 80);
-    --warn-soft: oklch(26% 0.04 75);
-    --bad: oklch(71% 0.16 27);
-    --bad-soft: oklch(26% 0.05 27);
-    --add-bg: oklch(24% 0.035 155);
-    --del-bg: oklch(24% 0.035 27);
-    --shadow: 0 1px 2px oklch(0% 0 0 / 0.3), 0 8px 24px -10px oklch(0% 0 0 / 0.5);
+    --bg: oklch(17.5% 0.006 70);
+    --bg-warn: oklch(21% 0.035 70);
+    --surface: oklch(20.5% 0.006 70);
+    --sunk: oklch(15.5% 0.006 70);
+    --ink: oklch(96% 0.008 80);
+    --ink-2: oklch(80% 0.008 80);
+    --ink-3: oklch(66% 0.008 80);
+    --line: oklch(29% 0.006 70);
+    --line-2: oklch(38% 0.007 70);
+    --accent: oklch(94% 0.008 80);
+    --accent-ink: oklch(96% 0.008 80);
+    --accent-soft: oklch(26% 0.006 70);
+    --on-accent: oklch(18% 0.006 70);
+    --ok: oklch(80% 0.12 150);
+    --ok-soft: oklch(25% 0.035 150);
+    --warn: oklch(82% 0.15 75);
+    --warn-ink: oklch(84% 0.13 78);
+    --warn-soft: oklch(25% 0.045 72);
+    --bad: oklch(71% 0.16 28);
+    --bad-soft: oklch(25% 0.05 28);
+    --wait: oklch(80% 0.06 240);
+    --add-bg: oklch(24% 0.035 150);
+    --del-bg: oklch(24% 0.035 28);
+    --shadow: 0 1px 2px oklch(0% 0 0 / 0.3), 0 10px 28px -12px oklch(0% 0 0 / 0.55);
   }
 }
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html { background: var(--bg); color: var(--ink); accent-color: var(--accent); scrollbar-color: var(--line-2) transparent; }
+html { background: var(--bg); color: var(--ink); accent-color: var(--ink); scrollbar-color: var(--line-2) transparent; scroll-padding-top: 72px; }
 body {
-  margin: 0; font: 15px/1.5 var(--sans); background: var(--bg); color: var(--ink);
+  margin: 0; font: 15px/1.5 var(--sans); font-variation-settings: 'wdth' 100; background: var(--bg); color: var(--ink);
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
-  caret-color: var(--accent);
+  caret-color: var(--warn); transition: background-color 1.4s var(--ease);
 }
-::selection { background: var(--accent-soft); color: var(--ink); }
+body[data-mood="warn"] { background: var(--bg-warn); }
+::selection { background: var(--warn); color: oklch(22% 0.04 70); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 h1, h2, h3, h4, p, ol, ul, dl, dd { margin: 0; }
 ol, ul { padding: 0; list-style: none; }
@@ -77,39 +87,70 @@ code, .mono { font-family: var(--mono); font-size: 0.88em; }
 .num { font-variant-numeric: tabular-nums; }
 .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
-.page { max-width: 1440px; margin: 0 auto; padding: 28px 40px 80px; }
+.page { max-width: 1320px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 56px) 88px; }
 
-/* ---------- header ---------- */
-.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; color: var(--ink-3); font-size: 13px; }
-.brand { display: flex; align-items: center; gap: 10px; }
-.brand b { color: var(--ink); font-weight: 600; letter-spacing: -0.01em; }
+/* ---------- header: a strip, then the state you can read from across the room ---------- */
+.top {
+  position: sticky; top: 0; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  min-height: 56px; margin: 0 calc(-1 * clamp(16px, 4vw, 56px)); padding: 10px clamp(16px, 4vw, 56px);
+  color: var(--ink-3); font-size: 13px; background: color-mix(in oklch, var(--bg) 88%, transparent); border-bottom: 1px solid var(--line);
+  backdrop-filter: saturate(1.4) blur(14px); -webkit-backdrop-filter: saturate(1.4) blur(14px); transition: background-color 1.4s var(--ease);
+}
+body[data-mood="warn"] .top { background: color-mix(in oklch, var(--bg-warn) 88%, transparent); }
+.brand { display: flex; align-items: center; gap: 10px; flex: none; }
+.brand b { color: var(--ink); font-weight: 650; font-variation-settings: 'wdth' 112; letter-spacing: -0.01em; }
 .tag { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--sunk); color: var(--ink-2); border: 1px solid var(--line); }
 .conn { display: inline-flex; align-items: center; gap: 7px; }
 .conn::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.conn[data-state="on"]::before { animation: ping 2.4s var(--ease) infinite; }
 .conn[data-state="off"]::before { background: var(--warn); }
+@keyframes ping { from { box-shadow: 0 0 0 0 color-mix(in oklch, var(--ok) 50%, transparent); } to { box-shadow: 0 0 0 7px transparent; } }
+/* jump links to the parts of the board, with live counts */
+.sections { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+.sections a { flex: none; padding: 6px 10px; border-radius: 8px; color: var(--ink-3); text-decoration: none; font-size: 13px; transition: color 160ms, background-color 160ms; }
+.sections a:hover { color: var(--ink); background: var(--sunk); }
+.sections a b { font-weight: 500; color: var(--ink-2); margin-left: 5px; font-variant-numeric: tabular-nums; }
+.sections a[data-warn] b { color: var(--warn-ink); }
 
-.story-head { margin-top: 28px; display: grid; gap: 10px; }
-.story-id { font-family: var(--mono); font-size: 13px; color: var(--accent-ink); }
-h1 { font-size: clamp(1.6rem, 1.2rem + 1.2vw, 2.25rem); line-height: 1.15; font-weight: 640; letter-spacing: -0.025em; text-wrap: balance; max-width: 30ch; }
-.meta { display: flex; flex-wrap: wrap; gap: 6px 28px; font-size: 13.5px; color: var(--ink-2); }
-.meta div { display: flex; gap: 8px; align-items: baseline; }
+.story-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px 48px; padding: clamp(36px, 6vh, 80px) 0 clamp(28px, 4vh, 48px); }
+.story-head .meta { grid-column: 1 / -1; }
+.story-id { font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); }
+h1 { font-size: clamp(17px, 1.6vw, 21px); line-height: 1.3; font-weight: 450; color: var(--ink-2); letter-spacing: -0.005em; text-wrap: balance; max-width: 60ch; margin-bottom: 18px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: 13px; color: var(--ink-3); align-items: baseline; }
+.meta div { display: flex; gap: 7px; align-items: baseline; }
 .meta dt { color: var(--ink-3); }
-.meta dd { color: var(--ink); }
+.meta dd { color: var(--ink-2); }
+.line-wrap { position: relative; padding-bottom: 0.06em; }
+.line {
+  font-weight: 720; font-variation-settings: 'wdth' 118; color: var(--ink);
+  font-size: clamp(44px, 7.2vw, 104px); line-height: 0.98; letter-spacing: -0.035em; text-wrap: balance;
+}
+.line[data-tone="warn"] { color: var(--warn-ink); }
+.line[data-tone="bad"] { color: var(--bad); }
+.line[data-tone="wait"] { color: var(--wait); }
+.line.leaving { position: absolute; inset: 0 0 auto 0; pointer-events: none; }
+.line .round { display: inline-block; margin-left: 0.4em; font-size: 0.24em; font-weight: 600; letter-spacing: 0; vertical-align: 0.8em; padding: 0.25em 0.7em; border-radius: 99px; border: 1px solid currentColor; font-variation-settings: 'wdth' 100; }
+.reason { margin-top: 20px; max-width: 62ch; font-size: clamp(16px, 1.35vw, 19px); color: var(--ink-2); text-wrap: pretty; }
+.reason .stale-note { display: block; margin-top: 6px; font-size: 14px; color: var(--warn-ink); }
+.clock { text-align: right; align-self: end; }
+.clock .big { display: block; font-size: clamp(34px, 4vw, 56px); font-weight: 300; font-variation-settings: 'wdth' 80; letter-spacing: -0.02em; line-height: 1; font-variant-numeric: tabular-nums; }
+.clock small { display: block; margin-top: 8px; color: var(--ink-3); font-size: 13px; }
 
 /* ---------- stage graph ---------- */
-.graph { --st: 46px; position: relative; margin-top: 28px; padding: 72px 0 4px; }
+.graph { --st: 14px; position: relative; padding: 84px 0 4px; border-top: 1px solid var(--line); }
 .edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .edges path { fill: none; stroke-linecap: round; }
-.edges .fired { stroke: var(--accent); stroke-width: 2; transition: opacity 600ms var(--ease); }
-.edges .fired.settled { opacity: 0.5; }
+.edges .fired { stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 3 4; transition: opacity 600ms var(--ease); }
+.edges .fired.settled { opacity: 0.55; }
 .edges marker path { stroke: none; }
 #arrow-guide path { fill: var(--line-2); }
-#arrow-fired path { fill: var(--accent); }
+#arrow-fired path { fill: var(--warn); }
 .edge-label {
   position: absolute; transform: translate(-50%, -100%); white-space: nowrap; max-width: 46ch; overflow: hidden; text-overflow: ellipsis;
-  font-size: 12.5px; color: var(--accent-ink); background: var(--bg); padding: 2px 8px; border-radius: 6px;
-  transition: color 600ms var(--ease);
+  font-size: 12.5px; color: var(--warn-ink); background: var(--bg); padding: 2px 8px; border-radius: 6px;
+  transition: color 600ms var(--ease), background-color 1.4s var(--ease);
 }
+body[data-mood="warn"] .edge-label { background: var(--bg-warn); }
 .edge-label.settled { color: var(--ink-3); }
 .edge-label.fresh { animation: rise 500ms var(--ease) 1300ms both; }
 .back-note { display: none; }
@@ -118,65 +159,80 @@ h1 { font-size: clamp(1.6rem, 1.2rem + 1.2vw, 2.25rem); line-height: 1.15; font-
 .stages { display: grid; grid-template-columns: repeat(var(--n, 9), minmax(0, 1fr)); }
 .stage { position: relative; display: grid; justify-items: center; align-content: start; text-align: center; padding: 0 6px; min-width: 0; }
 .stage::before {
-  content: ""; position: absolute; top: calc(var(--st) / 2 - 2px); right: calc(50% + var(--st) / 2 + 3px); width: calc(100% - var(--st) - 6px); height: 4px; border-radius: 2px;
-  background: linear-gradient(var(--accent), var(--accent)) left / var(--fill, 0%) 100% no-repeat, var(--line);
-  transition: background-size 700ms var(--ease);
+  content: ""; position: absolute; top: calc(var(--st) / 2 - 1px); right: calc(50% + var(--st) / 2 + 4px); width: calc(100% - var(--st) - 8px); height: 2px; border-radius: 1px;
+  background: linear-gradient(var(--ink-2), var(--ink-2)) left / var(--fill, 0%) 100% no-repeat, var(--line-2);
+  transition: background-size 900ms var(--ease);
 }
 .stage:first-child::before { display: none; }
 .stage[data-reached] { --fill: 100%; }
 .stage[data-flow]::before {
-  background: repeating-linear-gradient(90deg, color-mix(in oklch, var(--accent) 65%, transparent) 0 8px, transparent 8px 16px) 0 0 / 32px 100%, var(--line);
+  background: repeating-linear-gradient(90deg, var(--ink-3) 0 6px, transparent 6px 12px) 0 0 / 24px 100%, var(--line-2);
   animation: flow 1.8s linear infinite;
 }
-@keyframes flow { to { background-position: 32px 0, 0 0; } }
+@keyframes flow { to { background-position: 24px 0, 0 0; } }
 .dot {
-  position: relative; width: var(--st); height: var(--st); border-radius: 15px; display: grid; place-items: center;
+  position: relative; width: var(--st); height: var(--st); border-radius: 50%; display: grid; place-items: center;
   border: 1.5px solid var(--line-2); background: var(--bg); color: var(--ink-3);
-  transition: background-color 400ms var(--ease), border-color 400ms var(--ease), color 400ms var(--ease), transform 400ms var(--ease), box-shadow 400ms var(--ease);
+  transition: background-color 500ms var(--ease), border-color 500ms var(--ease), transform 500ms var(--spring), box-shadow 500ms var(--ease);
 }
-.dot .ico { width: 20px; height: 20px; }
-.dot::after { content: ""; position: absolute; inset: -6px; border-radius: 20px; border: 2px solid var(--accent); opacity: 0; pointer-events: none; }
-.stage-label { font-size: 13.5px; font-weight: 520; color: var(--ink-3); line-height: 1.25; margin-top: 13px; transition: color 300ms; }
-.stage-result {
-  font-size: 12px; line-height: 1.35; color: var(--ink-2); margin-top: 3px; max-width: 100%; overflow-wrap: anywhere;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-}
-.stage-result:empty, .stage-sub:empty, .stage-round:empty { display: none; }
-.stage-sub { font-size: 11px; color: var(--ink-3); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.dot .ico { display: none; }
+.dot::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 1.5px solid var(--ink); opacity: 0; pointer-events: none; }
+.stage-label { font-size: 13px; font-weight: 500; font-variation-settings: 'wdth' 75; color: var(--ink-3); line-height: 1.25; margin-top: 14px; transition: color 300ms; }
+.stage-result { display: none; }
+.stage-sub:empty, .stage-round:empty { display: none; }
+.stage-sub { font-size: 12px; color: var(--ink-3); margin-top: 3px; font-variation-settings: 'wdth' 75; font-variant-numeric: tabular-nums; }
 .stage-round {
-  position: absolute; left: 50%; bottom: -9px; transform: translateX(-50%); white-space: nowrap;
-  font-size: 10.5px; font-weight: 650; line-height: 1.5; padding: 0 6px; border-radius: 999px;
-  background: var(--bg); border: 1px solid var(--accent); color: var(--accent-ink);
+  position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%); white-space: nowrap;
+  font-size: 10.5px; font-weight: 600; line-height: 1.5; padding: 0 6px; border-radius: 999px;
+  background: var(--bg); border: 1px solid var(--line-2); color: var(--ink-2);
 }
 
-.stage[data-status="passed"] .dot { background: color-mix(in oklch, var(--ink-2) 16%, var(--bg)); border-color: color-mix(in oklch, var(--ink-2) 38%, var(--bg)); color: var(--ink-2); }
+.stage[data-status="passed"] .dot { background: var(--ink-2); border-color: var(--ink-2); }
 .stage[data-status="passed"] .stage-label { color: var(--ink-2); }
 .stage[data-status="skipped"] .dot { border-style: dashed; background: transparent; }
-.stage[data-status="skipped"] .dot .ico { opacity: 0.45; }
-.stage[data-status="skipped"] .dot::before { content: ""; position: absolute; left: 9px; right: 9px; top: calc(50% - 1px); height: 2px; border-radius: 1px; background: var(--ink-3); transform: rotate(-35deg); }
 .stage[data-status="skipped"] .stage-label { text-decoration: line-through; text-decoration-color: var(--ink-3); }
-.stage[data-status="running"] .dot { background: var(--accent); border-color: var(--accent); color: var(--on-accent); transform: translateY(-3px); box-shadow: 0 8px 18px -8px color-mix(in oklch, var(--accent) 80%, transparent); }
+.stage[data-status="running"] .dot { background: var(--ink); border-color: var(--ink); transform: scale(1.15); }
 .stage[data-status="running"] .dot::after { animation: ring 2.6s var(--ease) infinite; }
-.stage[data-status="running"] .stage-label { color: var(--ink); font-weight: 650; }
-.stage[data-status="running"] .stage-result { color: var(--accent-ink); }
-.stage[data-status="blocked"] .dot { background: var(--bad-soft); border: 2px solid var(--bad); color: var(--bad); }
-.stage[data-status="blocked"] .stage-label, .stage[data-status="blocked"] .stage-result { color: var(--bad); }
-.stage[data-status="waiting"] .dot { border-style: dashed; border-width: 2px; }
-.stage[data-status="waiting"][data-on="human"] .dot { background: var(--warn-soft); border-color: var(--warn); color: var(--warn-ink); }
-.stage[data-status="waiting"][data-on="human"] .stage-result { color: var(--warn-ink); }
-.stage[data-status="waiting"][data-on="copilot"] .dot { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
-.stage[data-status="waiting"][data-on="copilot"] .stage-result { color: var(--accent-ink); }
-.stage[data-status="waiting"] .stage-label { color: var(--ink); font-weight: 650; }
+.stage[data-status="running"] .stage-label, .stage[data-status="waiting"] .stage-label { color: var(--ink); font-weight: 650; }
+.stage[data-status="blocked"] .dot { background: var(--bad); border-color: var(--bad); transform: scale(1.15); }
+.stage[data-status="blocked"] .stage-label { color: var(--bad); font-weight: 650; }
+.stage[data-status="waiting"] .dot { border-style: dashed; border-width: 2px; transform: scale(1.15); }
+.stage[data-status="waiting"][data-on="human"] .dot { background: var(--warn); border: 0; }
+.stage[data-status="waiting"][data-on="human"] .dot::after { border-color: var(--warn); animation: ring 2s var(--ease) infinite; }
+.stage[data-status="waiting"][data-on="human"] .stage-label { color: var(--warn-ink); }
+.stage[data-status="waiting"][data-on="copilot"] .dot { border-color: var(--wait); }
 .stage.received .dot { animation: receive 900ms var(--ease); }
 
-.now-line { margin-top: 22px; font-size: 14.5px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
-.now-line b { color: var(--ink); font-weight: 600; }
 /* A station opens what its stage ended with. */
-.stage-hit { position: absolute; inset: -4px 0; border: 0; background: none; border-radius: 14px; cursor: pointer; padding: 0; }
-.stage-hit:disabled { cursor: default; }
-.stage-hit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.stage[data-open] .dot { outline: 2px solid var(--accent); outline-offset: 3px; }
-.stage-detail { margin-top: 18px; background: var(--surface); border-radius: 14px; box-shadow: var(--shadow, none); border: 1px solid var(--line); padding: 16px 18px; display: grid; gap: 10px; font-size: 14px; }
+.stage-hit { position: absolute; inset: -14px 0 -4px; border: 0; background: none; border-radius: 12px; cursor: pointer; padding: 0; }
+.stage-hit:hover { background: color-mix(in oklch, var(--ink) 4%, transparent); }
+.stage-hit:disabled { cursor: default; background: none; }
+.stage-hit:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.stage[data-open] .dot { outline: 1.5px solid var(--ink); outline-offset: 4px; }
+.stage[data-open] .stage-label { color: var(--ink); }
+.stage-detail { margin-top: 28px; background: var(--surface); border-radius: 14px; border: 1px solid var(--line); padding: 20px 22px; display: grid; gap: 12px; font-size: 14px; transform-origin: var(--from, 50%) 0; }
+.stage-detail.opening { animation: unfold 520ms var(--ease) both; }
+
+/* readouts: measurements on a scale of their own units; each opens where its detail lives */
+.readouts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 48px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+button.ro { display: grid; align-content: start; gap: 6px; text-align: left; padding: 20px 20px 22px; margin: 0; border: 0; border-radius: 0; background: none; color: inherit; font: inherit; }
+button.ro + button.ro { border-left: 1px solid var(--line); }
+button.ro:first-child { padding-left: 0; }
+button.ro:hover { background: none; }
+button.ro:hover .ro-name { color: var(--ink); }
+button.ro:active { transform: none; }
+button.ro:disabled { opacity: 1; }
+.ro-name { color: var(--ink-3); font-size: 13px; transition: color 160ms; }
+button.ro:not(:disabled) .ro-name::after { content: " \2192"; opacity: 0; transition: opacity 160ms; }
+button.ro:not(:disabled):hover .ro-name::after { opacity: 1; }
+.ro-v { font-size: 34px; font-weight: 350; font-variation-settings: 'wdth' 85; letter-spacing: -0.02em; line-height: 1; font-variant-numeric: tabular-nums; }
+.ro-v small { font-size: 0.5em; color: var(--ink-3); margin-left: 4px; }
+.ro-scale { display: flex; gap: 2px; height: 10px; margin-top: 8px; max-width: 240px; }
+.ro-scale i { flex: 1; background: var(--line-2); border-radius: 1px; transition: background-color 600ms var(--ease); }
+.ro-scale i.on { background: var(--ink-2); }
+.ro-scale i.miss { background: var(--bad); }
+.ro-note { color: var(--ink-3); font-size: 12.5px; }
+@keyframes unfold { from { opacity: 0; transform: translateY(-10px) scale(0.97); clip-path: inset(0 0 70% 0 round 14px); } to { clip-path: inset(0 0 0 0 round 14px); } }
 .stage-detail:focus { outline: none; }
 .sd-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .sd-head h3 { font-size: 15px; color: var(--ink); }
@@ -192,16 +248,19 @@ h1 { font-size: clamp(1.6rem, 1.2rem + 1.2vw, 2.25rem); line-height: 1.15; font-
 @keyframes pulse { 0% { transform: scale(1); opacity: 0.55; } 70%, 100% { transform: scale(1.9); opacity: 0; } }
 @keyframes receive { 0% { transform: scale(1); } 30% { transform: scale(1.12); } 100% { transform: scale(1); } }
 @keyframes rise { from { opacity: 0; transform: translate(-50%, calc(-100% + 6px)); } }
-@media (max-width: 1180px) { .graph { --st: 40px; } .dot { border-radius: 13px; } .dot .ico { width: 18px; height: 18px; } }
 
 /* ---------- needs you ---------- */
 .attention:empty { display: none; }
-.attention { margin-top: 28px; display: grid; gap: 10px; }
-.needs { background: var(--warn-soft); border-radius: 14px; padding: 18px 22px; display: flex; gap: 18px; align-items: flex-start; animation: enter 420ms var(--ease); }
-.needs-body { display: grid; gap: 10px; flex: 1; min-width: 0; }
-.needs h2 { font-size: 15px; font-weight: 640; display: flex; align-items: center; gap: 10px; }
-.needs li { display: grid; grid-template-columns: 9.5rem 1fr; gap: 2px 16px; font-size: 14px; color: var(--ink-2); }
+/* sits in the header, right under the state: what needs you, and the answer buttons */
+.attention { margin-top: 28px; display: grid; gap: 10px; max-width: 72ch; }
+.needs { display: grid; gap: 12px; padding-top: 18px; border-top: 1px solid color-mix(in oklch, var(--warn) 40%, transparent); animation: enter 420ms var(--ease); }
+.needs > .char { display: none; }
+.needs-body { display: grid; gap: 12px; min-width: 0; }
+.needs h2 { font-size: 14px; font-weight: 600; color: var(--warn-ink); }
+.needs li { display: grid; grid-template-columns: 9.5rem 1fr; gap: 2px 16px; font-size: 14.5px; color: var(--ink-2); }
 .needs li > span:first-child { color: var(--warn-ink); font-weight: 560; }
+.needs li .answer button.primary { background: var(--warn); border-color: var(--warn); color: oklch(22% 0.04 70); }
+.needs li .answer button.primary:hover { background: color-mix(in oklch, var(--warn) 88%, white); }
 .needs li .what { color: var(--ink); }
 .needs li .aside { grid-column: 2; font-size: 13px; color: var(--ink-2); }
 .needs li .answer, .needs li .answer-sent { grid-column: 2; display: grid; gap: 8px; margin-top: 6px; }
@@ -212,18 +271,14 @@ h1 { font-size: clamp(1.6rem, 1.2rem + 1.2vw, 2.25rem); line-height: 1.15; font-
 .answer-status { font-size: 13px; color: var(--ink-2); min-height: 1em; }
 .answer-sent { font-size: 13.5px; color: var(--ink-2); }
 .answer-sent b { color: var(--ink); font-weight: 600; }
-.quiet-wait { display: flex; align-items: baseline; gap: 10px; font-size: 14px; color: var(--ink-2); padding: 4px 2px; }
-.quiet-wait::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; border: 1.5px dashed var(--accent); transform: translateY(-1px); animation: spin 8s linear infinite; }
-.quiet-wait b { color: var(--ink); font-weight: 600; }
-@keyframes spin { to { transform: translateY(-1px) rotate(360deg); } }
 
 /* ---------- columns ---------- */
-.cols { margin-top: 44px; display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 56px; align-items: start; }
-.col { display: grid; gap: 36px; min-width: 0; }
+.cols { margin-top: 64px; display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 64px; align-items: start; }
+.col { display: grid; gap: 40px; min-width: 0; }
 /* An implicit `auto` track grows to the longest nowrap line (a worker's command), past the column. */
 .col, .block, .workers, .wslot { grid-template-columns: minmax(0, 1fr); }
-.col-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
-h2.col-title { font-size: 1.2rem; font-weight: 640; letter-spacing: -0.015em; }
+.col-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+h2.col-title { font-size: 26px; font-weight: 680; font-variation-settings: 'wdth' 112; letter-spacing: -0.025em; }
 .col-note { font-size: 13px; color: var(--ink-3); }
 .block { display: grid; gap: 12px; }
 h3 { font-size: 13.5px; font-weight: 620; color: var(--ink-2); display: flex; gap: 8px; align-items: baseline; }
@@ -236,8 +291,8 @@ h3 .count { color: var(--ink-3); font-weight: 450; }
 .wslot > * { overflow: hidden; min-height: 0; }
 .wslot.entering { animation: enter 420ms var(--ease); }
 .wslot.leaving { grid-template-rows: 0fr; opacity: 0; margin-bottom: -10px; }
-.worker { background: var(--surface); border-radius: 14px; box-shadow: var(--shadow); padding: 14px 16px; display: grid; gap: 6px; }
-.worker.conductor { background: transparent; box-shadow: none; outline: 1px solid var(--line); outline-offset: -1px; }
+.worker { padding: 6px 0; display: grid; gap: 6px; }
+.worker.conductor { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .w-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .w-title { font-weight: 600; font-size: 14.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip { flex: none; font-size: 11.5px; font-weight: 560; padding: 1px 8px; border-radius: 999px; background: var(--sunk); color: var(--ink-2); line-height: 1.6; }
@@ -298,9 +353,22 @@ details.activity summary b { font-weight: 620; color: var(--ink-2); flex: none; 
 .feed li.fresh { animation: swap 320ms var(--ease); }
 
 /* ---------- understand ---------- */
-.files { display: grid; gap: 28px; }
-.area { display: grid; gap: 10px; }
-.file { background: var(--surface); border-radius: 14px; box-shadow: var(--shadow); padding: 16px 18px; display: grid; gap: 12px; }
+.files { display: grid; gap: 32px; }
+.area { display: grid; gap: 0; }
+.area > h3 { padding-bottom: 6px; }
+/* one row per file; its actions show on hover or keyboard focus (always on touch screens) */
+.file { position: relative; display: grid; gap: 10px; padding: 12px 12px 12px 10px; margin: 0 -12px 0 -10px; border-top: 1px solid var(--line); border-radius: 12px; transition: background-color 200ms; }
+.file:hover, .file:focus-within { background: var(--sunk); }
+.file:hover + .file, .file:focus-within + .file { border-top-color: transparent; }
+@media (hover: hover) {
+  .file .actions { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 320ms var(--ease), opacity 200ms; }
+  .file .actions > * { min-height: 0; }
+  .file:hover .actions, .file:focus-within .actions { grid-template-rows: 1fr; opacity: 1; }
+  .file .actions-in { overflow: hidden; }
+  .file { gap: 0; transition: background-color 200ms, gap 320ms var(--ease); }
+  .file:hover, .file:focus-within { gap: 10px; }
+}
+.actions-in { display: flex; flex-wrap: wrap; gap: 8px; }
 .f-head { display: flex; gap: 14px; align-items: baseline; justify-content: space-between; min-width: 0; }
 .f-name { min-width: 0; display: grid; }
 .f-base { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -322,7 +390,7 @@ button.primary:hover { background: var(--accent-ink); border-color: var(--accent
 button.link { border: 0; padding: 4px 0; color: var(--accent-ink); font-weight: 560; background: none; }
 button.link:hover { text-decoration: underline; text-underline-offset: 3px; }
 
-.quiz { background: var(--sunk); border-radius: 14px; padding: 20px 22px; display: grid; gap: 14px; }
+.quiz { border-top: 1px solid var(--line); padding-top: 22px; display: grid; gap: 14px; }
 .quiz h3 { font-size: 15px; color: var(--ink); }
 .quiz p.lead { font-size: 14px; color: var(--ink-2); max-width: 60ch; }
 .q-list { display: grid; gap: 14px; counter-reset: q; }
@@ -351,7 +419,7 @@ button.link:hover { text-decoration: underline; text-underline-offset: 3px; }
 .caret { display: inline-block; width: 0.5em; height: 1.05em; background: var(--accent); vertical-align: text-bottom; margin-left: 2px; border-radius: 1px; animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 .err { color: var(--bad); font-size: 14px; display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
-.diff { margin: 0; background: var(--surface); box-shadow: var(--shadow); border-radius: 12px; padding: 10px 0; overflow: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; }
+.diff { margin: 0; background: var(--sunk); border: 1px solid var(--line); border-radius: 12px; padding: 10px 0; overflow: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; }
 .diff span { display: block; padding: 0 16px; white-space: pre; min-width: max-content; }
 .diff .add { background: var(--add-bg); }
 .diff .del { background: var(--del-bg); }
@@ -436,7 +504,7 @@ dialog.lightbox::backdrop { background: oklch(12% 0.01 265 / 0.62); }
 .notes-head { display: flex; align-items: baseline; gap: 12px; }
 .notes-head h2 { font-size: 1.05rem; font-weight: 640; letter-spacing: -0.01em; }
 .handover { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; font-size: 14px; color: var(--ink-2); }
-.handover.prominent { background: var(--accent-soft); color: var(--ink); border-radius: 14px; padding: 16px 20px; animation: enter 420ms var(--ease); }
+.handover.prominent { background: var(--surface); border: 1px solid var(--line); color: var(--ink); border-radius: 14px; padding: 16px 20px; animation: enter 420ms var(--ease); }
 .handover.prominent p { font-weight: 560; }
 .handover-out { display: grid; gap: 8px; font-size: 13.5px; color: var(--ink-2); }
 .handover-out:empty { display: none; }
@@ -458,24 +526,15 @@ body.no-run .stage .dot { border-style: dashed; }
 
 /* ---------- icons ---------- */
 .ico { width: 1em; height: 1em; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; overflow: visible; }
-.badge { position: absolute; right: -7px; top: -7px; width: 16px; height: 16px; border-radius: 50%; display: none; place-items: center; font-size: 11px; font-weight: 800; line-height: 1; color: var(--bg); border: 2px solid var(--bg); box-sizing: content-box; }
-.badge svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
-.badge svg path { stroke-dasharray: 12; stroke-dashoffset: 0; }
-.stage[data-status="passed"] .badge { display: grid; background: var(--ok); }
-.stage[data-status="blocked"] .badge { display: grid; background: var(--bad); }
-.stage[data-status="skipped"] .badge { display: grid; background: var(--line-2); color: var(--ink); }
-.stage[data-status="waiting"] .badge { display: grid; background: var(--accent); }
-.stage[data-status="waiting"][data-on="human"] .badge { background: var(--warn); color: oklch(25% 0.05 60); }
-.stage:not([data-status="passed"]) .badge svg { display: none; }
-.stage.just-passed .badge { animation: badge-pop 420ms var(--ease) both; }
-.stage.just-passed .badge svg path { animation: draw 460ms var(--ease) 160ms both; }
-@keyframes badge-pop { from { transform: scale(0); } 70% { transform: scale(1.18); } to { transform: scale(1); } }
-@keyframes draw { from { stroke-dashoffset: 12; } to { stroke-dashoffset: 0; } }
+/* a station says its state by its fill alone; the badge is kept in the markup for the screen-reader text only */
+.badge { display: none; }
+.stage.just-passed .dot { animation: pass-pop 640ms var(--spring) both; }
+@keyframes pass-pop { from { transform: scale(1.6); } }
 .chip { display: inline-flex; align-items: center; gap: 4px; }
 .chip .ico { width: 11px; height: 11px; stroke-width: 2.2; }
 .fig-top { display: flex; align-items: center; gap: 8px; }
 .fig-top .ico { width: 18px; height: 18px; color: var(--ink-3); }
-.f-icon { flex: none; width: 34px; height: 34px; border-radius: 10px; background: var(--sunk); color: var(--ink-2); display: grid; place-items: center; }
+.f-icon { flex: none; width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--line); color: var(--ink-2); display: grid; place-items: center; }
 .f-icon .ico { width: 17px; height: 17px; }
 .f-lead { display: flex; gap: 12px; align-items: center; min-width: 0; }
 
@@ -568,14 +627,11 @@ body.no-run .stage .dot { border-style: dashed; }
 /* stale: the stage's evidence covered older code than HEAD; never reads as done */
 .stage[data-stale] .dot { background: var(--sunk); border-style: dashed; border-color: var(--warn); color: var(--ink-3); }
 .stage[data-stale] .stage-label { color: var(--ink-3); }
-.stage[data-stale] .badge { display: grid; background: var(--warn); color: oklch(25% 0.05 60); }
-.stage[data-stale] .badge svg { display: none; }
 .stage[data-stale] .stage-sub { color: var(--warn-ink); }
 .stage-ext { font-size: 11.5px; line-height: 1.35; color: var(--ink-3); margin-top: 2px; max-width: 100%; overflow-wrap: anywhere; }
 .stage-ext:empty { display: none; }
 .stage-ext[data-tone="warn"] { color: var(--warn-ink); font-weight: 560; }
 .stage-ext[data-tone="bad"] { color: var(--bad); font-weight: 560; }
-.now-line .stale-note { color: var(--warn-ink); }
 details.history { border-top: 0; padding-top: 0; margin-top: 10px; }
 details.history .feed li { grid-template-columns: 4.6rem 1fr; }
 details.history .h-ev { display: block; font-size: 12px; color: var(--ink-3); }
@@ -592,33 +648,31 @@ details.history .h-ev { display: block; font-size: 12px; color: var(--ink-3); }
 
 /* ---------- narrow ---------- */
 @media (max-width: 900px) {
-  .page { padding: 20px 16px 64px; }
-  .cols { grid-template-columns: 1fr; gap: 44px; }
+  .cols { grid-template-columns: 1fr; gap: 48px; }
+  .story-head { grid-template-columns: 1fr; }
+  .clock { text-align: left; }
+  .readouts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .readouts button.ro:nth-child(3) { padding-left: 0; border-left: 0; }
+  .readouts button.ro:nth-child(n+3) { border-top: 1px solid var(--line); }
+  .sections { display: none; }
 }
 @media (max-width: 760px) {
-  .graph { --st: 40px; padding-top: 0; }
-  .edges, .edge-label, .crew { display: none; }
-  .stages { grid-template-columns: 1fr; }
-  .stage { grid-template-columns: var(--st) minmax(0, 1fr) auto; justify-items: start; text-align: left; column-gap: 14px; padding: 0 0 18px; align-items: start; }
-  .stage .dot { grid-row: 1 / span 3; }
-  .stage-label { grid-column: 2; margin: 0; padding-top: 2px; }
-  .stage-result { grid-column: 2; margin: 2px 0 0; }
-  .stage-sub { grid-column: 3; grid-row: 1; margin: 4px 0 0; }
-  .stage-ext { grid-column: 2; margin: 2px 0 0; }
-  .stage-round { bottom: -8px; }
-  .stage::before, .stage:first-child::before { display: block; top: calc(var(--st) + 3px); bottom: 3px; left: calc(var(--st) / 2 + 4px); right: auto; width: 4px; height: auto;
-    background: linear-gradient(var(--accent), var(--accent)) top / 100% var(--fill-out, 0%) no-repeat, var(--line); }
-  .stage:last-child::before { display: none; }
-  .stage[data-out-reached] { --fill-out: 100%; }
-  .stage[data-flow]::before { background: linear-gradient(var(--accent), var(--accent)) top / 100% var(--fill-out, 0%) no-repeat, var(--line); animation: none; }
-  .stage[data-flow-out]::before { background: repeating-linear-gradient(180deg, color-mix(in oklch, var(--accent) 65%, transparent) 0 8px, transparent 8px 16px) 0 0 / 100% 32px, var(--line); animation: flow-v 1.8s linear infinite; }
-  .back-note { display: flex; gap: 8px; align-items: baseline; margin: 0 0 14px; font-size: 13.5px; color: var(--accent-ink); }
+  /* the same rail, compact: every station a dot, only the current one named */
+  .graph { padding-top: 44px; }
+  .edges, .edge-label { display: none; }
+  .crew .char:not([data-role="conductor"]) { display: none; }
+  .stage-label, .stage-sub, .stage-ext, .stage-round { display: none; }
+  .stage[data-current] .stage-label { display: block; position: absolute; top: calc(var(--st) + 2px); left: 50%; transform: translateX(-50%); white-space: nowrap; }
+  .stage:first-child[data-current] .stage-label { left: 0; transform: none; }
+  .stage:last-child[data-current] .stage-label { left: auto; right: 0; transform: none; }
+  .stages { min-height: 52px; }
+  details.history { margin-top: 18px; }
+  .back-note { display: flex; gap: 8px; align-items: baseline; margin: 0 0 14px; font-size: 13.5px; color: var(--warn-ink); }
   .back-note.settled { color: var(--ink-3); }
   .needs li, .note-list li { grid-template-columns: 1fr; }
   .needs li .aside, .needs li .answer, .needs li .answer-sent { grid-column: 1; }
 }
 
-@keyframes flow-v { to { background-position: 0 32px, 0 0; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
@@ -761,13 +815,26 @@ details.history .h-ev { display: block; font-size: 12px; color: var(--ink-3); }
 <div class="page">
   <div class="top">
     <div class="brand"><b>story-loop</b><span class="tag" id="demo" hidden>Demo replay</span></div>
+    <nav class="sections" id="sections" aria-label="Parts of the board" hidden>
+      <a href="#graph">Stages</a>
+      <a href="#sec-working">Working<b data-count="worker-count"></b></a>
+      <a href="#sec-findings">Findings<b data-count="findings-count"></b></a>
+      <a href="#sec-tested">Checks<b data-count="tested-count"></b></a>
+      <a href="#h-understand">Change<b data-count="change-total"></b></a>
+      <a href="#notes" data-if="notes">Notes<b data-count="notes-count"></b></a>
+    </nav>
     <div class="top-right"><span class="session" id="session" hidden></span><span class="conn" id="conn" data-state="off">Connecting</span></div>
   </div>
 
   <header class="story-head" id="head" hidden>
-    <span class="story-id" id="story"></span>
-    <h1 id="title"></h1>
     <dl class="meta" id="meta"></dl>
+    <div>
+      <h1 id="title"></h1>
+      <div class="line-wrap" id="line-wrap" aria-live="polite"><p class="line" id="line"></p></div>
+      <p class="reason" id="reason"></p>
+      <div class="attention" id="attention" role="region" aria-label="Needs you" aria-live="polite"></div>
+    </div>
+    <div class="clock"><span class="big" id="elapsed">0:00</span><small id="stage-time"></small></div>
   </header>
 
   <section class="graph" id="graph" aria-label="Stages">
@@ -780,7 +847,6 @@ details.history .h-ev { display: block; font-size: 12px; color: var(--ink-3); }
     </svg>
     <ol class="stages" id="stages"></ol>
     <div class="crew" id="crew" aria-hidden="true"></div>
-    <p class="now-line" id="now" aria-live="polite"></p>
     <section class="stage-detail" id="stage-detail" hidden tabindex="-1" aria-labelledby="sd-title"></section>
     <details class="activity history" id="history" hidden>
       <summary><b>Earlier attempts</b><span class="a-latest" id="history-latest"></span></summary>
@@ -788,7 +854,7 @@ details.history .h-ev { display: block; font-size: 12px; color: var(--ink-3); }
     </details>
   </section>
 
-  <div class="attention" id="attention" role="region" aria-label="Needs you" aria-live="polite"></div>
+  <div class="readouts" id="readouts" hidden></div>
 
   <section class="notes" id="notes" aria-labelledby="h-notes" hidden>
     <div class="notes-head"><h2 id="h-notes">Your notes</h2><span class="col-note" id="notes-count"></span></div>
@@ -803,13 +869,13 @@ details.history .h-ev { display: block; font-size: 12px; color: var(--ink-3); }
   </section>
 
   <main class="cols" id="cols" hidden>
-    <section class="col" aria-labelledby="h-working">
+    <section class="col" aria-labelledby="h-working" id="sec-working">
       <div class="col-head"><h2 class="col-title" id="h-working">Working now</h2><span class="col-note" id="worker-count"></span></div>
       <div class="workers" id="workers"></div>
-      <div class="block"><h3>Tasks <span class="count" id="tasks-count"></span></h3><ol class="tasks" id="tasks"></ol></div>
-      <div class="block"><h3>Review findings <span class="count" id="findings-count"></span></h3><div id="findings" class="block"></div></div>
+      <div class="block" id="sec-tasks"><h3>Tasks <span class="count" id="tasks-count"></span></h3><ol class="tasks" id="tasks"></ol></div>
+      <div class="block" id="sec-findings"><h3>Review findings <span class="count" id="findings-count"></span></h3><div id="findings" class="block"></div></div>
       <div class="block" id="evidence-block" hidden><h3>Evidence</h3><div class="evidence" id="evidence"></div></div>
-      <div class="block"><h3>Tested in the browser <span class="count" id="tested-count"></span></h3><div class="tested" id="tested"></div></div>
+      <div class="block" id="sec-tested"><h3>Tested in the browser <span class="count" id="tested-count"></span></h3><div class="tested" id="tested"></div></div>
       <details class="activity" id="activity">
         <summary><b>Activity</b><span class="a-latest" id="a-latest"></span></summary>
         <ol class="feed" id="feed"></ol>
@@ -914,7 +980,7 @@ function ico(name, cls) {
   return svg
 }
 const WORKER_ROLES = new Set(['haiku', 'sonnet', 'opus', 'opus-max'])
-const SIZE = { conductor: 30, 'opus-max': 30, opus: 27, sonnet: 25, haiku: 21, verifier: 25, sceptic: 25, copilot: 25, helper: 20 }
+const SIZE = { conductor: 46, 'opus-max': 42, opus: 38, sonnet: 35, haiku: 30, verifier: 35, sceptic: 35, copilot: 35, helper: 28 }
 let blinkSeed = 0
 function makeChar(role, size) {
   const wrap = el('span', { class: 'char', 'aria-hidden': 'true', dataset: { role, state: 'idle' } })
@@ -1132,6 +1198,7 @@ function renderStages() {
     const st = run?.stages?.[s.id] ?? { status: 'pending', rounds: 0 }
     const e = stageEls[s.id]
     e.li.dataset.status = st.status
+    e.li.toggleAttribute('data-current', s.id === cur)
     // A stage being redone is not stale any more; every other stale stage stops reading as done.
     const stale = staleSet.has(s.id) && st.status !== 'running'
     e.li.toggleAttribute('data-stale', stale)
@@ -1160,14 +1227,94 @@ function renderStages() {
   })
   renderStageDetail()
   renderHistory()
-  const now = $('now')
-  if (!run) { now.replaceChildren(); return }
-  if (!cur) { now.replaceChildren(el('b', { text: 'All stages done.' }), 'The evidence is on the PR; a human merges.'); return }
+  renderState()
+}
+
+// ---------- the state: one line, readable from across the room ----------
+// What each stage is doing, said as a state rather than a label.
+const DOING = { contract: 'Writing the contract', build: 'Building', quality: 'Quality gate', test_review: 'Running mutants', verify: 'Checking in the browser',
+  second_review: 'Second review', push: 'Pushing', copilot_review: 'Copilot review', fix_comments: 'Fixing comments', report: 'Reporting', human_review: 'Human review', retro: 'Writing the retro' }
+function stateOf(run) {
+  const cur = currentStage(run)
+  if (!cur) return { line: 'Done.', reason: 'The evidence is on the PR. A human merges.' }
   const st = run.stages[cur], hint = S.graph.stages.find(s => s.id === cur)?.hint
-  const verb = { running: 'Now', waiting: 'Waiting', blocked: 'Blocked', pending: 'Next' }[st.status] ?? 'Now'
+  // the question itself and its answer buttons sit right below, in the attention list
+  if (st.status === 'waiting' && st.waiting_on === 'human') return { line: 'Needs you.', tone: 'warn', reason: `${label(cur)} waits for your answer.` }
+  if (st.status === 'blocked') return { line: 'Blocked.', tone: 'bad', reason: `${label(cur)} cannot go on until it is unblocked.` }
+  if (['failed', 'mismatch', 'uncertain'].includes(run.pushed?.state)) return { line: 'Push needs you.', tone: 'warn', reason: 'GitHub does not hold the pushed commit.' }
+  if (['timeout', 'failed'].includes(run.copilot?.state)) return { line: 'Copilot needs you.', tone: 'warn', reason: 'The Copilot review did not come back.' }
+  if (st.status === 'waiting') return { line: `Waiting on ${st.waiting_on === 'copilot' ? 'Copilot' : st.waiting_on}.`, tone: 'wait',
+    reason: `${cap(st.reason || hint)}. Nothing to do yet; the loop picks up when it lands.` }
+  return { line: `${DOING[cur] ?? label(cur)}.`, round: st.rounds > 0 ? st.rounds + 1 : 0, reason: cap(st.reason || hint) }
+}
+let lineKey = ''
+function setLine(s) {
+  const key = `${s.line}|${s.tone ?? ''}|${s.round ?? 0}`
+  if (key === lineKey) return
+  const first = !lineKey
+  lineKey = key
+  const wrap = $('line-wrap'), old = $('line')
+  const next = el('p', { class: 'line', id: 'line', dataset: s.tone ? { tone: s.tone } : null }, s.line, s.round ? el('span', { class: 'round', text: `round ${s.round}` }) : null)
+  if (first || !S.booted || reduced.matches) { old.replaceWith(next); return }
+  // the old words lift away, the new ones rise in
+  wrap.querySelectorAll('.leaving').forEach(n => n.remove())
+  old.removeAttribute('id'); old.classList.add('leaving')
+  wrap.append(next)
+  old.animate([{ transform: 'none', opacity: 1, filter: 'blur(0)' }, { transform: 'translateY(-30%)', opacity: 0, filter: 'blur(10px)' }], { duration: 380, easing: 'cubic-bezier(0.7, 0, 0.84, 0)', fill: 'forwards' }).finished.then(() => old.remove())
+  next.animate([{ transform: 'translateY(35%)', opacity: 0, filter: 'blur(10px)' }, { transform: 'none', opacity: 1, filter: 'blur(0)' }], { duration: 760, delay: 160, easing: 'cubic-bezier(0.16, 1, 0.3, 1)', fill: 'backwards' })
+}
+function renderState() {
+  const run = S.run
+  if (!run) { lineKey = ''; return }
+  const s = stateOf(run)
+  setLine(s)
   const staleNow = (run.stale ?? []).filter(id => run.stages?.[id]?.status !== 'running')
-  now.replaceChildren(el('b', { text: `${verb}: ${label(cur)}` }), el('span', { text: cap(st.status === 'blocked' ? blockSummary(st.reason) : st.reason || hint) }),
-    ...(staleNow.length ? [el('span', { class: 'stale-note', text: `Stale: ${staleNow.map(label).join(', ')} covered older code` })] : []))
+  $('reason').replaceChildren(s.reason ?? '', ...(staleNow.length ? [el('span', { class: 'stale-note', text: `Stale: ${staleNow.map(label).join(', ')} covered older code` })] : []))
+  document.body.dataset.mood = s.tone === 'warn' || s.tone === 'bad' || needsYou().some(i => i.stage) ? 'warn' : ''
+  tickStage()
+}
+function tickStage() {
+  const cur = currentStage(S.run), st = cur && S.run.stages[cur]
+  $('stage-time').textContent = st?.started_at ? `${fmtDur(since(st.started_at))} in ${label(cur)}${st.attempt > 1 ? ` · attempt ${st.attempt}` : ''}` : 'elapsed'
+}
+
+// ---------- readouts ----------
+function readout(name, have, total, note, go, missRest) {
+  const cells = total ? Math.min(total, 40) : 0, on = total ? Math.round(have / total * cells) : 0
+  return el('button', { type: 'button', class: 'ro', disabled: !total || null, onclick: go },
+    el('span', { class: 'ro-name', text: name }),
+    total ? el('span', { class: 'ro-v' }, String(have), el('small', { text: `/ ${total}` })) : el('span', { class: 'ro-v', text: '—' }),
+    total ? el('span', { class: 'ro-scale', 'aria-hidden': 'true' }, Array.from({ length: cells }, (_, i) => el('i', { class: i < on ? 'on' : missRest ? 'miss' : null }))) : null,
+    el('span', { class: 'ro-note', text: total ? note : 'not yet' }))
+}
+const goTo = id => () => $(id).scrollIntoView({ behavior: reduced.matches ? 'auto' : 'smooth', block: 'start' })
+const showStage = id => () => { if (openStage !== id) toggleStageDetail(id); $('graph').scrollIntoView({ behavior: reduced.matches ? 'auto' : 'smooth', block: 'start' }) }
+let readoutsKey = ''
+function renderReadouts() {
+  const run = S.run
+  $('readouts').hidden = !run
+  if (!run) return
+  const tasks = run.tasks ?? [], m = run.evidence?.mutants, t = S.tested, f = run.findings ?? []
+  const key = JSON.stringify([tasks.map(x => x.status), m, t?.accepted, t?.total, t?.current, f.map(x => x.verdict)])
+  if (key === readoutsKey) return
+  readoutsKey = key
+  const settled = f.filter(x => ['fixed', 'rejected', 'parked'].includes(x.verdict)).length
+  const running = tasks.filter(x => x.status === 'running').length
+  const valid = m ? (m.valid ?? m.total) : 0
+  $('readouts').replaceChildren(
+    readout('Tasks accepted', tasks.filter(x => ['accepted', 'done', 'passed'].includes(x.status)).length, tasks.length, running ? `${running} running` : 'none running', goTo('sec-tasks')),
+    readout('Mutants killed', m?.killed ?? 0, valid, m ? `${valid - m.killed} survived` : '', showStage('test_review'), true),
+    readout('Browser checks', t?.accepted ?? 0, t?.total, t?.current ? 'on the current commit' : 'covered an older commit', goTo('sec-tested')),
+    readout('Findings settled', settled, f.length, `${f.filter(x => x.verdict === 'parked').length} parked · ${f.length - settled} open`, goTo('sec-findings')),
+  )
+}
+
+// The jump links in the strip carry the counts their sections already show.
+function syncSections() {
+  const nav = $('sections')
+  nav.hidden = !S.run
+  for (const b of nav.querySelectorAll('b[data-count]')) b.textContent = ($(b.dataset.count)?.textContent ?? '').match(/^\d+/)?.[0] ?? ''
+  nav.querySelector('[data-if="notes"]').hidden = $('notes').hidden
 }
 
 // Earlier attempts stay inspectable, folded away under the graph.
@@ -1194,7 +1341,14 @@ let openStage = null
 function toggleStageDetail(id) {
   openStage = openStage === id ? null : id
   renderStageDetail()
-  if (openStage) $('stage-detail').focus({ preventScroll: true })
+  const box = $('stage-detail')
+  if (openStage && !reduced.matches) {
+    // the panel unfolds from the station that was clicked
+    const dot = stageEls[id]?.dot.getBoundingClientRect(), r = box.getBoundingClientRect()
+    if (dot) box.style.setProperty('--from', `${dot.left + dot.width / 2 - r.left}px`)
+    box.classList.remove('opening'); void box.offsetWidth; box.classList.add('opening')
+  }
+  if (openStage) box.focus({ preventScroll: true })
   else stageEls[id]?.hit.focus({ preventScroll: true })
 }
 const countBy = (list, key) => Object.entries(list.reduce((n, x) => ({ ...n, [x[key] ?? 'open']: (n[x[key] ?? 'open'] ?? 0) + 1 }), {})).map(([k, v]) => `${v} ${k.replace('_', ' ')}`).join(' · ')
@@ -1316,14 +1470,13 @@ function renderHead() {
   $('idle').hidden = !!run
   $('demo').hidden = !S.demo
   if (!run) { document.title = 'story-loop'; return }
-  $('story').textContent = run.story ?? ''
   $('title').textContent = run.title || run.story || 'Untitled story'
-  const meta = []
+  const meta = [[null, el('span', { class: 'story-id', text: run.story ?? '' })]]
+  if (run.pr) meta.push(['PR', el('span', { class: 'mono', text: `#${run.pr}` })])
   if (run.branch) meta.push(['Branch', el('span', { class: 'mono', text: run.branch })])
-  if (run.pr) meta.push(['PR', `#${run.pr}`])
   if (run.started_at) meta.push(['Started', clock(run.started_at)])
-  meta.push(['Elapsed', el('span', { class: 'num', id: 'elapsed', text: fmtDur(since(run.started_at)) })])
-  $('meta').replaceChildren(...meta.map(([k, v]) => el('div', null, el('dt', { text: k }), el('dd', null, v))))
+  $('meta').replaceChildren(...meta.map(([k, v]) => el('div', null, k ? el('dt', { text: k }) : null, el('dd', null, v))))
+  $('elapsed').textContent = fmtDur(since(run.started_at))
   const cur = currentStage(run)
   document.title = `${needsYou().length ? 'Needs you · ' : ''}${run.story ?? 'story-loop'} · ${cur ? label(cur) : 'done'}`
 }
@@ -1331,7 +1484,9 @@ function renderHead() {
 function tick() {
   if (!S.run) return
   renderSession()
-  const e = $('elapsed'); if (e) e.textContent = fmtDur(since(S.run.started_at))
+  $('elapsed').textContent = fmtDur(since(S.run.started_at))
+  tickStage()
+  syncSections()
   for (const s of S.graph?.stages ?? []) {
     const st = S.run.stages?.[s.id]
     if (st?.status === 'running') stageEls[s.id].sub.textContent = stageSub(st)
@@ -1401,25 +1556,19 @@ function answerControls(item) {
 }
 function renderAttention() {
   const items = needsYou()
-  const copilot = !['timeout', 'failed'].includes(S.run?.copilot?.state) && S.graph?.stages.find(s => S.run?.stages?.[s.id]?.status === 'waiting' && S.run.stages[s.id].waiting_on === 'copilot')
   const answers = items.filter(i => i.stage).map(i => answerFor(i)?.status ?? null)
-  const key = JSON.stringify([items, answers, copilot?.id, copilot && S.run.stages[copilot.id].reason])
+  const key = JSON.stringify([items, answers])
   if (key === attentionKey) return
   attentionKey = key
   const box = $('attention')
   box.replaceChildren()
   if (items.length) {
-    const looker = makeChar('conductor', 46)
-    setChar(looker, 'look')
-    box.append(el('div', { class: 'needs' }, looker, el('div', { class: 'needs-body' },
+    box.append(el('div', { class: 'needs' }, el('div', { class: 'needs-body' },
       el('h2', { text: items.length === 1 ? 'One thing needs you' : `${items.length} things need you` }),
       el('ul', { class: 'block' }, items.map(i => el('li', null, el('span', { text: i.kind }), el('span', { class: 'what', text: i.what }), i.aside ? el('span', { class: 'aside', text: i.aside }) : null,
         i.stage ? answerControls(i) : null))))))
   }
-  if (copilot) {
-    const reason = S.run.stages[copilot.id].reason
-    box.append(el('p', { class: 'quiet-wait' }, el('span', null, el('b', { text: 'Waiting on Copilot. ' }), `${reason ? cap(reason) + '. ' : ''}Nothing to do yet; the loop picks up when the review lands.`)))
-  }
+  renderState()
 }
 
 // ---------- workers ----------
@@ -1908,8 +2057,8 @@ function renderChanges() {
         el('div', { class: 'f-lead' }, el('span', { class: 'f-icon', title: area }, ico(AREA_ICON[area] ?? 'file')),
           el('div', { class: 'f-name' }, el('span', { class: 'f-base', text: baseName(c.file) }), el('span', { class: 'f-dir', title: c.file, text: dirName(c.file) }))),
         el('span', { class: 'stat', 'aria-label': `${c.added} added, ${c.removed} removed` }, el('span', { class: 'a', text: `+${c.added}` }), el('span', { class: 'r', text: `−${c.removed}` }))),
-      el('div', { class: 'actions' }, ACTIONS.map(([q, text, primary]) =>
-        el('button', { type: 'button', class: primary ? 'primary' : null, 'aria-label': `${text.replace('?', '')}: ${baseName(c.file)}`, onclick: e => openReader(c.file, q, e.currentTarget) }, text))))))))
+      el('div', { class: 'actions' }, el('div', { class: 'actions-in' }, ACTIONS.map(([q, text, primary]) =>
+        el('button', { type: 'button', class: primary ? 'primary' : null, 'aria-label': `${text.replace('?', '')}: ${baseName(c.file)}`, onclick: e => openReader(c.file, q, e.currentTarget) }, text)))))))))
 }
 
 // ---------- tiny safe markdown: paragraphs, **bold**, `code`, lists, fenced code, headings ----------
@@ -2169,7 +2318,7 @@ function renderQuiz(text) {
 
 // ---------- wiring ----------
 function renderRun() {
-  renderHead(); renderStages(); renderAttention(); renderTasks(); renderFindings(); renderEvidence(); renderSession(); renderNotes(); renderTested()
+  renderHead(); renderStages(); renderAttention(); renderTasks(); renderFindings(); renderEvidence(); renderSession(); renderNotes(); renderTested(); renderReadouts(); syncSections()
   const finished = !!S.run && !currentStage(S.run)
   if (finished) {
     const c = conductor()
@@ -2247,7 +2396,7 @@ function connect() {
     }
     else if (m.type === 'changes') { S.changes = m.changes ?? []; renderChanges() }
     else if (m.type === 'inbox') { S.inbox = m.inbox ?? []; renderNotes(); renderAttention() }
-    else if (m.type === 'results') { S.results = m.results ?? []; S.tested = m.tested ?? null; renderTested() }
+    else if (m.type === 'results') { S.results = m.results ?? []; S.tested = m.tested ?? null; renderTested(); renderReadouts() }
   }
 }
 let graphWidth = 0
