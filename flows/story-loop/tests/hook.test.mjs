@@ -60,6 +60,22 @@ test('an unrelated session or the board explainer never claims the run', () => {
   assert.equal(load(root).owner, null)
 })
 
+test('the conductor may go idle while its workers run, and is held again once they are done', () => {
+  const root = runDirWith(owned())
+  fire(root, { hook_event_name: 'SubagentStart', agent_id: 'w1', agent_type: 'story-loop:worker-opus' })
+  fire(root, { hook_event_name: 'SubagentStart', agent_id: 'w2', agent_type: 'story-loop:worker-opus' })
+  assert.equal(fire(root, { hook_event_name: 'Stop' }).stdout, '', 'two workers running: idle is how it waits for their reports')
+  fire(root, { hook_event_name: 'SubagentStop', agent_id: 'w1' })
+  assert.equal(fire(root, { hook_event_name: 'Stop' }).stdout, '')
+  fire(root, { hook_event_name: 'SubagentStop', agent_id: 'w2' })
+  assert.match(fire(root, { hook_event_name: 'Stop' }).stdout, /"decision":"block"/, 'all reports are in: review them now')
+  assert.equal(load(root).stop_blocks, 1, 'waiting on workers never counted toward the stop gate')
+
+  // A worker that died without a SubagentStop stops holding the gate open after an hour.
+  const stale = runDirWith({ ...owned(), live_workers: { ghost: Date.now() - 61 * 60_000 } })
+  assert.match(fire(stale, { hook_event_name: 'Stop' }).stdout, /"decision":"block"/)
+})
+
 test('a fourth unproductive Stop gives way and records the stage as blocked', () => {
   const root = runDirWith(owned())
   for (let i = 0; i < 3; i++) assert.match(fire(root, { hook_event_name: 'Stop' }).stdout, /"decision":"block"/)

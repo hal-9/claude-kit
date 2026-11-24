@@ -145,12 +145,20 @@ export function move(run, verb, stage, arg, reason, now = new Date().toISOString
   return next
 }
 
+// A worker the hook saw start and never saw stop counts as running for this long;
+// past it, a worker that died without a SubagentStop no longer holds the gate open.
+export const WORKER_TTL_MS = 60 * 60_000
+export const liveWorkers = (run, now = Date.now()) => Object.entries(run.live_workers ?? {}).filter(([, since]) => now - since < WORKER_TTL_MS).map(([id]) => id)
+
 // What the Stop hook decides: null lets the session end, a string keeps it going.
-export function stopReason(run) {
+// Workers still running let it end: the conductor waits for their reports by
+// being idle, never by polling files.
+export function stopReason(run, now = Date.now()) {
   const cur = current(run)
   if (!cur) return null
   const st = run.stages[cur]
   if (st.status === 'waiting' || st.status === 'blocked') return null
+  if (liveWorkers(run, now).length) return null
   return `story-loop ${run.story}: stage "${cur}" is ${st.status}. Carry on with it, or record why it stops: ` +
     `loop.mjs wait ${cur} human "<reason>" | loop.mjs block ${cur} "<reason>".`
 }

@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, LEASE_MS, findRoot, load, update, emit, stopReason, deliver, current, ownerState } from './loop.mjs'
+import { GRAPH, LEASE_MS, findRoot, load, update, emit, stopReason, liveWorkers, deliver, current, ownerState } from './loop.mjs'
 import { bind, record } from './diag.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -111,6 +111,17 @@ function diagnose(root, input, model) {
     case 'SessionEnd': return record(root, 'session.end', { reason: input.reason ?? null })
     case 'PreModelSwitch': case 'PostModelSwitch': return record(root, 'model.switch', { phase: event, to: input.to_model ?? input.requested_model ?? null, from: model })
   }
+}
+
+// Adds (since = a time) or removes (since = null) one worker of the run's live set.
+function liveWorker(root, id, since) {
+  try {
+    update(root, r => {
+      const live = { ...r.live_workers }
+      if (since == null) { if (!(id in live)) return undefined; delete live[id] } else live[id] = since
+      return { ...r, live_workers: live }
+    })
+  } catch { /* the board still shows the worker; the stop gate only errs toward keeping the conductor going */ }
 }
 
 // `loop.mjs acquire [--takeover "<reason>"]`: only the hook knows the session id.
@@ -233,8 +244,12 @@ function main() {
       return
     }
     case 'SubagentStart':
+      // The stop gate lets a conductor end its turn while its workers run: their
+      // reports arrive as notifications, and only an idle conductor receives them.
+      if (ours && input.agent_id) liveWorker(root, input.agent_id, Date.now())
       return emit(root, { kind: 'agent', phase: 'start', agent, agent_id, text: claimTitle(root, input.agent_type) })
     case 'SubagentStop':
+      if (input.agent_id) liveWorker(root, input.agent_id, null)
       return emit(root, { kind: 'agent', phase: 'stop', agent, agent_id })
     case 'PostToolUse': {
       // Notes typed on the board reach the conductor between two of its tool
@@ -258,7 +273,11 @@ function main() {
       const notes = deliver(root, 'before stopping', input.session_id)
       if (notes) { record(root, 'stop', { outcome: 'blocked', reason: 'notes from the board were waiting' }); return console.log(JSON.stringify({ decision: 'block', reason: notes })) }
       const reason = stopReason(run)
-      if (!reason) { record(root, 'stop', { outcome: 'allowed' }); return emit(root, { kind: 'session', phase: 'idle' }) }
+      if (!reason) {
+        const waiting = liveWorkers(run).length
+        record(root, 'stop', { outcome: 'allowed', reason: waiting ? `waiting on ${waiting} worker${waiting === 1 ? '' : 's'}` : undefined })
+        return emit(root, { kind: 'session', phase: 'idle' })
+      }
       if ((run.stop_blocks ?? 0) >= MAX_STOP_BLOCKS) {
         // Give way, but say so in the run: the stage is blocked, not quietly pending.
         const cur = current(run)
