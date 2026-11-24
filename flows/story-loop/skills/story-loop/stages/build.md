@@ -97,7 +97,8 @@ Treat a worker report as a claim to check.
 
 ## 5. Close the stage
 
-Every task accepted (`LOOP put tasks` with `"status":"accepted"`) → run the
+Every task accepted (`LOOP put tasks` with `"status":"accepted"`, the
+`"files"` its diff changed and the `"steps"` it serves) → run the
 affected spec and Jest suites once; failures go back to the tier that owns the
 code. Commit (atomic, signed, lint clean). Then
 `LOOP pass build "<n tasks, suites run>"` — refused while a task is not

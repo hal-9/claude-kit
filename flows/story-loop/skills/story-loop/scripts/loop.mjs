@@ -535,7 +535,7 @@ export function verifyRequest(run, tree, commit = null) {
   const checks_revision = run.checks_revision ?? 0
   const environment = run.environment ? requestEnvironment(run.environment, tree, commit) : null
   const env = environment ? `-e${createHash('sha1').update(JSON.stringify(run.environment)).digest('hex').slice(0, 6)}` : ''
-  return { id: `${runKey(run)}-a${attempt}-c${checks_revision}-${String(tree).slice(0, 12)}${env}`, tree, attempt, checks_revision, environment }
+  return { id: `${runKey(run)}-a${attempt}-c${checks_revision}-${String(tree).slice(0, 12)}${env}`, tree, commit, attempt, checks_revision, environment }
 }
 
 // Where the browser will test, and what ties that place to the code under review.
@@ -623,6 +623,8 @@ export function verifyReport(root, run) {
     const check = approved.get(r.id)
     if (!check) return `result "${r.id}" is not in the approved check list`
     if (count.get(r.id) > 1) return `check "${r.id}" is reported twice`
+    if (r.carried && !(request.carried ?? []).includes(r.id))
+      return `check "${r.id}" is marked carried over, but this attempt runs it again (changed code serves its step); the browser must check it`
     if (r.verdict !== 'pass') return `check "${r.id}" is "${r.verdict}", not pass`
     if (r.step !== check.step) return `check "${r.id}" reports Test Step ${r.step ?? '(none)'}; the approved list has it under step ${check.step}`
     if ((r.case ?? null) !== (check.case ?? null)) return `check "${r.id}" reports case "${r.case ?? '(none)'}"; the approved list says "${check.case ?? '(none)'}"`
@@ -647,6 +649,66 @@ export function verifyReport(root, run) {
   return out(rows.find(r => r.reason)?.reason ?? null, rows)
 }
 export const verifyProblem = (root, run) => verifyReport(root, run).problem
+
+// ---- what a later attempt runs again -------------------------------------------
+// Decided from the diff and the run's own records, no model: a browser check keeps
+// its earlier pass when no changed code serves its Test Step; a second review of a
+// small fix confirms the fix instead of reading the whole branch blind again.
+// ponytail: path patterns decide what a test file is; a helper outside them counts as code (reruns more, never less).
+export const isTestFile = f => /(^|\/)(spec|specs|test|tests|__tests__)\/|_spec\.rb$|\.(test|spec)\.[cm]?[jt]sx?$/.test(f)
+
+// prior: what the last attempt's browser accepted ({ checks_revision, environment, results }).
+// delta: files changed since then. tasks: [{ files, steps }] — which Test Steps each file serves.
+export function verifyCarry({ checks = [], checksRevision = 0, environment = null, prior = null, delta = null, tasks = [] }) {
+  const all = checks.map(c => c.id)
+  const none = why => ({ carry: [], rerun: all, why })
+  if (!prior?.results?.length) return none('no earlier passes to keep')
+  if (!Array.isArray(delta)) return none('the code the earlier passes covered cannot be compared with HEAD')
+  if (prior.checks_revision !== checksRevision) return none('the check list changed')
+  if (!sameEnvironment(prior.environment, environment)) return none('the browser tests another environment')
+  const owners = new Map()
+  for (const t of tasks) for (const f of t.files ?? []) owners.set(f, [...(owners.get(f) ?? []), ...(t.steps ?? [])])
+  const code = delta.filter(f => !isTestFile(f))
+  const unowned = code.filter(f => !owners.get(f)?.length)
+  if (unowned.length) return none(`changed code no task maps to a Test Step: ${unowned.join(', ')}`)
+  const steps = new Set(code.flatMap(f => owners.get(f)))
+  const passed = new Set(prior.results.map(r => r.id))
+  const carry = checks.filter(c => passed.has(c.id) && !steps.has(c.step)).map(c => c.id)
+  return { carry, rerun: all.filter(id => !carry.includes(id)),
+    why: code.length ? `the changed code serves step ${[...steps].sort((a, b) => a - b).join(', ')}` : 'only tests changed' }
+}
+
+// prior: the last attempt's recorded review ({ commit }). delta: { files, lines, commits } since it;
+// branchLines: lines changed on the whole branch. Findings sent back since then name the files a fix may touch.
+export function reviewScope({ prior = null, delta = null, branchLines = 0, findings = [] }) {
+  const full = why => ({ scope: 'full', why })
+  if (!prior?.commit) return full('first review of this story')
+  if (!delta) return full('the reviewed commit cannot be compared with HEAD')
+  const sent = findings.filter(f => f.verdict === 'fix_requested' ||
+    (f.verdict === 'fixed' && delta.commits.some(c => f.commit && c.startsWith(String(f.commit)))))
+  if (!sent.length) return full('no finding was sent back to build since the last review')
+  const named = new Set(sent.map(f => String(f.file ?? '').replace(/:\d.*$/, '')).filter(Boolean))
+  const outside = delta.files.filter(f => !isTestFile(f) && !named.has(f))
+  if (outside.length) return full(`the fix touched code no finding named: ${outside.join(', ')}`)
+  if (delta.lines * 4 > branchLines) return full(`the fix (${delta.lines} lines) is more than a quarter of the branch (${branchLines} lines)`)
+  return { scope: 'delta', since: prior.commit, confirm: sent.map(f => f.id),
+    why: `the fix stays in the files of ${sent.map(f => f.id).join(', ')} and is ${delta.lines} of ${branchLines} lines` }
+}
+
+// What changed between an earlier commit and HEAD; null when that commit is not in this history.
+export function changedSince(root, commit) {
+  if (!commit) return null
+  const git = gitIn(root)
+  try {
+    const numstat = git('diff', '--numstat', '--no-renames', `${commit}`, 'HEAD')
+    const rows = numstat ? numstat.split('\n').map(l => l.split('\t')) : []
+    return {
+      files: rows.map(r => r[2]),
+      lines: rows.reduce((n, [a, d]) => n + (Number(a) || 0) + (Number(d) || 0), 0),
+      commits: (git('rev-list', `${commit}..HEAD`) || '').split('\n').filter(Boolean),
+    }
+  } catch { return null }
+}
 
 export function checksProblem(checks) {
   if (!Array.isArray(checks)) return 'checks must be a JSON array'
@@ -1007,6 +1069,35 @@ function archiveAttempt(root, run, name) {
     mkdirSync(dir, { recursive: true })
     renameSync(from, join(dir, from.split(sep).pop()))
   }
+  return dir
+}
+
+// The passes the browser gave this attempt, kept for the next one to carry over
+// where no changed code serves their step. Null when nothing passed here.
+function verifyPrior(root, run) {
+  const request = run.stages.verify.request
+  const report = request ? verifyReport(root, run) : null
+  const ok = new Set((report?.rows ?? []).filter(r => r.accepted).map(r => r.id))
+  if (!ok.size || !request.commit) return null
+  const results = readResults(root, run).filter(r => ok.has(r.id))
+  return { request: request.id, commit: request.commit, checks_revision: request.checks_revision, environment: request.environment?.url, results }
+}
+
+// Puts the carried-over passes into this attempt's results, screenshots copied in;
+// a pass whose screenshot is gone is run again instead.
+function carryOver(root, run, request, prior, ids) {
+  const kept = []
+  const dest = evidenceDir(root, run)
+  for (const r of prior.results.filter(x => ids.includes(x.id))) {
+    const files = (r.evidence ?? []).map(f => [join(prior.dir, 'evidence', String(f)), join(dest, String(f))])
+    if (!files.length || !files.every(([from]) => existsSync(from))) continue
+    mkdirSync(dest, { recursive: true })
+    for (const [from, to] of files) copyFileSync(from, to)
+    kept.push({ ...r, carried: { from: prior.request, commit: prior.commit } })
+  }
+  mkdirSync(dirname(resultsFile(root, run)), { recursive: true })
+  writeFileSync(resultsFile(root, run), JSON.stringify({ request: request.id, results: kept }, null, 2))
+  return kept.map(r => r.id)
 }
 
 // Puts the last good copy back in place of a file that is not what `problem`
@@ -1277,7 +1368,14 @@ function command(root, run, verb, args) {
       env.revision !== undefined && !head.startsWith(String(env.revision).toLowerCase()) &&
         fail(`the environment ${env.url} reports revision ${env.revision}, but the code under review is ${head.slice(0, 12)}; the browser would test other code. Deploy this commit there and record its revision, or use a local server started from this checkout`)
       const request = verifyRequest(r, headTree(root) ?? fail('not a git checkout'), head)
-      if (readResultsFile(root, r)?.request !== request.id) archiveAttempt(root, r, `${request.attempt}-superseded`)
+      const prior = r.verify_prior
+      const plan = verifyCarry({ checks: r.checks ?? [], checksRevision: r.checks_revision ?? 0, environment: env.url,
+        prior, delta: prior ? changedSince(root, prior.commit)?.files ?? null : null, tasks: r.tasks ?? [] })
+      const same = readResultsFile(root, r)?.request === request.id
+      if (!same) archiveAttempt(root, r, `${request.attempt}-superseded`)
+      // Restarting under the same request keeps what is in the file; a new request carries over afresh.
+      request.carried = same ? (r.stages.verify.request?.carried ?? []) : plan.carry.length ? carryOver(root, r, request, prior, plan.carry) : []
+      request.plan = { why: plan.why, rerun: (r.checks ?? []).map(c => c.id).filter(id => !request.carried.includes(id)) }
       moved.stages.verify.request = request
     }
     if (verb === 'start' && stage === 'second_review') {
@@ -1288,11 +1386,23 @@ function command(root, run, verb, args) {
       const open = r.stages.second_review.request
       // Starting again while the reviewer is still out keeps its request; changed code, or an answer already on record, gets a new one.
       const keep = open && open.attempt === attempt && open.tree === tree && !(r.reviews ?? []).some(v => v.request === open.id)
-      moved.stages.second_review.request = keep ? open
-        : { id: `${runKey(r)}-r${attempt}-${randomUUID().slice(0, 8)}`, attempt, tree, commit: headCommit(root), at: new Date().toISOString() }
+      if (keep) moved.stages.second_review.request = open
+      else {
+        const prior = (r.reviews ?? []).filter(v => v.attempt < attempt).at(-1) ?? null
+        const git = gitIn(root)
+        let branchLines = 0
+        try { branchLines = changedSince(root, git('merge-base', diffBase(git, r.base), 'HEAD'))?.lines ?? 0 } catch {}
+        const scope = reviewScope({ prior, delta: prior ? changedSince(root, prior.commit) : null, branchLines, findings: r.findings ?? [] })
+        moved.stages.second_review.request = { id: `${runKey(r)}-r${attempt}-${randomUUID().slice(0, 8)}`, attempt, tree, commit: headCommit(root), at: new Date().toISOString(), scope }
+      }
     }
     if (verb === 'pass') Object.assign(moved.stages[stage], passStamp(root, stage, r))
-    if (verb === 'back') archiveAttempt(root, r, r.stages.verify.attempt ?? 1)
+    if (verb === 'back') {
+      // Read what passed before the results are moved aside.
+      const prior = verifyPrior(root, r)
+      const dir = archiveAttempt(root, r, r.stages.verify.attempt ?? 1)
+      if (prior) moved.verify_prior = { ...prior, dir }
+    }
     return moved
   })
   const now = next.stages[stage]
@@ -1308,10 +1418,15 @@ function command(root, run, verb, args) {
     console.log(`verify request: ${id}  (results.json must carry it as "request")`)
     console.log(`environment: ${environment.url}  (every result names it as "environment"; link to this code: ${environment.provenance})`)
     if (environment.provenance === 'unlinked') console.log('This environment is not tied to the code under review. The checks are not exact-code verification; say so in the report.')
+    const { carried = [], plan } = next.stages.verify.request
+    if (carried.length) console.log(`carried over from the last attempt: ${carried.join(', ')} (already in results.json; keep those rows)`)
+    if (plan && (next.stages.verify.attempt ?? 1) > 1) console.log(`the browser checks: ${plan.rerun.join(', ') || 'nothing'}  (${plan.why})`)
   }
   if (verb === 'start' && stage === 'second_review') {
-    const { id, commit } = next.stages.second_review.request
+    const { id, commit, scope } = next.stages.second_review.request
     console.log(`review request: ${id}  for commit ${commit?.slice(0, 12)}  (record the answer with: loop.mjs review <reviewer> <file> --request ${id})`)
+    if (scope?.scope === 'delta') console.log(`review scope: delta since ${scope.since.slice(0, 12)}; confirm ${scope.confirm.join(', ')} are closed and look for what the fix broke (${scope.why})`)
+    else if (scope) console.log(`review scope: full, blind (${scope.why})`)
   }
 }
 

@@ -305,7 +305,12 @@ Read `stages/build.md` and follow it: split *How (Proposed)* into tasks, give
 each a tier, delegate to the `story-loop:worker-*` agents, review every result
 against its brief. Publish the task list for the board with
 `LOOP put tasks '[{"id":"t1","title":"…","tier":"sonnet","status":"pending"}]'` and
-update it as tasks are accepted (`running`, `accepted`, `returned`).
+update it as tasks are accepted (`running`, `accepted`, `returned`). On
+accepting a task, add the files its diff changed and the Test Steps it serves
+(`"files":["app/…"],"steps":[1,3]`), read from the diff you reviewed. A later
+attempt's browser run keeps a check's pass only when no changed file maps to
+its step; a file no task maps re-runs every check. In a round back from a later
+stage, list the earlier tasks again with the new ones, so the map stays whole.
 
 Pass when every task is accepted, the affected suites are green and the work
 is committed: the script refuses while a task is not `accepted` or the
@@ -610,6 +615,16 @@ the one file.
   browser ran and put back before the pass. Leave the checkout alone meanwhile.
 - A `fail` → `LOOP back verify build "<goal and note>"`; after the fix a fresh
   verifier re-runs the affected checks.
+
+**A later attempt checks only what can have changed.** `LOOP start verify` on
+attempt 2 or later compares HEAD with the commit the last passes covered. A
+pass stands when the check list and environment are the same and no changed
+code file maps (through the tasks' `files` and `steps`) to its Test Step; it is
+written into `results.json` already, marked `carried`, its screenshot copied
+into the evidence folder. The output names the checks the browser still runs
+and why. Brief the verifier with only those, then add its rows to the file and
+keep the carried ones. A row marked `carried` that the plan did not carry is
+refused. Name the carried checks in the report.
 - A `blocked` you cannot fix → `LOOP block verify "<what is missing>"`.
 
 The board's *Tested in the browser* section shows these checks and
@@ -733,8 +748,17 @@ Steps did not mention it. A pre-existing defect is noted in the report as a
 follow-up, not fixed here.
 
 Any `fix_requested` → `LOOP back second_review build "<the defects>"`; the
-build round fixes exactly those, and quality, test review, verify and this review run again on the new code (in
-the second pass, focus the review on the fix). The script refuses a pass while
+build round fixes exactly those, and quality, test review, verify and this review run again on the new code.
+`LOOP start second_review` then prints the review scope, decided from the diff:
+
+- **delta**, when the fix touches only the files of the findings sent back
+  (tests aside) and is at most a quarter of the branch's lines: review
+  `<since>..HEAD` (Codex: `--base <since>`; others: `git diff <since>..HEAD`),
+  with the findings it names quoted, "Confirm each is closed, and find what this
+  change broke". The angles still run on the whole branch.
+- **full**, otherwise: the blind review above, as the first time.
+
+The script refuses a pass while
 a finding is `open` or `fix_requested`, lacks a severity, is `fixed` without a
 commit, or is rejected or parked without a note →
 `LOOP pass second_review "<n fixed · n rejected · n parked>"`.

@@ -9,7 +9,7 @@ import {
   newRun, move, current, stopReason, GRAPH, verifyProblem, resultsFile, evidenceDir, storyId, issueRepo, remoteRepo,
   load, save, update, withLock, migrate, passProblem, findingsProblem, readInbox, addNote, deliver, staleStages,
   verifyRequest, commentsProblem, mutantsProblem, imageProblem, verifyReport, environmentProblem,
-  FRESH, runProblem, laneProblem, qualityProblem, humanReviewProblem, lessonsProblem,
+  FRESH, runProblem, laneProblem, qualityProblem, humanReviewProblem, lessonsProblem, verifyCarry, reviewScope,
 } from '../skills/story-loop/scripts/loop.mjs'
 import { readLedger, summary, usage } from '../skills/story-loop/scripts/ledger.mjs'
 import { signalsFor } from '../skills/story-loop/scripts/quality.mjs'
@@ -941,4 +941,65 @@ test('await-human: a waiter in the background ends with the board\'s answer, and
   assert.match(answered.out, /answer to your question · stage contract\n {2}You asked: "accept the new size\?"\n {2}human: no — split the story/)
   assert.equal(readInbox(dir, load(dir))[0].status, 'delivered', 'handed over once; the hook does not hand it again')
   assert.match(cli(dir, 'await-human', '--minutes', '0').stderr, /--minutes needs a positive number/)
+})
+
+test('a later attempt keeps a browser pass when no changed code serves its step', () => {
+  const checks = [{ id: 'a', step: 1 }, { id: 'b', step: 2 }, { id: 'c', step: 3 }]
+  const prior = { checks_revision: 1, environment: ENV.url, results: [{ id: 'a' }, { id: 'b' }] }
+  const tasks = [{ files: ['app/x.js'], steps: [1] }, { files: ['app/y.js'], steps: [2] }, { files: ['config/z.yml'] }]
+  const plan = delta => verifyCarry({ checks, checksRevision: 1, environment: ENV.url, prior, delta, tasks })
+  // y.js serves step 2 only: a keeps its pass, b runs again, c never passed so it runs
+  assert.deepEqual([plan(['app/y.js']).carry, plan(['app/y.js']).rerun], [['a'], ['b', 'c']])
+  // only tests changed: every earlier pass stands
+  assert.deepEqual(plan(['spec/y_spec.rb', 'app/frontends/y.test.ts']).carry, ['a', 'b'])
+  // code no task maps to a step, a task without steps, or no comparable diff: everything runs
+  for (const delta of [['app/other.rb'], ['config/z.yml'], null]) assert.deepEqual(plan(delta).carry, [], String(delta))
+  // another check list or environment: everything runs
+  assert.deepEqual(verifyCarry({ checks, checksRevision: 2, environment: ENV.url, prior, delta: [], tasks }).carry, [])
+  assert.deepEqual(verifyCarry({ checks, checksRevision: 1, environment: 'http://127.0.0.1:4000', prior, delta: [], tasks }).carry, [])
+})
+
+test('a second review of a small fix in the named files reviews the delta; anything else is full and blind', () => {
+  const findings = [{ id: 'r1', file: 'app/x.rb:12', verdict: 'fixed', commit: 'abc1234' }, { id: 'r2', file: 'app/old.rb', verdict: 'fixed', commit: 'fff0000' }, { id: 'r3', verdict: 'rejected', file: 'app/y.rb' }]
+  const delta = (files, lines = 10) => ({ files, lines, commits: ['abc1234deadbeef'] })
+  const scope = (d, f = findings) => reviewScope({ prior: { commit: 'p1' }, delta: d, branchLines: 100, findings: f })
+  assert.deepEqual(scope(delta(['app/x.rb', 'spec/x_spec.rb'])), { scope: 'delta', since: 'p1', confirm: ['r1'], why: 'the fix stays in the files of r1 and is 10 of 100 lines' })
+  // a finding fixed in an earlier round does not widen what this fix may touch
+  assert.equal(scope(delta(['app/old.rb'])).scope, 'full')
+  // code no finding named, a fix past a quarter of the branch, no finding sent back, no prior review
+  assert.equal(scope(delta(['app/x.rb', 'app/y.rb'])).scope, 'full')
+  assert.equal(scope(delta(['app/x.rb'], 26)).scope, 'full')
+  assert.equal(scope(delta(['app/x.rb']), [findings[2]]).scope, 'full')
+  assert.equal(reviewScope({ delta: delta(['app/x.rb']), branchLines: 100, findings }).scope, 'full')
+})
+
+test('verify carries over the passes of checks whose step the fix did not touch, and refuses a forged carry', () => {
+  const r = repo()
+  const { dir, commit } = r
+  commit('x.js', 'one'); commit('y.js', 'one')
+  withRun(dir, { checks: [{ id: 'a', step: 1 }, { id: 'b', step: 2 }], checks_revision: 1, browser: 'chrome', environment: ENV,
+    tasks: [{ id: 't1', status: 'accepted', files: ['x.js'], steps: [1] }, { id: 't2', status: 'accepted', files: ['y.js'], steps: [2] }] })
+  const toVerify = () => update(dir, run => { for (const id of ['contract', 'build', 'quality', 'test_review']) run.stages[id].status = 'passed'; return run })
+  const shot = name => { const run = load(dir); mkdirSync(evidenceDir(dir, run), { recursive: true }); writeFileSync(join(evidenceDir(dir, run), name), PNG) }
+  const row = (id, step, extra = {}) => ({ id, step, verdict: 'pass', evidence: [`${id}.png`], ...META, ...extra })
+  toVerify()
+  const first = cli(dir, 'start', 'verify').stdout.match(/verify request: (\S+)/)[1]
+  shot('a.png'); shot('b.png')
+  writeFileSync(resultsFile(dir, load(dir)), written(first, [row('a', 1), row('b', 2, { verdict: 'fail' })]))
+  assert.equal(cli(dir, 'back', 'verify', 'build', 'b fails').status, 0)
+  // the fix touches y.js, which serves step 2 only
+  commit('y.js', 'two')
+  toVerify()
+  const out = cli(dir, 'start', 'verify').stdout
+  assert.match(out, /carried over from the last attempt: a/)
+  assert.match(out, /the browser checks: b {2}\(the changed code serves step 2\)/)
+  const second = out.match(/verify request: (\S+)/)[1]
+  const kept = JSON.parse(readFileSync(resultsFile(dir, load(dir)), 'utf8'))
+  assert.deepEqual([kept.request, kept.results.map(x => x.id), existsSync(join(evidenceDir(dir, load(dir)), 'a.png'))], [second, ['a'], true])
+  // a carry the plan did not grant is refused
+  shot('b.png')
+  writeFileSync(resultsFile(dir, load(dir)), written(second, [...kept.results, row('b', 2, { carried: { from: first } })]))
+  assert.match(cli(dir, 'pass', 'verify').stderr, /"b" is marked carried over, but this attempt runs it again/)
+  writeFileSync(resultsFile(dir, load(dir)), written(second, [...kept.results, row('b', 2)]))
+  assert.equal(cli(dir, 'pass', 'verify').status, 0)
 })
