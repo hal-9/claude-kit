@@ -408,6 +408,13 @@ was edited or deleted since (not only added), nothing is taken over and every
 mutant runs: a weakened test could let one through. Run the same calls as the
 first time; the output says how many were carried over, and the report says so.
 
+**Tests you add here go through the quality gate now.** A survivor killed with
+a new test changes the code after the quality gate passed. Before passing test
+review, run `QUALITY` again with the same lint commands: a clean run brings the
+passed gate up to date, so the push does not find it stale and send the run
+back. The human's acceptance of the story's size carries over while the diff
+has grown by at most a quarter; past that it is asked again.
+
 Never delete a test because of a mutation result. A test goes only when it is
 wrong or truly redundant on its own merits, and then name the test that still
 protects the behaviour.

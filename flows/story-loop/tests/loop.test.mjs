@@ -780,6 +780,39 @@ test('the quality gate passes only with clean lint and every signal removed or a
   assert.deepEqual(load(dir).evidence.quality.dispositions, {})
 })
 
+test('tests added in test review are checked by the quality gate then, not found stale at the push', () => {
+  const { dir, git, commit } = repo()
+  withRun(dir, { lane: { ...LANE, lane: 'light' } })
+  update(dir, r => { r.stages.contract.status = 'passed'; r.stages.build.status = 'passed'; return r })
+  const lines = n => Array.from({ length: n }, (_, i) => `x${i} = ${i}`).join('\n') + '\n'
+  commit('calc.rb', lines(160)) // over the light lane's 150
+  assert.equal(cli(dir, 'start', 'quality').status, 0)
+  quality(dir, '--lint', 'true')
+  assert.equal(cli(dir, 'quality', 'accept', 'size', 'human: accept the size').status, 0)
+  assert.equal(cli(dir, 'pass', 'quality').status, 0)
+  assert.equal(cli(dir, 'start', 'test_review').status, 0)
+
+  // Test review adds a test for a surviving mutant: the gate has not seen it.
+  commit('calc_spec.rb', lines(10))
+  update(dir, r => ({ ...r, evidence: { ...r.evidence, mutants: { tree: git('rev-parse', 'HEAD^{tree}'), lane: 'light', scope: [], covered: [], outcomes: { 'calc.rb:1:aaaaaa': 'killed' } } } }))
+  assert.match(passProblem(dir, load(dir), 'test_review'), /changed the code after the quality gate; run quality\.mjs again/)
+
+  // One clean run brings the gate up to date, and the human's size yes carries over to the grown diff.
+  const again = quality(dir, '--lint', 'true')
+  assert.equal(again.status, 0, again.stdout + again.stderr)
+  assert.match(again.stdout, /accepted\s+size .*\n[\s\S]*quality gate: clean/)
+  assert.match(load(dir).evidence.quality.dispositions.size, /^human: accept the size \(carried from 160 lines\)$/)
+  assert.equal(load(dir).stages.quality.tree, git('rev-parse', 'HEAD^{tree}'))
+  assert.deepEqual(staleStages(dir, load(dir)), [])
+  assert.equal(passProblem(dir, load(dir), 'test_review'), null)
+
+  // Grown by more than a quarter: the human is asked again, and the gate stays stale until then.
+  commit('more_spec.rb', lines(60))
+  assert.equal(quality(dir, '--lint', 'true').status, 1)
+  assert.equal(load(dir).evidence.quality.dispositions.size, undefined)
+  assert.deepEqual(staleStages(dir, load(dir)), ['quality'])
+})
+
 test('a diff larger than the signed-off lane is a signal the human has to accept', () => {
   const { dir, commit } = repo()
   withRun(dir, { lane: { ...LANE, lane: 'light' } })

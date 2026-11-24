@@ -773,6 +773,9 @@ export function passProblem(root, run, stage) {
       // Results under one lane's budget say nothing about a lane signed off later.
       const lane = run.lane?.lane ?? 'standard'
       if (m.lane && m.lane !== lane) return `the mutants ran under the ${m.lane} lane, the story is now ${lane}; run mutate.mjs again`
+      // Tests added for surviving mutants are code the quality gate has not seen: check them now, not at the push.
+      if (run.stages.quality?.status === 'passed' && run.stages.quality.tree !== tree)
+        return 'test review changed the code after the quality gate; run quality.mjs again on it (a clean run brings the gate up to date)'
       return mutantsProblem(m) ?? (dirty(root) ? 'commit the test changes first' : null)
     }
     case 'verify': {

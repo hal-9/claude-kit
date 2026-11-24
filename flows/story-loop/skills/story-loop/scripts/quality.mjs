@@ -15,10 +15,12 @@
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, findRoot, load, emit, gitIn, dirty, headTree, headCommit, baseName, diffBase, opStart, opUpdate, opEnd, qualityProblem } from './loop.mjs'
+import { GRAPH, findRoot, load, update, emit, gitIn, dirty, headTree, headCommit, baseName, diffBase, opStart, opUpdate, opEnd, qualityProblem } from './loop.mjs'
 import { changedLines } from './mutate.mjs'
 
 const fail = message => { throw new Error(message) }
+// ponytail: a fixed margin for carrying the human's size acceptance to grown code.
+const SIZE_CARRY = 1.25
 const IS_TEST = /(^|\/)(spec|specs|test|tests|__tests__)\/|[._-](spec|test)\.[a-z]+$/i
 const GENERATED = /(^|\/)(package-lock\.json|yarn\.lock|bun\.lockb?|Gemfile\.lock|pnpm-lock\.yaml|schema\.rb|structure\.sql)$|\.snap$|\.min\.(js|css)$/
 const COMMENT = String.raw`(?:#|//|/\*|\*|<!--|-#|--)`
@@ -86,6 +88,11 @@ function main(argv) {
       const earlier = r.evidence?.quality
       // A reason was given for one line of one tree; on other code it has to be given again.
       const kept = earlier?.tree === tree ? Object.fromEntries(Object.entries(earlier.dispositions ?? {}).filter(([id]) => id in flags)) : {}
+      // The human's yes to the story's size outlives the tests added after it, up to a quarter more.
+      const accepted = earlier?.dispositions?.size
+      const was = (earlier?.size?.added ?? 0) + (earlier?.size?.removed ?? 0)
+      if (flags.size && !kept.size && /^human:/i.test(accepted ?? '') && size.added + size.removed <= was * SIZE_CARRY)
+        kept.size = `${accepted.replace(/ \(carried from \d+ lines\)$/, '')} (carried from ${was} lines)`
       const quality = { tree, commit: headCommit(root), base: baseName(base), lint, no_lint: opt.noLint ?? null, flags, dispositions: kept, size: { ...size, lane, budget }, at: new Date().toISOString() }
       return { ...r, evidence: { ...r.evidence, quality } }
     }, { flags, lint, size })
@@ -95,6 +102,11 @@ function main(argv) {
     console.log(`${size.files} files, +${size.added} −${size.removed}${budget === null ? '' : ` (${lane} lane: ${budget})`}`)
     for (const [id, f] of Object.entries(flags)) console.log(`${q.dispositions[id] ? 'accepted' : 'SIGNAL  '}  ${id}  ${f.text}`)
     const problem = qualityProblem(q)
+    // Run again after a later stage changed the code (tests for surviving mutants): a clean
+    // result stamps the passed gate with that code, so it is current without a round back.
+    if (!problem && next.stages.quality?.status === 'passed' && next.stages.quality.tree !== tree)
+      update(root, r => r.stages.quality?.status === 'passed' && r.evidence?.quality?.tree === tree
+        ? { ...r, stages: { ...r.stages, quality: { ...r.stages.quality, tree, commit: headCommit(root), refreshed_at: new Date().toISOString() } } } : undefined)
     console.log(problem ? `quality gate: ${problem}` : 'quality gate: clean')
     emit(root, { kind: 'note', text: `quality gate: ${Object.keys(flags).length} signal${Object.keys(flags).length === 1 ? '' : 's'}, lint ${lint.every(l => l.exit === 0) ? 'clean' : 'failed'}` })
     opEnd(root, ctx, 'ok', problem ?? 'clean')
