@@ -65,7 +65,10 @@ Show the human, verbatim and unsummarised: the branch, the base, the PR title,
 who will be the author (`gh api user --jq .login`), and the full PR
 description as it will be posted. Then the same questions the Shortcut path
 asks at sign-off (push permission for this branch, browser, verification
-matrix with a stable id per check), and wait: `LOOP wait contract human "sign-off"`.
+matrix with a stable id per check, the lane with its hard decisions, the
+feature flag, how evidence is shared), with the one-page view the skill's
+contract stage describes under *Show the plan, do not only tell it*, and wait:
+`LOOP wait contract human "sign-off"`.
 
 ## 4. Execute (writes, only after the human approved)
 
@@ -85,5 +88,7 @@ Check the PR is a draft, then record it and pass the stage:
 ```bash
 LOOP put title "<issue title>"; LOOP put pr <number>
 LOOP checks set '<the agreed matrix as [{"id":…,"step":…,"case":…}]>'
+LOOP put lane '<{"lane":…,"why":…,"hard":[…],"flag":"<name>"|false}>'
+LOOP put evidence_sharing pr|artifact|none
 LOOP pass contract "signed off, draft PR <number>"
 ```

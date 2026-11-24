@@ -1,7 +1,7 @@
 # story-loop
 
-**One command takes a Shortcut story or a GitHub issue to a reviewed draft PR. You sign the plan
-at the start, watch it on a live board, and merge at the end.**
+**One command takes a Shortcut story or a GitHub issue to a reviewed PR and through its review. You sign the plan
+at the start, watch it on a live board, and merge; the run closes by writing down what it learned.**
 
 https://github.com/user-attachments/assets/41477f16-1996-42d5-bb66-3ca51721f699
 
@@ -10,7 +10,7 @@ https://github.com/user-attachments/assets/41477f16-1996-42d5-bb66-3ca51721f699
 /story-loop gh-123          # a GitHub issue (or paste its URL)
 ```
 
-> Status: 0.9, experimental, in a supervised pilot. What has been checked, and
+> Status: 0.10, experimental, in a supervised pilot. What has been checked, and
 > how, are three different things:
 >
 > - **Fixture tests** (`node --test tests/*.test.mjs`): the parts on their own,
@@ -26,25 +26,31 @@ https://github.com/user-attachments/assets/41477f16-1996-42d5-bb66-3ca51721f699
 
 ```mermaid
 flowchart LR
-  A[1 Contract] --> B[2 Build] --> C[3 Test review] --> D[4 Browser verify]
-  D --> E[5 Second review] --> F[6 Push] --> G[7 Copilot review] --> H[8 Fix comments] --> I[9 Report]
+  A[1 Contract] --> B[2 Build] --> Q[3 Quality gate] --> C[4 Test review] --> D[5 Browser verify]
+  D --> E[6 Second review] --> F[7 Push] --> G[8 Copilot review] --> H[9 Fix comments] --> I[10 Report]
+  I --> J[11 Human review] --> K[12 Retro]
+  Q -. slop signal .-> B
   C -. missing test .-> B
   D -. a check fails .-> B
   E -. real defect .-> B
   H -. bigger fix .-> B
+  J -. reviewer asks for a change .-> B
 ```
 
 | # | Stage | What the agent does | What proves it |
 | --- | --- | --- | --- |
-| 1 | Contract | From the story (`start-story`) or the issue: drafts the PR description, asks about gaps, opens the draft PR | **Your sign-off** |
-| 2 | Build | Splits the plan into tasks; worker agents on Haiku, Sonnet or Opus build test-first | Every task accepted, everything committed |
-| 3 | Test review | Breaks each changed line on purpose, in a throwaway copy, and checks a test notices | Mutation results for this exact code: killed, survived, invalid, timed out |
-| 4 | Browser verify | A second agent that has not seen the code checks every Test Step in a real browser | Every check of the matrix you approved, once, with a real screenshot |
-| 5 | Second review | Another model tries to break the work: Codex by default, any reviewer CLI you name, or a fresh Claude on another model | Every finding with a severity: fixed with its commit, rejected with a reason, or parked for you |
-| 6 | Push | Publishes the checked commit to the story branch, nothing else | The remote read back at that commit |
-| 7 | Copilot review | Requests GitHub Copilot's review and waits for it, with a deadline | A Copilot review of exactly that commit |
-| 8 | Fix comments | Triages every comment, answers every thread; any code change goes back to Build | Every comment settled |
-| 9 | Report | Posts the results on the PR | Required CI green on the final commit; one report comment; the PR stays a draft |
+| 1 | Contract | From the story (`start-story`) or the issue: drafts the PR description, asks about gaps, proposes a lane by how costly a mistake would be, shows the plan on one page, opens the draft PR | **Your sign-off**, with the lane, the hard decisions and the feature-flag answer recorded |
+| 2 | Build | Splits the plan into tasks; worker agents on Haiku, Sonnet or Opus build test-first, each told which existing pattern to copy | Every task accepted, everything committed |
+| 3 | Quality gate | Runs the repo's linters on the changed files and reads the added lines for slop: a linter switched off, a skipped test, a comment excusing a shortcut, a diff over the lane's budget | Lint clean on this exact code; every signal removed or accepted with a reason |
+| 4 | Test review | Breaks each changed line on purpose, in a throwaway copy, and checks a test notices | Mutation results for this exact code: killed, survived, invalid, timed out |
+| 5 | Browser verify | A second agent that has not seen the code checks every Test Step in a real browser | Every check of the matrix you approved, once, with a real screenshot |
+| 6 | Second review | Another model tries to break the work, and names what the next change would copy: Codex by default, any reviewer CLI you name, or a fresh Claude on another model | Every finding with a severity: fixed with its commit, rejected with a reason, or parked for you |
+| 7 | Push | Publishes the checked commit to the story branch, nothing else | The remote read back at that commit |
+| 8 | Copilot review | Requests GitHub Copilot's review and waits for it, with a deadline | A Copilot review of exactly that commit |
+| 9 | Fix comments | Triages every comment, answers every thread; any code change goes back to Build | Every comment settled |
+| 10 | Report | Posts the results on the PR, what needs your decision first, with the user flow as a chart and the evidence where you chose to share it | Required CI green on the final commit; one report comment; the PR stays a draft |
+| 11 | Human review | Fetches what human reviewers wrote, triages it like any review, sends real defects back to Build | Every reviewer comment settled, and the PR merged or closed **by a human** |
+| 12 | Retro | Names a lesson for every correction of the run and the check that would catch its kind next time: a lint rule, a type, a test, an API that makes the mistake impossible, and prose only as the last resort | A lesson for every fixed finding and every round sent back; the run's line in the ledger |
 
 A later stage can send work back to Build, twice at most. Then it stops and
 shows you instead of trying a third time. Going back makes the earlier tests,
@@ -58,12 +64,35 @@ results stay in the run's history.
   description are parked for you, never guessed.
 - **Ready for review, approval, merge.** The agent never marks the PR ready
   and never merges. A hook refuses it.
+- **Building the checks.** The retro proposes them; each one is its own story,
+  started by you.
+
+## The ledger: how the loop learns
+
+Every run leaves one line in `.start-story/ledger.jsonl`, also a run that was
+dropped half way, and whether or not diagnostics were on: the factory version,
+the lane, where work was sent back and why, findings by source and verdict,
+how often each worker tier was returned, the lessons of the retro, and tokens
+by stage and model.
+
+```bash
+node <plugin>/skills/story-loop/scripts/loop.mjs ledger
+```
+
+It prints the lessons by how many runs hit them (two or more: build that check
+now), where runs go back, which tier keeps being returned, and the share of
+tokens spent checking the work. Change the loop from what this shows, not from
+how one run felt.
+
+What it is not yet: nothing scores finished runs on its own, nothing replays
+old tasks against other models, and no agent opens a PR against the loop's own
+instructions. Those need a ledger with real runs in it first.
 
 ## The board
 
 It opens in your browser when a story starts.
 
-- **Top:** the nine stages as a graph, the current one alive, and an arrow
+- **Top:** the twelve stages as a graph, the current one alive, and an arrow
   when work is sent back, with the reason.
 - **Left:** who is working on what right now, the tasks, the review findings
   with their verdicts, and *Tested in the browser*: every check with its
@@ -181,15 +210,16 @@ screenshots.
 | Node 20+ | every script | `brew install node` |
 | GitHub CLI, signed in | PR, push, Copilot review | `brew install gh`, `gh auth login` |
 | Shortcut CLI 5+ (Shortcut stories only) | reading the story, moving the card | `npm i -g @shortcut-cli/shortcut-cli`, `short install` |
-| `start-story` skill in the repo (Shortcut stories only) | stage 1 | synced with the shared skills |
+| `start-story` skill in the repo (Shortcut stories only) | the contract stage | synced with the shared skills |
 | `.start-story/` gitignored | run files and screenshots stay out of the PR (a blocker if not) | one line in `.gitignore` |
 | Signed commits, if the repo requires them | the publisher refuses unsigned commits when signing is on; setup signs a throwaway commit to prove it works | the repo's signed-commits guide |
 | Codex plugin, signed in (recommended, not required) | the strongest second review: a model from another vendor | `/plugin install codex@openai-codex`, `/codex:setup` |
-| A browser the agent can drive | stage 4 | Chrome with the Claude extension, **or** the BrowserOS app running |
+| A browser the agent can drive | browser verify | Chrome with the Claude extension, **or** the BrowserOS app running |
 | A test user in that browser | logging in on previews and staging | sign in as a test user, or save its login in the browser; the agent does not type passwords on non-local sites |
-| Copilot review enabled on the repo | stage 7 | repository settings |
-| The app boots in the test environment | stage 4 | your project's usual setup |
-| A local server of the app, started from the checkout | stage 4 tests the code under review only when the page is served from it; a staging or preview site usually still has older code at that point | your project's dev server; a deployment counts only when it reports the commit it serves |
+| Copilot review enabled on the repo | the Copilot review | repository settings |
+| The app boots in the test environment | browser verify | your project's usual setup |
+| A linter for the files you change (optional) | the quality gate runs it; without one the gate reads the diff for slop signals only | your project's usual linters |
+| A local server of the app, started from the checkout | browser verify tests the code under review only when the page is served from it; a staging or preview site usually still has older code at that point | your project's dev server; a deployment counts only when it reports the commit it serves |
 
 No browser reachable? The loop does not skip the browser check. It stops and
 asks you to start one.
@@ -225,6 +255,9 @@ lets the run start.
 | Work that finishes late changes nothing | Mutants, the Copilot wait, CI, comments, the report and the publisher note the run and attempt they started in and are checked against it, under the lock, before their result is recorded; a late result is kept under `stale/`; `end` asks running helpers to stop | A push or a comment that already reached GitHub stays there: it is recorded for the run that made it and has to be reconciled by hand |
 | A browser pass means the reviewed code | The environment is recorded before the browser runs: a local server from the checkout, or a deployment with the commit it reports (refused when that is another commit). Every result names its final URL, its environment, its step and case | A local server is the agent's word that it runs this checkout. A deployment nothing ties to the code passes only on your word and is marked "not exact code" on the board and in the report |
 | Mutation results mean something | The scope is the diff, not the files the agent names; a kill needs a mutant that was checked to parse; survivors, timeouts and mutants not run each need a recorded reason | Mutants are textual, one operator per line, at most `--max` per call; ts/tsx/jsx are checked only with the project's `typescript`; templates and styles are named, not mutated |
+| Slop is decided, not waved through | `quality.mjs` reads only the lines this change added, for the code tree it ran on; lint must exit 0; each signal needs a recorded reason, and a diff over the lane's budget stands only with a `human:` reason | Signals are textual, one pattern per kind: they catch a linter switched off, a skipped test and an excusing comment, not a bad design. The lint command is the agent's choice; a linter the repo does not have is not run |
+| A reviewer's comment is not lost | `github.mjs human-comments` fetches every top-level thread and review body by a human; the round passes only when each has a settled finding and that fetch saw the PR merged or closed | A comment written after that fetch is not seen. Issue-level comments on the PR are not fetched |
+| Every correction leaves a lesson | The retro is refused while a fixed finding or a round sent back is named by no lesson; each lesson names a check kind and what the check would be | Whether the lesson is the right one, and whether the check ever gets built, is not checked. The ledger shows when the same pattern comes back |
 | GitHub steps act on this PR only | Every `gh` call names the run's repository; the PR's branch, base and head are checked against the run before CI is read and before the report is posted | PRs from forks are refused, not supported |
 | Green CI means the required checks | Checks are recorded only for the published commit, with where the required set came from. A 404 or 403 on the policy is `unknown`, never "nothing required"; the list you name is kept for that repository and base, added to what the policy shows, and looked up among all checks. A required check GitHub has not created yet is pending | The list you name is your word. Rulesets that cannot be read (also on a GitHub without rulesets) leave the policy unknown until you name the list |
 | No lost or crossed state | One lock around every write and around `init`, `end` and `recover`; atomic file replace for state and notes, last good copy kept (`loop.mjs recover`); a file that parses but is not a run or a list of notes is as unreadable as a cut-off one, and only a valid backup is restored | Local processes only; not a database |
@@ -244,6 +277,8 @@ lets the run start.
 | Guard and ownership | `scripts/hook.mjs` (PreToolUse) | see *What it will not do* |
 | Publisher | `scripts/publish.mjs` | the only push of a run |
 | GitHub steps | `scripts/github.mjs` | Copilot request and bounded wait, comments, required CI, the report comment — each recorded so a retry reconciles |
+| Quality gate | `scripts/quality.mjs` | runs the lint commands it is given and reads the diff's added lines for slop signals; lane budgets are in `graph.json` |
+| Ledger | `scripts/ledger.mjs`, `.start-story/ledger.jsonl` | one line per run, written at the retro and at `end`; `loop.mjs ledger` reads it |
 | Mutants | `scripts/mutate.mjs` | breaks changed lines one at a time in a throwaway worktree; nothing to install (uses the project's `typescript` when it has one) |
 | Notes | `.start-story/<story>/inbox.json`, `scripts/hook.mjs` | carries what you write on the board to the agent |
 | Setup check | `scripts/doctor.mjs` | prerequisites and their fixes |
@@ -268,6 +303,10 @@ from [savvy-flow](https://github.com/johnnyvizz/claude-kit) (MIT).
 | `the notes file ... is unreadable` | `loop.mjs recover` restores the last good copy and keeps the broken file next to it; a note typed after that copy is only in the broken file |
 | `required CI ... unknown` | The base branch's required checks could not be read (no permission, or GitHub answered 404); tell the agent which checks are required. Ask again after changing the base |
 | A run started on 0.8 | End it and start again on 0.9: verify now needs a recorded environment and results with their URL, the review needs `start second_review` and `--request`, and the publisher needs the base recorded first |
+| A run started on 0.9 | It migrates on first use: the three new stages are pending, so it stops at the quality gate before going on, and the contract needs a lane before it can pass again (`loop.mjs put lane …`) |
+| `N slop signals need a decision` | Remove each one at its cause and run `quality.mjs` again, or record why it stands: `loop.mjs quality accept <id> "<reason>"` |
+| `PR ... was open when the comments were last fetched` | The human review round ends at merge or close; merge it (or tell the agent you take the review from here), then tell the agent to continue |
+| `N corrections have no lesson` | The retro names a lesson for every fixed finding and every round sent back; `loop.mjs put lessons '[…]'` |
 | `the push URL ... is not a GitHub repository story-loop can identify` | The remote uses an SSH host alias, another host, or a fork; point `origin`'s push URL at `git@github.com:<owner>/<name>` of the run's repository |
 | `this ... finished for ... but ...; its result changes nothing here` (exit 4) | A helper outlived its run or its attempt; its result is in `.start-story/<story>/stale/`. Nothing to fix: run the step again for the current attempt |
 | `record where the browser will test` | Start the app from the checkout and record it: `loop.mjs put environment '{"url":"http://127.0.0.1:3000","kind":"local"}'` |

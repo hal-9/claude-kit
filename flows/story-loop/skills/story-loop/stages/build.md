@@ -22,6 +22,10 @@ from a later stage, the task is only the defects named in the `back` reason.
    - the **test seam** where behaviour changes (request spec, component,
      model, Jest module), so the worker builds test-first there; mechanical
      tasks name none;
+   - **the pattern to copy**: the existing file that does this the way this
+     codebase wants it done, and, where the neighbourhood has an old or
+     deprecated way, the one not to copy. A worker repeats whatever it reads
+     next to its change; choosing the example is your job, not its luck;
    - dependencies on other tasks;
    - a tier.
 4. Publish the tasks (`LOOP put tasks …`) and go on; the human already signed
@@ -76,9 +80,14 @@ Treat a worker report as a claim to check.
    deviations, anything that departs from the PR description.
 3. What a careful reviewer would catch: edge cases, error paths, broken
    invariants, regressions next door, missing verification.
+   And what the quality gate will flag next: a linter switched off in place,
+   a skipped test, a comment that justifies a shortcut. Return those now; a
+   workaround is fixed at its cause, not explained.
 4. Re-run the verification yourself when it is cheap or the report is vague.
 5. **Accept**, or **return** to the same or a higher tier with a precise list
-   of defects. Take over only for a one-line correction. Two return rounds per
+   of defects. Count each return on the task (`"returns": 1` in
+   `LOOP put tasks`, kept when it is accepted later): the ledger judges the
+   tier table by it. Take over only for a one-line correction. Two return rounds per
    task, then `LOOP wait build human "<task and what keeps failing>"`.
 
 ## 5. Close the stage

@@ -45,7 +45,7 @@ export const CHECKS = [
     if (!version.ok) return blocker('the `short` CLI is not installed', 'npm install -g @shortcut-cli/shortcut-cli, then: short install (it asks for your Shortcut API token).')
     return Number(version.out.trim().split('.')[0]) >= 5 ? ok(version.out.trim()) : blocker(`version ${version.out.trim()}`, 'npm install -g @shortcut-cli/shortcut-cli@latest')
   }],
-  ['start-story skill in this repo', 'stage 1 for a Shortcut story: the signed-off contract and the draft PR', s =>
+  ['start-story skill in this repo', 'the contract stage for a Shortcut story: the signed-off contract and the draft PR', s =>
     s.source === 'github' ? ok('not needed for GitHub issues') : ['.claude', '.github', '.cursor', '.pi'].some(dir => s.exists(join(s.cwd, dir, 'skills/start-story/SKILL.md')))
       ? ok() : blocker('no start-story skill found', 'Sync the shared skills into this repo (ai-hub / agent-bridge), or run story-loop from a repo that has start-story.')],
   ['.start-story/ is gitignored', 'run state, briefs and screenshots live there and must not reach the PR', s =>
@@ -57,7 +57,7 @@ export const CHECKS = [
     const probe = s.run('git', ['commit-tree', '-S', 'HEAD^{tree}', '-m', 'story-loop signing probe'])
     return probe.ok ? ok('a test signature worked') : blocker('signing is on, but signing a test commit failed', `Fix the signing setup (key, agent, pinentry): ${probe.out.trim().split('\n')[0] ?? ''}`)
   }],
-  ['A second model for the review', 'stage 5: a reviewer from another vendor catches what Claude misses in its own work', s => {
+  ['A second model for the review', 'second review: a reviewer from another vendor catches what Claude misses in its own work', s => {
     const fallback = 'Without it the second review still runs, by a fresh Claude on another model, which is weaker. '
     if (!s.exists(CODEX)) return warning('the openai-codex plugin is not installed', fallback + 'For Codex: /plugin marketplace add openai/codex-plugin-cc, /plugin install codex@openai-codex, then /codex:setup. Any other reviewer CLI can be named at sign-off.')
     const setup = s.run('node', [CODEX, 'setup', '--json'])
