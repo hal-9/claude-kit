@@ -2,24 +2,35 @@
   "stages": [
     { "id": "contract", "label": "Contract", "hint": "story or issue to a signed-off plan and a draft PR" },
     { "id": "build", "label": "Build", "hint": "split into tasks, tiered workers, test-first" },
+    { "id": "quality", "label": "Quality gate", "hint": "lint and slop signals on the diff, decided one by one" },
     { "id": "test_review", "label": "Test review", "hint": "mutants on the diff" },
     { "id": "verify", "label": "Browser verify", "hint": "blind verifier, one check per Test Step" },
     { "id": "second_review", "label": "Second review", "hint": "another model tries to break it" },
     { "id": "push", "label": "Push", "hint": "story branch only" },
     { "id": "copilot_review", "label": "Copilot review", "hint": "requested, then waited for" },
     { "id": "fix_comments", "label": "Fix comments", "hint": "clear defects fixed, the rest parked" },
-    { "id": "report", "label": "Report", "hint": "evidence to the PR; a human merges" }
+    { "id": "report", "label": "Report", "hint": "evidence to the PR; a human merges" },
+    { "id": "human_review", "label": "Human review", "hint": "reviewer comments settled until a human merges or closes" },
+    { "id": "retro", "label": "Retro", "hint": "every correction becomes a lesson, and a check where one can catch it" }
   ],
   "back": [
+    ["quality", "build"],
     ["test_review", "build"],
     ["verify", "build"],
     ["second_review", "build"],
     ["fix_comments", "build"],
     ["push", "build"],
     ["copilot_review", "build"],
-    ["report", "build"]
+    ["report", "build"],
+    ["human_review", "build"],
+    ["retro", "build"]
   ],
   "maxRounds": 2,
+  "lanes": {
+    "light": { "diff_lines": 150 },
+    "standard": { "diff_lines": 600 },
+    "heavy": { "diff_lines": 1500 }
+  },
   "models": {
     "conductor": "fable",
     "delegates": ["opus", "sonnet", "haiku"]

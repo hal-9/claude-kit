@@ -12,21 +12,24 @@ import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bind, record, toggle, exportBundle, diagDir, readEvents, readManifest } from './diag.mjs'
+import { appendLedger, readLedger, summary as ledgerSummary, ledgerFile } from './ledger.mjs'
 
 export const GRAPH = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'graph.json'), 'utf8'))
-export const SCHEMA = 2
+export const SCHEMA = 3
 export const LEASE_MS = 15 * 60_000
 const DONE = new Set(['passed', 'skipped'])
-const PUT_KEYS = new Set(['title', 'branch', 'pr', 'base', 'repo', 'tasks', 'findings', 'browser', 'environment', 'required_checks'])
+const PUT_KEYS = new Set(['title', 'branch', 'pr', 'base', 'repo', 'tasks', 'findings', 'browser', 'environment', 'required_checks', 'lane', 'lessons', 'evidence_sharing'])
 // Which stages may be skipped, and on whose word. Everything else needs only a reason.
 const SKIP = {
   contract: 'never', build: 'never', second_review: 'never', push: 'never', report: 'never',
   // With no Copilot comments fix_comments passes on its own; a skip would only hide open ones.
   fix_comments: 'never',
-  verify: 'human', copilot_review: 'human',
+  // With nothing flagged the quality gate passes on its own, and a retro with nothing to learn records an empty list.
+  quality: 'never', retro: 'never',
+  verify: 'human', copilot_review: 'human', human_review: 'human',
 }
 // Stages whose evidence covers one exact code tree; a later change makes it stale.
-export const FRESH = ['test_review', 'verify', 'second_review']
+export const FRESH = ['quality', 'test_review', 'verify', 'second_review']
 
 // A run starts from a Shortcut story (sc-123) or a GitHub issue (gh-123).
 // Accepts SC-123, 123, gh-123, #123, and the URL of either.
@@ -51,15 +54,18 @@ export function newRun(story, now = new Date().toISOString()) {
   }
 }
 
-// Old (schema 1) runs keep their data, but nothing they recorded counts as
-// fresh evidence: no stage carries a code tree, so later gates ask again.
+// Old runs keep their data. A schema 1 run recorded no code tree, so nothing it
+// passed counts as fresh evidence; a stage the graph gained since is pending, so
+// the run stops there first.
 export function migrate(run) {
-  if (run.schema === SCHEMA) return run
+  if (run.schema === SCHEMA || !run.stages || typeof run.stages !== 'object') return run
   const { session, ...rest } = run
+  const from = run.schema ?? 1
   return {
-    ...rest, schema: SCHEMA, revision: run.revision ?? 0, migrated_from: run.schema ?? 1,
-    owner: session ? { session, since: run.started_at, heartbeat: 0 } : null,
-    stages: Object.fromEntries(Object.entries(run.stages).map(([id, s]) => [id, { attempt: 1, ...s }])),
+    ...rest, schema: SCHEMA, revision: run.revision ?? 0, migrated_from: from,
+    owner: from < 2 ? (session ? { session, since: run.started_at, heartbeat: 0 } : null) : run.owner ?? null,
+    stages: { ...Object.fromEntries(GRAPH.stages.map(s => [s.id, { status: 'pending', rounds: 0, attempt: 1 }])),
+      ...Object.fromEntries(Object.entries(run.stages).map(([id, s]) => [id, { attempt: 1, ...s }])) },
     checks: run.checks ?? null, history: run.history ?? [],
   }
 }
@@ -356,7 +362,7 @@ function cancelOps(run) {
   for (const [op, o] of Object.entries(run.ops ?? {})) {
     let command = ''
     try { command = execFileSync('ps', ['-p', String(o.pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) } catch {}
-    const ours = /(mutate|github|publish)\.mjs/.test(command)
+    const ours = /(mutate|quality|github|publish)\.mjs/.test(command)
     if (ours) { try { process.kill(o.pid, 'SIGTERM') } catch {} }
     out.push({ op, kind: o.kind, pid: o.pid, signalled: ours })
   }
@@ -651,6 +657,66 @@ export function mutantsProblem(m) {
   return open.length ? `${open.length} mutants need a decision: ${open.slice(0, 5).join(', ')}${open.length > 5 ? ', …' : ''}. Kill each with a test and run mutate.mjs again, or record why it stands: loop.mjs mutant accept <id> "<reason>"` : null
 }
 
+// How much planning and how large a diff the story was signed off for.
+//   {"lane":"standard","why":"…","hard":["new column on users"],"flag":"reading_list_v2"}
+// `hard` names the decisions that are costly to change later (schema, public API,
+// data migration); `flag` is the feature flag the change ships behind, or false.
+export function laneProblem(lane) {
+  const names = Object.keys(GRAPH.lanes)
+  if (!lane || typeof lane !== 'object' || Array.isArray(lane)) return `lane is a JSON object: {"lane":"${names.join('|')}","why":…,"hard":[…],"flag":"<name>"|false}`
+  if (!names.includes(lane.lane)) return `lane is one of: ${names.join(', ')}`
+  if (typeof lane.why !== 'string' || !lane.why.trim()) return 'lane needs why: how likely this is to change later, and how costly that would be'
+  if (!Array.isArray(lane.hard) || lane.hard.some(h => typeof h !== 'string' || !h.trim())) return 'lane needs "hard": the decisions that are costly to change later (schema, API, migration), or [] when there are none'
+  if (lane.flag !== false && (typeof lane.flag !== 'string' || !lane.flag.trim())) return 'lane needs "flag": the feature flag this ships behind, or false when the human decided on none'
+  return null
+}
+
+// The quality gate's results count when lint ran clean on this code and every
+// slop signal in the diff was removed or stands with a recorded reason.
+export function qualityProblem(q) {
+  const lint = q.lint ?? []
+  if (!lint.length && !q.no_lint) return 'no lint command ran on the changed files; run quality.mjs with --lint \'<command>\', or --no-lint "<why this repo has none>"'
+  const failed = lint.filter(l => l.exit !== 0)
+  if (failed.length) return `lint failed: ${failed.map(l => l.command).join('; ')}. Fix the offenses (not the rule) and run quality.mjs again`
+  const open = Object.entries(q.flags ?? {}).filter(([id]) => !q.dispositions?.[id]).map(([id, f]) => `${id} (${f.kind})`)
+  return open.length ? `${open.length} slop signals need a decision: ${open.slice(0, 5).join(', ')}${open.length > 5 ? ', …' : ''}. Remove each and run quality.mjs again, or record why it stands: loop.mjs quality accept <id> "<reason>"` : null
+}
+
+// Every comment a human reviewer left must have become a finding, and the round
+// ends when a human merged or closed the PR.
+export function humanReviewProblem(run) {
+  const fetched = run.human_review?.comments
+  if (!fetched) return 'the human reviewers\' comments were not fetched yet (github.mjs human-comments)'
+  const mine = (run.findings ?? []).filter(f => f.source === 'human-review')
+  const mapped = new Set(mine.map(f => String(f.comment)))
+  const missing = fetched.ids.filter(id => !mapped.has(String(id)))
+  if (missing.length) return `${missing.length} of ${fetched.ids.length} reviewer comments have no finding (ids: ${missing.join(', ')}); record each with "source":"human-review","comment":"<id>"`
+  return findingsProblem(mine) ?? (['MERGED', 'CLOSED'].includes(fetched.pr_state) ? null
+    : `PR ${run.pr} was ${String(fetched.pr_state ?? 'open').toLowerCase()} when the comments were last fetched; the review round ends when a human merges or closes it. Wait (loop.mjs wait human_review human "<what is open>") and fetch again after`)
+}
+
+// What a correction can become, from the most to the least reliable.
+export const CHECK_KINDS = ['lint', 'type', 'test', 'api', 'feature-map', 'prose', 'none']
+// Every correction of this run (a finding that was fixed, a stage that sent work
+// back) is named by a lesson, and each lesson says which check would catch its
+// kind next time, or why none can.
+export function lessonsProblem(run) {
+  const lessons = run.lessons
+  if (!Array.isArray(lessons)) return 'record what this run taught: loop.mjs put lessons \'[{"id":"l1","pattern":"<slug>","from":["r1","back:1"],"check":"lint","proposal":"…"}]\' (\'[]\' when nothing was corrected)'
+  for (const l of lessons) {
+    const name = `lesson ${l?.id ?? '(no id)'}`
+    if (!l?.id) return `${name} needs an id`
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(String(l.pattern ?? ''))) return `${name} needs a pattern: a short lowercase slug naming the kind of mistake, reused when it happens again (missing-empty-state)`
+    if (!Array.isArray(l.from) || !l.from.length) return `${name} needs "from": the finding ids and "back:<n>" rounds it was learned from`
+    if (!CHECK_KINDS.includes(l.check)) return `${name} needs a check (${CHECK_KINDS.join(' | ')})`
+    if (l.check === 'none' ? !l.note : !l.proposal) return l.check === 'none' ? `${name} says no check can catch this; say why (note)` : `${name} names a ${l.check} check; say what it would be (proposal)`
+  }
+  const named = new Set(lessons.flatMap(l => l.from.map(String)))
+  const corrections = [...(run.findings ?? []).filter(f => f.verdict === 'fixed').map(f => String(f.id)), ...(run.history ?? []).map((_, i) => `back:${i + 1}`)]
+  const missing = corrections.filter(c => !named.has(c))
+  return missing.length ? `${missing.length} corrections have no lesson: ${missing.join(', ')}; each fixed finding and each round sent back is named in a lesson's "from"` : null
+}
+
 // Why `stage` may not pass yet, or null. The CLI asks this before every pass.
 export function passProblem(root, run, stage) {
   const tree = headTree(root)
@@ -664,6 +730,7 @@ export function passProblem(root, run, stage) {
       const missing = ['title', 'branch', 'pr', 'base'].filter(k => !run[k])
       if (missing.length) return `record ${missing.join(', ')} first (loop.mjs put …)`
       if (!Array.isArray(run.checks)) return 'record the approved check list (loop.mjs checks set …)'
+      if (laneProblem(run.lane)) return `record the lane the human signed off (loop.mjs put lane …): ${laneProblem(run.lane)}`
       let branch = ''
       try { branch = gitIn(root)('rev-parse', '--abbrev-ref', 'HEAD') } catch {}
       return branch === run.branch ? null : `the checkout is on "${branch}", not the story branch "${run.branch}"`
@@ -673,6 +740,12 @@ export function passProblem(root, run, stage) {
       const open = run.tasks.filter(t => t.status !== 'accepted')
       if (open.length) return `tasks not accepted yet: ${open.map(t => t.title ?? t.id).join(', ')}`
       return dirty(root) ? 'the checkout has uncommitted changes; commit the integrated work first' : null
+    }
+    case 'quality': {
+      const q = run.evidence?.quality
+      if (!q) return 'no quality results for this attempt (run quality.mjs)'
+      if (q.tree !== tree) return 'the quality results cover older code; run quality.mjs again'
+      return qualityProblem(q) ?? (dirty(root) ? 'commit first; the gate covers committed code' : null)
     }
     case 'test_review': {
       const m = run.evidence?.mutants
@@ -720,6 +793,10 @@ export function passProblem(root, run, stage) {
       if (run.ci.state === 'none' && run.ci.required?.length !== 0) return 'no checks reported on HEAD yet and the required checks are unknown; run github.mjs ci again'
       if (run.report?.sha === head && run.report.state !== 'confirmed') return `the report was ${run.report.state}, not confirmed on the PR; run github.mjs report again to reconcile`
       return run.report?.sha === head && run.report.comment_id ? null : 'the report for HEAD is not posted (github.mjs report)'
+    case 'human_review':
+      return humanReviewProblem(run)
+    case 'retro':
+      return lessonsProblem(run)
   }
   return null
 }
@@ -801,6 +878,8 @@ function init(input, diagnostics = false) {
 // for it are asked to stop; a result that arrives anyway is refused as stale.
 function archive(root, run) {
   const cancelled = cancelOps(run)
+  // Every run leaves its line in the ledger, also one that was dropped half way. A ledger that cannot be written never keeps a run from ending.
+  try { appendLedger(root, run, { ended: true }) } catch { /* the run's own record is still kept below */ }
   record(root, 'run.end', { cancelled, stage: current(run) })
   mkdirSync(runDir(root, run), { recursive: true })
   renameSync(paths(root).active, join(runDir(root, run), `run-${Date.now()}.json`))
@@ -881,6 +960,11 @@ function main(argv) {
   const [verb, ...args] = argv
   if (verb === 'init') return init(args.filter(a => a !== '--diagnostics').join(' '), args.includes('--diagnostics'))
   if (verb === 'diagnostics' && args[0] === 'export') return exportDiagnostics(args.slice(1))
+  // The ledger outlives every run, so it is read with or without an active one.
+  if (verb === 'ledger') {
+    const at = findRoot() ?? repoRoot()
+    return console.log(`${ledgerSummary(readLedger(at))}\n\n(${ledgerFile(at)})`)
+  }
   const root = findRoot() ?? fail('no active story-loop run here (loop.mjs init SC-12345)')
   if (verb === 'recover') return recover(root)
   const run = load(root)
@@ -970,6 +1054,20 @@ function command(root, run, verb, args) {
     emit(root, { kind: 'note', text: `mutant ${key} accepted: ${why.join(' ')}` })
     return console.log(`${key} accepted`)
   }
+  // A slop signal that stays in the diff stands only with a reason, like a surviving mutant.
+  if (verb === 'quality') {
+    const [sub, key, ...why] = args
+    sub === 'accept' && key && why.length || fail('usage: loop.mjs quality accept <signal id> "<why it stands>"')
+    update(root, r => {
+      const q = r.evidence?.quality ?? fail('no quality results yet (run quality.mjs)')
+      key in (q.flags ?? {}) || fail(`"${key}" is not a signal of these results`)
+      // The lane's size was the human's sign-off; only they widen it.
+      key === 'size' && !/^human:/i.test(why[0]) && fail('a diff over the lane\'s budget stands only on the human\'s word: loop.mjs quality accept size "human: <their reason>", or split the story')
+      return { ...r, evidence: { ...r.evidence, quality: { ...q, dispositions: { ...q.dispositions, [key]: why.join(' ') } } } }
+    })
+    emit(root, { kind: 'note', text: `quality signal ${key} accepted: ${why.join(' ')}` })
+    return console.log(`${key} accepted`)
+  }
   if (verb === 'checks') {
     const [sub, raw] = args
     sub === 'set' && raw || fail('usage: loop.mjs checks set \'[{"id":"1-desktop","step":1,"case":"desktop"}, …]\'')
@@ -978,7 +1076,7 @@ function command(root, run, verb, args) {
     const problem = checksProblem(checks)
     problem && fail(problem)
     const next = update(root, r => {
-      const at = ids().indexOf(current(r) ?? 'report')
+      const at = ids().indexOf(current(r) ?? ids().at(-1))
       at > ids().indexOf('verify') && fail('verify already passed on the old list; go back to build first')
       return { ...r, checks, checks_revision: (r.checks_revision ?? 0) + 1 }
     })
@@ -993,6 +1091,9 @@ function command(root, run, verb, args) {
     try { value = JSON.parse(raw) } catch { /* a bare string such as a branch name */ }
     if (key === 'environment') { const problem = environmentProblem(value); problem && fail(problem) }
     if (key === 'required_checks') Array.isArray(value) && value.every(n => typeof n === 'string' && n.trim()) || fail('required_checks is a JSON list of check names, e.g. \'["rspec","lint"]\', or \'[]\' for none')
+    if (key === 'lane') { const problem = laneProblem(value); problem && fail(problem) }
+    if (key === 'lessons') Array.isArray(value) || fail('lessons is a JSON list, \'[]\' when nothing was corrected')
+    if (key === 'evidence_sharing') ['pr', 'artifact', 'none'].includes(value) || fail('evidence_sharing is pr (screenshots attached to the PR), artifact (a private page linked from the report) or none')
     let dropped = false
     update(root, r => {
       key === 'branch' && r.branch && r.branch !== value && r.pushed &&
@@ -1064,6 +1165,8 @@ function command(root, run, verb, args) {
     request: now.request?.id, tree: headTree(root), commit: headCommit(root), base: next.base ?? null,
     from_status: before.status, to_status: now.status, rounds: now.rounds, waiting_on: now.waiting_on })
   emit(root, { kind: 'stage', stage, verb, to: arg, text: reason })
+  // The retro is the run's last word on itself: its ledger line carries the lessons.
+  if (verb === 'pass' && stage === 'retro') { try { appendLedger(root, next) } catch (error) { console.error(`loop: the ledger line could not be written (${error.message}); the run is unaffected`) } }
   console.log(status(next))
   if (verb === 'start' && stage === 'verify') {
     const { id, environment } = next.stages.verify.request

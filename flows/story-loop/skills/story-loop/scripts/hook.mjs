@@ -21,7 +21,7 @@ const HEARTBEAT_MS = 60_000
 export const PROFILES = { 'worker-haiku': 'haiku', 'worker-sonnet': 'sonnet', 'worker-opus': 'opus', 'worker-opus-max': 'opus' }
 // Commands with an effect outside this machine. With an unreadable state they are refused.
 const OUTWARD = /\bgit\b[^\n;&|]*\spush\b|\bgh\b[^\n;&|]*\b(pr|api|issue|release)\b/
-const LOOP_WRITE = /loop\.mjs["']?\s+(start|pass|skip|block|wait|back|put|checks|note|end|review|mutant)\b|publish\.mjs|github\.mjs|mutate\.mjs/
+const LOOP_WRITE = /loop\.mjs["']?\s+(start|pass|skip|block|wait|back|put|checks|note|end|review|mutant|quality)\b|publish\.mjs|github\.mjs|mutate\.mjs|quality\.mjs/
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
 // Returns the reason a shell command is refused during a run, or null.
@@ -191,7 +191,9 @@ function main() {
   // ponytail: one tool call running longer than the lease with no other activity still lets it expire.
   if (ours && input.session_id && Date.now() - (run.owner.heartbeat ?? 0) > HEARTBEAT_MS) {
     try {
-      update(root, r => ownerState(r, input.session_id) === 'ours' ? { ...r, owner: { ...r.owner, heartbeat: Date.now() } } : undefined)
+      // The transcripts of the sessions that drove the run are where the ledger reads its token counts.
+      const transcripts = r => input.transcript_path ? [...new Set([...(r.transcripts ?? []), input.transcript_path])] : r.transcripts
+      update(root, r => ownerState(r, input.session_id) === 'ours' ? { ...r, owner: { ...r.owner, heartbeat: Date.now() }, transcripts: transcripts(r) } : undefined)
     } catch { /* a missed heartbeat is retried on the next call */ }
   }
 

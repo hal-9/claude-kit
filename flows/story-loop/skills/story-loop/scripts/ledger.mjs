@@ -1,0 +1,128 @@
+// The ledger: one line per run in .start-story/ledger.jsonl, written whether or
+// not diagnostics are on, kept across stories. It is what the loop learns from:
+// where runs went back, what reviewers found, what the tiers returned, what it
+// cost in tokens, and the lessons the retro stage recorded.
+// ponytail: one file per checkout; a shared store only when several people run the loop.
+import { readFileSync, appendFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+export const ledgerFile = root => join(root, '.start-story', 'ledger.jsonl')
+const VERSION = (() => {
+  try { return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '.claude-plugin', 'plugin.json'), 'utf8')).version } catch { return null }
+})()
+
+const count = (list, key) => list.reduce((acc, item) => { const k = key(item); acc[k] = (acc[k] ?? 0) + 1; return acc }, {})
+const jsonl = file => {
+  try { return readFileSync(file, 'utf8').split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)] } catch { return [] } }) } catch { return [] }
+}
+
+// Every transcript of a session: its own file and whatever its subagents wrote next to it.
+function transcriptFiles(path) {
+  const out = existsSync(path) ? [path] : []
+  const walk = dir => {
+    let entries = []
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith('.jsonl') && out.push(join(dir, e.name))
+  }
+  walk(String(path).replace(/\.jsonl$/, ''))
+  return out
+}
+
+// Tokens by stage and model, from the transcripts the run's sessions wrote.
+// A message belongs to the stage that was started last before it; the stage
+// starts are the board feed's own events. `null` when no transcript is known.
+export function usage(run, events) {
+  const files = [...new Set((run.transcripts ?? []).flatMap(transcriptFiles))]
+  if (!files.length) return null
+  const starts = events.filter(e => e.kind === 'stage' && e.verb === 'start').map(e => [Date.parse(e.ts), e.stage])
+  const stageAt = ts => { let stage = 'setup'; for (const [at, id] of starts) { if (at > ts) break; stage = id } return stage }
+  const from = Date.parse(run.started_at)
+  const seen = new Map() // one API message is written once per content block, with the same usage
+  for (const file of files) for (const row of jsonl(file)) {
+    const u = row.message?.usage
+    const ts = Date.parse(row.timestamp)
+    if (row.type !== 'assistant' || !u || !(ts >= from)) continue
+    seen.set(row.message.id ?? `${file}:${row.uuid}`, { ts, model: row.message.model ?? 'unknown', u })
+  }
+  const by_stage = {}
+  const by_model = {}
+  const add = (bucket, key, u) => {
+    const b = bucket[key] ??= { input: 0, cache_write: 0, cache_read: 0, output: 0 }
+    b.input += u.input_tokens ?? 0; b.cache_write += u.cache_creation_input_tokens ?? 0
+    b.cache_read += u.cache_read_input_tokens ?? 0; b.output += u.output_tokens ?? 0
+  }
+  for (const { ts, model, u } of seen.values()) { add(by_stage, stageAt(ts), u); add(by_model, model, u) }
+  return { messages: seen.size, by_stage, by_model }
+}
+
+// What one run adds to the ledger. Counts only; no code, no findings text beyond the lessons.
+export function ledgerEntry(root, run, { ended = false, now = new Date().toISOString() } = {}) {
+  const events = jsonl(join(root, '.start-story', 'events.jsonl'))
+  const findings = run.findings ?? []
+  const outcomes = Object.values(run.evidence?.mutants?.outcomes ?? {})
+  const current = Object.keys(run.stages).find(id => !['passed', 'skipped'].includes(run.stages[id].status)) ?? null
+  return {
+    run: run.id ?? run.started_at, story: run.story, repo: run.repo ?? null, factory: VERSION, lane: run.lane?.lane ?? null,
+    started_at: run.started_at, recorded_at: now, ended, stage: current, pr: run.pr ?? null, pr_state: run.pr_state?.state ?? null,
+    stages: Object.fromEntries(Object.entries(run.stages).map(([id, s]) => [id, { status: s.status, rounds: s.rounds ?? 0, attempt: s.attempt ?? 1 }])),
+    backs: (run.history ?? []).map(h => ({ from: h.from, to: h.to, reason: h.reason, human: /^human:/i.test(h.reason ?? '') })),
+    findings: count(findings, f => `${f.source ?? 'unknown'}:${f.verdict}`),
+    tasks: count(run.tasks ?? [], t => `${t.tier ?? 'unknown'}:${t.returns ? 'returned' : 'first_time'}`),
+    mutants: outcomes.length ? count(outcomes, o => o) : null,
+    quality: run.evidence?.quality ? { flags: count(Object.values(run.evidence.quality.flags ?? {}), f => f.kind), size: run.evidence.quality.size } : null,
+    checks: Array.isArray(run.checks) ? run.checks.length : null, reviewer: run.reviewer ?? null,
+    lessons: run.lessons ?? [], usage: usage(run, events),
+  }
+}
+
+export function appendLedger(root, run, opts) {
+  const entry = ledgerEntry(root, run, opts)
+  mkdirSync(dirname(ledgerFile(root)), { recursive: true })
+  appendFileSync(ledgerFile(root), JSON.stringify(entry) + '\n')
+  return entry
+}
+
+// The newest line of each run.
+export function readLedger(root) {
+  const byRun = new Map()
+  for (const entry of jsonl(ledgerFile(root))) byRun.set(entry.run, entry)
+  return [...byRun.values()]
+}
+
+const total = b => (b?.input ?? 0) + (b?.cache_write ?? 0) + (b?.cache_read ?? 0) + (b?.output ?? 0)
+const VERIFICATION = ['quality', 'test_review', 'verify', 'second_review', 'copilot_review', 'fix_comments']
+
+// What the runs so far say, in the order it is worth acting on.
+export function summary(entries) {
+  if (!entries.length) return 'the ledger is empty: no run has ended or reached the retro stage in this checkout yet'
+  const lines = [`${entries.length} run${entries.length === 1 ? '' : 's'} · factory versions: ${[...new Set(entries.map(e => e.factory ?? 'unknown'))].join(', ')}`]
+  const patterns = new Map()
+  for (const e of entries) for (const l of e.lessons ?? []) {
+    const p = patterns.get(l.pattern) ?? { runs: new Set(), checks: new Set(), proposal: null }
+    p.runs.add(e.run); p.checks.add(l.check); p.proposal ??= l.proposal ?? null
+    patterns.set(l.pattern, p)
+  }
+  const ranked = [...patterns].sort((a, b) => b[1].runs.size - a[1].runs.size)
+  lines.push('', 'Lessons by how many runs hit them (two or more: build the check now, it keeps recurring):')
+  if (!ranked.length) lines.push('  none recorded yet')
+  for (const [pattern, p] of ranked) lines.push(`  ${String(p.runs.size).padStart(2)}×  ${pattern}  [${[...p.checks].join(', ')}]${p.proposal ? `  → ${p.proposal}` : ''}`)
+  const backs = count(entries.flatMap(e => e.backs ?? []), b => `${b.from} → ${b.to}${b.human ? ' (human)' : ''}`)
+  lines.push('', 'Sent back:', ...(Object.keys(backs).length ? Object.entries(backs).sort((a, b) => b[1] - a[1]).map(([k, n]) => `  ${String(n).padStart(2)}×  ${k}`) : ['  never']))
+  const tiers = {}
+  for (const e of entries) for (const [key, n] of Object.entries(e.tasks ?? {})) {
+    const [tier, how] = key.split(':')
+    const t = tiers[tier] ??= { first_time: 0, returned: 0 }
+    t[how] = (t[how] ?? 0) + n
+  }
+  lines.push('', 'Tasks by tier (returned at least once / all); a tier that is returned often is a tier too low for that work:',
+    ...(Object.keys(tiers).length ? Object.entries(tiers).map(([tier, t]) => `  ${tier.padEnd(8)} ${t.returned} / ${t.returned + t.first_time}`) : ['  none recorded']))
+  const withUsage = entries.filter(e => e.usage)
+  if (withUsage.length) {
+    const all = withUsage.reduce((n, e) => n + Object.values(e.usage.by_stage).reduce((m, b) => m + total(b), 0), 0)
+    const verification = withUsage.reduce((n, e) => n + VERIFICATION.reduce((m, id) => m + total(e.usage.by_stage[id]), 0), 0)
+    lines.push('', `Tokens (${withUsage.length} run${withUsage.length === 1 ? '' : 's'} with a transcript): ${Math.round(all / withUsage.length).toLocaleString('en')} per run, ` +
+      `${all ? Math.round(100 * verification / all) : 0}% in the stages that check the work`)
+  } else lines.push('', 'Tokens: no run recorded a transcript yet')
+  return lines.join('\n')
+}

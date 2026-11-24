@@ -13,7 +13,7 @@ import { repo, withRun, reviewed, B } from './helpers.mjs'
 // The push stage, with the reviews having covered the code that is HEAD now.
 const atPush = dir => {
   update(dir, r => {
-    r.stages.contract.status = 'passed'; r.stages.build.status = 'passed'; r.stages.test_review.status = 'passed'
+    r.stages.contract.status = 'passed'; r.stages.build.status = 'passed'; r.stages.quality.status = 'passed'; r.stages.test_review.status = 'passed'
     r.stages.verify.status = 'passed'; r.stages.second_review.status = 'passed'; r.stages.push.status = 'running'
     return r
   })
@@ -110,7 +110,7 @@ test('H03: a commit made after the reviews is refused before anything reaches th
   const { dir, origin, commit } = repo({ remote: true })
   withRun(dir); atPush(dir)
   commit() // new code no review covered
-  assert.throws(() => publish(dir), /test_review, verify, second_review covered older code.*nothing was pushed/)
+  assert.throws(() => publish(dir), /quality, test_review, verify, second_review covered older code.*nothing was pushed/)
   assert.equal(remoteRef(origin, `refs/heads/${B}`), null)
   assert.equal(load(dir).pushed, undefined)
   // the contract push opens the draft PR before any review exists

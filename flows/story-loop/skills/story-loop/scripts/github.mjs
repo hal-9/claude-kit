@@ -4,6 +4,7 @@
 //   node github.mjs copilot-request              ask Copilot to review the published commit
 //   node github.mjs copilot-wait [--minutes 30]  wait for that review (bounded); exit 3 on timeout
 //   node github.mjs comments                     the Copilot review's top-level comments, one JSON per line
+//   node github.mjs human-comments               what human reviewers wrote, one JSON per line, and the PR's state
 //   node github.mjs ci                           required checks on the PR head; exit 0 only when they pass
 // Every call names the run's repository; gh's default repo and GH_REPO play no part.
 //   node github.mjs report --body-file <f> [--attach <img>]...   create or update the one report comment
@@ -184,6 +185,27 @@ export function comments(root) {
   return list
 }
 
+// What human reviewers wrote on the PR, on any commit: top-level inline comments
+// and review bodies. Each is one thing human_review has to account for. The PR's
+// state is read in the same call, so "merged, and nothing left unanswered" is one fact.
+export function humanComments(root) {
+  const run = load(root)
+  const ctx = begin(root, run, 'human-comments', 'human_review')
+  const repo = repoOf(run)
+  const pr = JSON.parse(gh(['pr', 'view', String(run.pr), '-R', repo, '--json', 'state,isDraft'], root))
+  observe(root, run, pr)
+  const human = c => c.user && c.type !== 'Bot' && !isCopilot(c.user)
+  const inline = paged(root, `repos/${repo}/pulls/${run.pr}/comments?per_page=100`,
+    '{id, reply_to: .in_reply_to_id, user: .user.login, type: .user.type, path, line, commit: .commit_id, body}')
+    .filter(c => !c.reply_to && human(c)).map(c => ({ ...c, id: String(c.id) }))
+  const reviews = paged(root, `repos/${repo}/pulls/${run.pr}/reviews?per_page=100`, '{id, user: .user.login, type: .user.type, state, body, commit: .commit_id}')
+    .filter(r => human(r) && r.state !== 'PENDING' && String(r.body ?? '').trim()).map(r => ({ ...r, id: `review-${r.id}` }))
+  const list = [...inline, ...reviews]
+  const fetched = { ids: list.map(c => c.id), pr_state: pr.state, at: new Date().toISOString() }
+  opUpdate(root, ctx, r => ({ ...r, human_review: { ...r.human_review, comments: fetched } }), fetched)
+  return { state: pr.state, draft: pr.isDraft ?? null, list }
+}
+
 // The PR's checks as gh lists them; only the ones GitHub labels required, or all.
 function prChecks(root, run, required) {
   // gh exits non-zero when checks fail or are pending, and still prints the JSON.
@@ -316,6 +338,11 @@ async function main([cmd, ...args]) {
       return console.log(`Copilot reviewed ${review.commit_id.slice(0, 7)} (review ${review.id})`)
     }
     case 'comments': return comments(root).forEach(c => console.log(JSON.stringify(c)))
+    case 'human-comments': {
+      const { state, draft, list } = humanComments(root)
+      list.forEach(c => console.log(JSON.stringify(c)))
+      return console.log(`PR is ${state}${draft ? ' (draft)' : ''} · ${list.length} reviewer comment${list.length === 1 ? '' : 's'}`)
+    }
     case 'ci': {
       const result = ci(root)
       console.log(`required CI on ${result.sha.slice(0, 7)}: ${result.state}${result.checks.length ? '' : ' (no required checks)'}`)
@@ -330,7 +357,7 @@ async function main([cmd, ...args]) {
       const attach = args.flatMap((a, i) => a === '--attach' ? [args[i + 1]] : [])
       return console.log(`report comment ${report(root, bodyFile, attach)}`)
     }
-    default: fail('usage: github.mjs copilot-request | copilot-wait [--minutes n] | comments | ci | report --body-file <f> [--attach img]...')
+    default: fail('usage: github.mjs copilot-request | copilot-wait [--minutes n] | comments | human-comments | ci | report --body-file <f> [--attach img]...')
   }
 }
 

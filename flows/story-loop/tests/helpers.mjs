@@ -36,10 +36,13 @@ export function repo({ remote = false, branch = B } = {}) {
   return { dir, git, origin, commit }
 }
 
+// The lane a contract records: how much planning and how large a diff was signed off.
+export const LANE = { lane: 'standard', why: 'a page and its query; cheap to change later', hard: [], flag: false }
+
 // A run in `dir`, with the fields a contract records.
 export function withRun(dir, patch = {}) {
   mkdirSync(join(dir, '.start-story'), { recursive: true })
-  const run = { ...newRun('sc-1'), title: 'Thing', branch: B, pr: 7, base: 'main', repo: 'acme/app', checks: [], ...patch }
+  const run = { ...newRun('sc-1'), title: 'Thing', branch: B, pr: 7, base: 'main', repo: 'acme/app', checks: [], lane: LANE, ...patch }
   save(dir, run)
   return run
 }

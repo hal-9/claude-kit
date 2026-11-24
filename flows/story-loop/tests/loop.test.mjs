@@ -9,8 +9,11 @@ import {
   newRun, move, current, stopReason, GRAPH, verifyProblem, resultsFile, evidenceDir, storyId, issueRepo, remoteRepo,
   load, save, update, withLock, migrate, passProblem, findingsProblem, readInbox, addNote, deliver, staleStages,
   verifyRequest, commentsProblem, mutantsProblem, imageProblem, verifyReport, environmentProblem,
+  FRESH, runProblem, laneProblem, qualityProblem, humanReviewProblem, lessonsProblem,
 } from '../skills/story-loop/scripts/loop.mjs'
-import { repo, withRun, PNG, B, ENV, META } from './helpers.mjs'
+import { readLedger, summary, usage } from '../skills/story-loop/scripts/ledger.mjs'
+import { signalsFor } from '../skills/story-loop/scripts/quality.mjs'
+import { repo, withRun, PNG, B, ENV, META, LANE } from './helpers.mjs'
 
 const LOOP = fileURLToPath(new URL('../skills/story-loop/scripts/loop.mjs', import.meta.url))
 const done = (run, ...stages) => stages.reduce((r, s) => move(move(r, 'start', s), 'pass', s), run)
@@ -47,7 +50,7 @@ test('stages run in graph order only', () => {
 })
 
 test('back follows graph edges, resets later stages, keeps old evidence as history, and is capped', () => {
-  let run = done(newRun('sc-1'), 'contract', 'build', 'test_review', 'verify')
+  let run = done(newRun('sc-1'), 'contract', 'build', 'quality', 'test_review', 'verify')
   run.evidence = { mutants: { killed: 3 } }
   run = move(run, 'start', 'second_review')
   assert.throws(() => move(run, 'back', 'second_review', 'contract', 'x'), /no edge/)
@@ -60,7 +63,7 @@ test('back follows graph edges, resets later stages, keeps old evidence as histo
   assert.deepEqual(run.evidence, {})
   assert.deepEqual(run.history.at(-1).evidence, { mutants: { killed: 3 } })
   run.stages.build.rounds = GRAPH.maxRounds
-  run = move(done(run, 'build'), 'start', 'test_review')
+  run = move(done(run, 'build', 'quality'), 'start', 'test_review')
   assert.throws(() => move(run, 'back', 'test_review', 'build', 'again'), /show the human/)
 })
 
@@ -68,14 +71,14 @@ test('a human can send a finished run back, and is not capped', () => {
   let run = done(newRun('sc-1'), ...GRAPH.stages.map(s => s.id))
   assert.throws(() => move(run, 'back', 'verify', 'build', 'human: x'), /not the current stage/)
   run.stages.build.rounds = GRAPH.maxRounds
-  run = move(run, 'back', 'report', 'build', 'human: use a scope')
+  run = move(run, 'back', 'retro', 'build', 'human: use a scope')
   assert.equal(current(run), 'build')
   assert.equal(run.stages.build.rounds, GRAPH.maxRounds)
 })
 
 test('skips follow the per-stage policy', () => {
   assert.throws(() => move(newRun('sc-1'), 'skip', 'contract', undefined, 'already started'), /never skipped/)
-  let run = done(newRun('sc-1'), 'contract', 'build', 'test_review')
+  let run = done(newRun('sc-1'), 'contract', 'build', 'quality', 'test_review')
   assert.throws(() => move(run, 'skip', 'verify', undefined, 'no browser available'), /a wait, not a skip/)
   run = move(run, 'skip', 'verify', undefined, 'human: migration only, no page')
   assert.throws(() => move(run, 'skip', 'second_review', undefined, 'human: skip it'), /never skipped/)
@@ -147,7 +150,7 @@ test('going back archives browser results, so an old attempt never passes the ne
   writeFileSync(resultsFile(dir, run), written(run.stages.verify.request.id, [{ id: 'a', step: 1, verdict: 'pass', evidence: ['a.png'], ...META }]))
   assert.equal(verifyProblem(dir, run), null)
   update(dir, r => {
-    for (const id of ['contract', 'build', 'test_review', 'verify']) r.stages[id].status = 'passed'
+    for (const id of ['contract', 'build', 'quality', 'test_review', 'verify']) r.stages[id].status = 'passed'
     r.stages.second_review.status = 'running'
     return r
   })
@@ -201,13 +204,19 @@ test('a corrupt state file is reported, not replaced, and recover restores the l
 test('an old run migrates with its data and no fresh evidence', () => {
   const old = { story: 'sc-9', session: 's1', started_at: 'x', stages: Object.fromEntries(GRAPH.stages.map(s => [s.id, { status: 'passed', rounds: 0 }])), tasks: [1], findings: [], evidence: { mutants: { killed: 1 } } }
   const run = migrate(old)
-  assert.equal(run.schema, 2)
+  assert.equal(run.schema, 3)
   assert.equal(run.migrated_from, 1)
   assert.deepEqual(run.owner, { session: 's1', since: 'x', heartbeat: 0 })
   assert.deepEqual(run.tasks, [1])
   assert.equal(run.stages.verify.tree, undefined)
   // H18: passed stages that name no code tree prove nothing about the code now
-  assert.deepEqual(staleStages(mkdtempSync(join(tmpdir(), 'sl-old-')), run, 'any-tree'), ['test_review', 'verify', 'second_review'])
+  assert.deepEqual(staleStages(mkdtempSync(join(tmpdir(), 'sl-old-')), run, 'any-tree'), FRESH)
+  // a 0.9 run (schema 2) keeps its owner and stops at the stage the graph gained since
+  const { quality, human_review, retro, ...nine } = Object.fromEntries(GRAPH.stages.map(s => [s.id, { status: 'passed', rounds: 0, attempt: 1, tree: 't' }]))
+  const from9 = migrate({ schema: 2, story: 'sc-9', started_at: 'x', owner: { session: 's2' }, stages: nine })
+  assert.deepEqual([from9.migrated_from, from9.owner.session, current(from9), from9.stages.verify.tree], [2, 's2', 'quality', 't'])
+  // something that is not a run is not turned into one
+  assert.match(runProblem(migrate({ story: 'sc-9' })), /no stages/)
 })
 
 test('findings need a severity and a settled verdict with its reason or fix', () => {
@@ -227,6 +236,7 @@ test('stages pass on evidence, not on a success message', () => {
   assert.match(passProblem(dir, run, 'contract'), /check list/)
   run = withRun(dir)
   git('checkout', '-q', 'main')
+  assert.match(passProblem(dir, { ...run, lane: undefined }, 'contract'), /record the lane/)
   assert.match(passProblem(dir, run, 'contract'), /on "main", not the story branch/)
   git('checkout', '-q', B)
   assert.equal(passProblem(dir, run, 'contract'), null)
@@ -272,15 +282,15 @@ test('a code change after the reviews makes their evidence stale until the run g
   const tree = git('rev-parse', 'HEAD^{tree}')
   const head = git('rev-parse', 'HEAD')
   const run = withRun(dir)
-  for (const id of ['contract', 'build', 'test_review', 'verify', 'second_review', 'push', 'copilot_review']) run.stages[id].status = 'passed'
-  for (const id of ['test_review', 'verify', 'second_review']) run.stages[id].tree = tree
+  for (const id of ['contract', 'build', 'quality', 'test_review', 'verify', 'second_review', 'push', 'copilot_review']) run.stages[id].status = 'passed'
+  for (const id of FRESH) run.stages[id].tree = tree
   Object.assign(run, { pushed: { state: 'confirmed', sha: head }, ci: { sha: head, state: 'pending' }, copilot: { review: { id: 9 }, comments: { review: 9, ids: [] } } })
   assert.deepEqual(staleStages(dir, run), [])
   assert.match(passProblem(dir, run, 'report'), /required CI is pending/)
   run.ci.state = 'pass'
   assert.match(passProblem(dir, run, 'report'), /report for HEAD is not posted/)
   commit()
-  assert.deepEqual(staleStages(dir, run), ['test_review', 'verify', 'second_review'])
+  assert.deepEqual(staleStages(dir, run), FRESH)
   assert.match(passProblem(dir, run, 'fix_comments'), /covered older code/)
   assert.match(passProblem(dir, run, 'report'), /covered older code/)
 })
@@ -334,7 +344,7 @@ test('the CLI refuses a pass without evidence', () => {
 function atVerify() {
   const r = repo()
   withRun(r.dir, { checks: [{ id: 'a', step: 1 }], checks_revision: 1, browser: 'chrome', environment: ENV })
-  update(r.dir, run => { run.stages.contract.status = 'passed'; run.stages.build.status = 'passed'; Object.assign(run.stages.test_review, { status: 'skipped', reason: 'template only' }); return run })
+  update(r.dir, run => { for (const id of ['contract', 'build', 'quality']) run.stages[id].status = 'passed'; Object.assign(run.stages.test_review, { status: 'skipped', reason: 'template only' }); return run })
   const report = (request, row = {}) => {
     const run = load(r.dir)
     mkdirSync(evidenceDir(r.dir, run), { recursive: true })
@@ -392,7 +402,7 @@ test('H01: a new run of the same story never passes on the previous run\'s brows
   assert.equal(cli(dir, 'end').status, 0)
   assert.equal(cli(dir, 'init', 'sc-1').status, 0)
   assert.ok(existsSync(join(dir, '.start-story', 'sc-1', 'results.json')), 'the old results are still on disk')
-  update(dir, run => { Object.assign(run, { checks: [{ id: 'a', step: 1 }], checks_revision: 1, browser: 'chrome', environment: ENV }); run.stages.contract.status = 'passed'; run.stages.build.status = 'passed'; run.stages.test_review.status = 'skipped'; return run })
+  update(dir, run => { Object.assign(run, { checks: [{ id: 'a', step: 1 }], checks_revision: 1, browser: 'chrome', environment: ENV }); run.stages.contract.status = 'passed'; run.stages.build.status = 'passed'; run.stages.quality.status = 'passed'; run.stages.test_review.status = 'skipped'; return run })
   assert.equal(cli(dir, 'start', 'verify').status, 0)
   assert.match(cli(dir, 'pass', 'verify').stderr, /0 of 1 checks reported/)
 })
@@ -709,4 +719,153 @@ test('R8: recover checks what a file is, not only that it parses, and restores o
   assert.equal(JSON.parse(readFileSync(join(dir, '.start-story', 'active.prev.json'), 'utf8')).story, 'sc-1')
   // already valid: nothing to do
   assert.match(cli(dir, 'recover').stdout, /nothing to recover/)
+})
+
+// ---- 0.10: lane, quality gate, human review, retro and the ledger ---------------------
+
+const QUALITY = fileURLToPath(new URL('../skills/story-loop/scripts/quality.mjs', import.meta.url))
+const quality = (cwd, ...args) => spawnSync('node', [QUALITY, ...args], { cwd, encoding: 'utf8' })
+
+test('the lane is signed off with why, the hard decisions and the flag question answered', () => {
+  assert.equal(laneProblem(LANE), null)
+  assert.equal(laneProblem({ lane: 'heavy', why: 'a new column', hard: ['users.plan is a string enum'], flag: 'plans_v2' }), null)
+  for (const [lane, why] of [[undefined, /JSON object/], [{ ...LANE, lane: 'huge' }, /one of: light, standard, heavy/], [{ ...LANE, why: ' ' }, /needs why/],
+    [{ ...LANE, hard: undefined }, /needs "hard"/], [{ ...LANE, flag: undefined }, /needs "flag"/], [{ ...LANE, flag: '' }, /needs "flag"/]])
+    assert.match(laneProblem(lane), why)
+  const { dir } = repo()
+  withRun(dir)
+  assert.match(cli(dir, 'put', 'lane', '{"lane":"standard"}').stderr, /needs why/)
+  assert.equal(cli(dir, 'put', 'lane', JSON.stringify({ ...LANE, lane: 'light' })).status, 0)
+  assert.equal(load(dir).lane.lane, 'light')
+})
+
+test('slop signals are read from added lines; a skipped test counts only in a test file', () => {
+  assert.deepEqual(Object.keys(signalsFor('app/a.rb', [[3, 'x = 1 # rubocop:disable Style/Foo'], [4, '# TODO: for now'], [5, 'it.skip("x")'], [6, 'temporary_value = a * b']])),
+    ['app/a.rb:3:lint-disable', 'app/a.rb:4:workaround-comment'])
+  assert.deepEqual(Object.keys(signalsFor('spec/a_spec.rb', [[1, "  xit 'works' do"], [2, "  skip 'later'"], [3, "  it 'skips nothing' do"]])),
+    ['spec/a_spec.rb:1:skipped-test', 'spec/a_spec.rb:2:skipped-test'])
+  assert.deepEqual(Object.keys(signalsFor('src/a.test.ts', [[1, 'describe.only("x", () => {'], [2, '// @ts-expect-error wrong type on purpose']])),
+    ['src/a.test.ts:1:skipped-test', 'src/a.test.ts:2:lint-disable'])
+})
+
+test('the quality gate passes only with clean lint and every signal removed or accepted, for this exact code', () => {
+  const { dir, git, commit } = repo()
+  withRun(dir)
+  update(dir, r => { r.stages.contract.status = 'passed'; r.stages.build.status = 'passed'; return r })
+  commit('calc.rb', 'def a\n  1 # rubocop:disable Lint/Foo\nend\n')
+  assert.equal(cli(dir, 'start', 'quality').status, 0)
+  assert.match(cli(dir, 'pass', 'quality').stderr, /no quality results/)
+  assert.match(quality(dir).stderr, /name the lint command/)
+  // a failing linter is not waved through
+  assert.equal(quality(dir, '--lint', 'echo offense; exit 3').status, 1)
+  assert.match(cli(dir, 'pass', 'quality').stderr, /lint failed: echo offense; exit 3/)
+  // clean lint, one signal: it needs a decision
+  assert.match(quality(dir, '--lint', 'true').stdout, /SIGNAL\s+calc\.rb:2:lint-disable/)
+  assert.match(cli(dir, 'pass', 'quality').stderr, /1 slop signals need a decision: calc\.rb:2:lint-disable/)
+  assert.match(cli(dir, 'quality', 'accept', 'calc.rb:9:nope', 'x').stderr, /not a signal of these results/)
+  assert.equal(cli(dir, 'quality', 'accept', 'calc.rb:2:lint-disable', 'the cop misreads this DSL').status, 0)
+  // a second run on the same code keeps the reason
+  const again = quality(dir, '--lint', 'true')
+  assert.equal(again.status, 0)
+  assert.match(again.stdout, /accepted\s+calc\.rb:2:lint-disable[\s\S]*quality gate: clean/)
+  assert.equal(cli(dir, 'pass', 'quality').status, 0)
+  assert.equal(load(dir).stages.quality.tree, git('rev-parse', 'HEAD^{tree}'))
+  // a later commit: the gate covered other code
+  commit('calc.rb', 'def a\n  2\nend\n')
+  assert.deepEqual(staleStages(dir, load(dir)), ['quality'])
+  assert.match(passProblem(dir, load(dir), 'quality'), /cover older code/)
+  // a reason given for other code is not carried over
+  commit('calc.rb', 'def a\n  3 # rubocop:disable Lint/Foo\nend\n')
+  assert.equal(quality(dir, '--no-lint', 'no linter for this file type').status, 1)
+  assert.deepEqual(load(dir).evidence.quality.dispositions, {})
+})
+
+test('a diff larger than the signed-off lane is a signal the human has to accept', () => {
+  const { dir, commit } = repo()
+  withRun(dir, { lane: { ...LANE, lane: 'light' } })
+  commit('big.rb', Array.from({ length: 200 }, (_, i) => `puts ${i}`).join('\n') + '\n')
+  commit('Gemfile.lock', 'x\n'.repeat(900)) // generated files do not count
+  const out = quality(dir, '--no-lint', 'no linter here')
+  assert.match(out.stdout, /SIGNAL\s+size\s+200 changed lines; the light lane was signed off for 150/)
+  assert.match(qualityProblem(load(dir).evidence.quality), /size \(size\)/)
+  assert.match(cli(dir, 'quality', 'accept', 'size', 'it is fine').stderr, /only on the human's word/)
+  assert.equal(cli(dir, 'quality', 'accept', 'size', 'human: generated fixtures, keep it in one PR').status, 0)
+  assert.equal(qualityProblem(load(dir).evidence.quality), null)
+})
+
+test('the human review round ends at merge with every reviewer comment settled', () => {
+  const run = { ...newRun('sc-1'), pr: 7 }
+  assert.match(humanReviewProblem(run), /not fetched yet/)
+  run.human_review = { comments: { ids: ['11', 'review-5'], pr_state: 'OPEN' } }
+  assert.match(humanReviewProblem(run), /2 of 2 reviewer comments have no finding/)
+  run.findings = [{ id: 'h1', source: 'human-review', comment: '11', severity: 'major', verdict: 'fix_requested' },
+    { id: 'h2', source: 'human-review', comment: 'review-5', severity: 'question', verdict: 'rejected', note: 'answered in the thread' }]
+  assert.match(humanReviewProblem(run), /h1 is fix_requested/)
+  run.findings[0] = { ...run.findings[0], verdict: 'fixed', commit: 'abc' }
+  assert.match(humanReviewProblem(run), /was open when the comments were last fetched/)
+  run.human_review.comments.pr_state = 'MERGED'
+  assert.equal(humanReviewProblem(run), null)
+  // the human may take the review from here; the retro is never skipped
+  const at = done(newRun('sc-1'), ...GRAPH.stages.slice(0, -2).map(s => s.id))
+  assert.equal(current(at), 'human_review')
+  assert.throws(() => move(at, 'skip', 'human_review', undefined, 'nobody commented'), /human's say-so/)
+  const skipped = move(at, 'skip', 'human_review', undefined, 'human: I take the review from here')
+  assert.throws(() => move(skipped, 'skip', 'retro', undefined, 'human: no time'), /never skipped/)
+})
+
+test('the retro names a lesson for every correction, and each run leaves one line in the ledger', () => {
+  const { dir } = repo()
+  withRun(dir, {
+    findings: [{ id: 'r1', source: 'codex', severity: 'major', verdict: 'fixed', commit: 'abc' }, { id: 'r2', source: 'codex', severity: 'nit', verdict: 'rejected', note: 'cosmetic' }],
+    history: [{ at: 'x', from: 'second_review', to: 'build', reason: 'empty state missing', evidence: {} }],
+    tasks: [{ id: 't1', tier: 'sonnet', status: 'accepted', returns: 1 }, { id: 't2', tier: 'haiku', status: 'accepted' }],
+  })
+  update(dir, r => { for (const s of Object.values(r.stages)) s.status = 'passed'; r.stages.retro.status = 'pending'; return r })
+  assert.equal(cli(dir, 'start', 'retro').status, 0)
+  assert.match(cli(dir, 'pass', 'retro').stderr, /record what this run taught/)
+  const lesson = over => ({ id: 'l1', pattern: 'missing-empty-state', from: ['r1', 'back:1'], check: 'test', proposal: 'request spec for a shelf with no flows', ...over })
+  const refused = lessons => { cli(dir, 'put', 'lessons', JSON.stringify(lessons)); return cli(dir, 'pass', 'retro').stderr }
+  assert.match(refused([]), /2 corrections have no lesson: r1, back:1/)
+  assert.match(refused([lesson({ pattern: 'Missing Empty State' })]), /needs a pattern/)
+  assert.match(refused([lesson({ check: 'vibes' })]), /needs a check \(lint \| type \| test/)
+  assert.match(refused([lesson({ proposal: undefined })]), /say what it would be/)
+  assert.match(refused([lesson({ check: 'none', proposal: undefined })]), /say why/)
+  assert.match(refused([lesson({ from: ['r1'] })]), /1 corrections have no lesson: back:1/)
+  cli(dir, 'put', 'lessons', JSON.stringify([lesson()]))
+  assert.equal(cli(dir, 'pass', 'retro').status, 0)
+  const [entry] = readLedger(dir)
+  assert.deepEqual([entry.story, entry.lane, entry.ended, entry.stage, entry.lessons[0].pattern, entry.backs[0].from, entry.findings['codex:fixed'], entry.tasks['sonnet:returned'], entry.usage],
+    ['sc-1', 'standard', false, null, 'missing-empty-state', 'second_review', 1, 1, null])
+  assert.match(entry.factory, /^\d+\.\d+\.\d+$/)
+  // ending the run writes its line again; the ledger reads one line per run, and outlives the run
+  assert.equal(cli(dir, 'end').status, 0)
+  assert.deepEqual(readLedger(dir).map(e => e.ended), [true])
+  const text = cli(dir, 'ledger').stdout
+  assert.match(text, /1 run · factory versions/)
+  assert.match(text, /1×  missing-empty-state  \[test\]  → request spec for a shelf with no flows/)
+  assert.match(text, /1×  second_review → build/)
+  assert.match(text, /sonnet\s+1 \/ 1\n\s+haiku\s+0 \/ 1/)
+  assert.match(summary([]), /the ledger is empty/)
+})
+
+test('token usage is read from the sessions\' transcripts, once per message, under the stage that was running', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-usage-'))
+  const transcript = join(dir, 's1.jsonl')
+  mkdirSync(join(dir, 's1', 'subagents'), { recursive: true })
+  const row = (id, ts, model, output) => JSON.stringify({ type: 'assistant', timestamp: ts, message: { id, model, usage: { input_tokens: 1, cache_read_input_tokens: 10, cache_creation_input_tokens: 5, output_tokens: output } } })
+  writeFileSync(transcript, [row('m0', '2026-01-01T00:00:00Z', 'fable', 9), // before the run started
+    row('m1', '2026-01-01T01:00:10Z', 'fable', 100), row('m1', '2026-01-01T01:00:11Z', 'fable', 100), // one message, written once per content block
+    '{"type":"user"}', 'cut off {', row('m2', '2026-01-01T01:10:00Z', 'fable', 7)].join('\n'))
+  writeFileSync(join(dir, 's1', 'subagents', 'agent-a.jsonl'), row('m3', '2026-01-01T01:11:00Z', 'opus', 50))
+  const run = { started_at: '2026-01-01T01:00:00Z', transcripts: [transcript, join(dir, 'gone.jsonl')] }
+  const events = [{ kind: 'stage', verb: 'start', stage: 'build', ts: '2026-01-01T01:00:05Z' }, { kind: 'stage', verb: 'pass', stage: 'build', ts: '2026-01-01T01:04:00Z' },
+    { kind: 'stage', verb: 'start', stage: 'verify', ts: '2026-01-01T01:05:00Z' }]
+  const u = usage(run, events)
+  assert.equal(u.messages, 3)
+  assert.deepEqual(u.by_stage.build, { input: 1, cache_write: 5, cache_read: 10, output: 100 })
+  assert.equal(u.by_stage.verify.output, 57)
+  assert.deepEqual(Object.keys(u.by_model).sort(), ['fable', 'opus'])
+  assert.equal(usage({ started_at: 'x' }, []), null)
+  // build 116, verify 23 + 66: 89 of 205 tokens went into checking
+  assert.match(summary([{ run: 'a', usage: u, lessons: [], backs: [], tasks: {} }]), /Tokens \(1 run with a transcript\): 205 per run, 43% in the stages that check the work/)
 })

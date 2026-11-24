@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { load, update } from '../skills/story-loop/scripts/loop.mjs'
 import { repo, withRun, B } from './helpers.mjs'
-import { passProblem } from '../skills/story-loop/scripts/loop.mjs'
+import { passProblem, FRESH } from '../skills/story-loop/scripts/loop.mjs'
 import { readEvents, diagDir } from '../skills/story-loop/scripts/diag.mjs'
 
 const dir = mkdtempSync(join(tmpdir(), 'sl-fakegh-'))
@@ -425,7 +425,7 @@ test('H14: a report that could not be posted stays "attempted" and does not pass
   const head = git('rev-parse', 'HEAD')
   withRun(root, { pushed: { state: 'confirmed', sha: head }, ci: { sha: head, state: 'pass', required: [] } })
   update(root, r => { for (const s of Object.values(r.stages)) s.status = 'passed'; r.stages.copilot_review.status = 'skipped'; r.stages.report.status = 'running'; return r })
-  for (const id of ['test_review', 'verify', 'second_review']) update(root, r => { r.stages[id].tree = git('rev-parse', 'HEAD^{tree}'); return r })
+  for (const id of FRESH) update(root, r => { r.stages[id].tree = git('rev-parse', 'HEAD^{tree}'); return r })
   const body = join(root, 'body.md'); writeFileSync(body, 'x')
   rules([view({ headRefOid: head }), { match: '^api user', stdout: 'bot\n', times: 9 }, { match: 'issues/7/comments', stdout: '', times: 9 },
     { match: 'pr comment 7', stderr: 'HTTP 403: Resource not accessible', code: 1, times: 9 }])
@@ -436,4 +436,22 @@ test('H14: a report that could not be posted stays "attempted" and does not pass
   assert.match(passProblem(root, load(root), 'report'), /not posted/)
   update(root, r => ({ ...r, report: { state: 'confirmed', sha: head, comment_id: 9 } }))
   assert.equal(passProblem(root, load(root), 'report'), null)
+})
+
+test('human review: what counts are the humans\' top-level threads and review bodies, with the PR state read in the same call', () => {
+  const root = published()
+  rules([{ match: 'pr view 7 -R acme/app --json state,isDraft', stdout: JSON.stringify({ state: 'MERGED', isDraft: false }) },
+    { match: 'api --paginate repos/acme/app/pulls/7/comments', stdout: jsonl([
+      { id: 11, reply_to: null, user: 'ada', type: 'User', path: 'a.rb', line: 3, body: 'what about a shelf with no flows?' },
+      { id: 12, reply_to: 11, user: 'ada', type: 'User', body: 'a reply is conversation' },
+      { id: 13, reply_to: null, user: 'copilot-pull-request-reviewer[bot]', type: 'Bot', body: 'a bot is not a human reviewer' }]) },
+    { match: 'api --paginate repos/acme/app/pulls/7/reviews', stdout: jsonl([
+      { id: 5, user: 'ada', type: 'User', state: 'CHANGES_REQUESTED', body: 'see the comments' },
+      { id: 6, user: 'ada', type: 'User', state: 'APPROVED', body: '' },
+      { id: 7, user: 'ada', type: 'User', state: 'PENDING', body: 'not submitted yet' }]) }])
+  const { state, list } = gh.humanComments(root)
+  assert.deepEqual([state, list.map(c => c.id)], ['MERGED', ['11', 'review-5']])
+  const run = load(root)
+  assert.deepEqual([run.human_review.comments.ids, run.human_review.comments.pr_state, run.pr_state.state], [['11', 'review-5'], 'MERGED', 'MERGED'])
+  assert.ok(calls().every(c => /acme\/app/.test(c)), 'every call names the run\'s repository')
 })
