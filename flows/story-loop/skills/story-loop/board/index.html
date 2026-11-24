@@ -1892,7 +1892,8 @@ function openReader(file, question, opener) {
     $('thread').replaceChildren()
     $('r-title').textContent = baseName(file)
     $('r-dir').textContent = dirName(file)
-    $('r-actions').replaceChildren(...ACTIONS.map(([q, text]) => el('button', { type: 'button', dataset: { q }, onclick: () => ask(q) }, text)))
+    $('r-actions').replaceChildren(...ACTIONS.map(([q, text]) => el('button', { type: 'button', dataset: { q }, onclick: () => q === 'diff' ? toggleDiff() : ask(q) }, text)))
+    syncDiffButton()
   }
   if (opener) R.opener = opener
   const wasHidden = $('reader').hidden
@@ -1903,7 +1904,23 @@ function openReader(file, question, opener) {
     $('r-title').focus({ preventScroll: true })
     $('reader').scrollIntoView({ block: 'start', behavior: reduced.matches ? 'auto' : 'smooth' })
   }
-  ask(question)
+  // A card's "Show diff" shows the diff; it never stacks a second copy.
+  const shown = question === 'diff' && diffEntry()
+  if (shown) shown.scrollIntoView({ block: 'nearest', behavior: reduced.matches ? 'auto' : 'smooth' })
+  else ask(question)
+}
+// The diff is one toggle in the reader: shown once, hidden by the next click.
+const diffEntry = () => $('thread').querySelector('.entry[data-q="diff"]')
+function syncDiffButton() {
+  const button = $('r-actions').querySelector('button[data-q="diff"]')
+  if (!button) return
+  const open = !!diffEntry()
+  button.textContent = open ? 'Hide diff' : 'Show diff'
+  button.setAttribute('aria-expanded', String(open))
+}
+function toggleDiff() {
+  const shown = diffEntry()
+  if (shown) { shown.remove(); syncDiffButton() } else ask('diff')
 }
 function closeReader() {
   R.ctrl?.abort()
@@ -1925,6 +1942,8 @@ async function ask(question, custom) {
     el('h3', { class: `entry-q${custom ? ' user' : ''}`, text: custom ? `You asked: ${custom}` : QLABEL[question] }), body)
   $('thread').append(entry)
   if (question === 'diff') {
+    entry.dataset.q = 'diff'
+    syncDiffButton()
     try {
       const res = await fetch(`/api/diff?file=${encodeURIComponent(file)}`)
       const text = await res.text()
