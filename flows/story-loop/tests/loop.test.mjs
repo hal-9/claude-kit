@@ -865,7 +865,8 @@ test('the retro names a lesson for every correction, and each run leaves one lin
   assert.match(refused([lesson({ proposal: undefined })]), /say what it would be/)
   assert.match(refused([lesson({ check: 'none', proposal: undefined })]), /say why/)
   assert.match(refused([lesson({ from: ['r1'] })]), /1 corrections have no lesson: back:1/)
-  cli(dir, 'put', 'lessons', JSON.stringify([lesson()]))
+  // a judgement call no machine can check becomes a rule for the reviewer
+  cli(dir, 'put', 'lessons', JSON.stringify([lesson({ check: 'review', proposal: 'review aspect: a removal takes the same lock as publish' })]))
   assert.equal(cli(dir, 'pass', 'retro').status, 0)
   const [entry] = readLedger(dir)
   assert.deepEqual([entry.story, entry.lane, entry.ended, entry.stage, entry.lessons[0].pattern, entry.backs[0].from, entry.findings['codex:fixed'], entry.tasks['sonnet:returned'], entry.usage],
@@ -876,7 +877,7 @@ test('the retro names a lesson for every correction, and each run leaves one lin
   assert.deepEqual(readLedger(dir).map(e => e.ended), [true])
   const text = cli(dir, 'ledger').stdout
   assert.match(text, /1 run · factory versions/)
-  assert.match(text, /1×  missing-empty-state  \[test\]  → request spec for a shelf with no flows/)
+  assert.match(text, /1×  missing-empty-state  \[review\]  → review aspect: a removal takes the same lock as publish/)
   assert.match(text, /1×  second_review → build/)
   assert.match(text, /sonnet\s+1 \/ 1\n\s+haiku\s+0 \/ 1/)
   assert.match(summary([]), /the ledger is empty/)

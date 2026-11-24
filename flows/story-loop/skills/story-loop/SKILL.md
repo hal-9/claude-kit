@@ -1042,10 +1042,15 @@ LOOP put lessons '[{"id":"l1","pattern":"missing-empty-state","from":["r2","back
   `lint` (a rule, with an error message that names the root-cause fix),
   `type`, `test` (a test or a test template), `api` (make the wrong thing
   impossible to write: a helper, a banned call, a directory boundary),
+  `review` (a judgement call no machine can make: a rule the standards
+  reviewer reads, as a review aspect or a `.devloops` angle with its prompt),
   `feature-map` (the verifier had to discover it), `prose` (a line in
   AGENTS.md or this skill — the last resort: it is not enforceable), or `none`.
 - `proposal`: what the check would be, concretely enough to build. `none`
-  takes a `note` saying why nothing can catch it.
+  takes a `note` saying why nothing can catch it. Read the repo's own checks
+  first (its lint and test scripts, pre-commit hooks, CI workflow): when one
+  that would have caught it exists but is not wired up or is silently broken,
+  that is the proposal, not a new check.
 - Nothing was corrected → `LOOP put lessons '[]'`.
 
 Do not build the checks in this story's branch: they are their own change.

@@ -840,7 +840,7 @@ export function humanReviewProblem(run) {
 }
 
 // What a correction can become, from the most to the least reliable.
-export const CHECK_KINDS = ['lint', 'type', 'test', 'api', 'feature-map', 'prose', 'none']
+export const CHECK_KINDS = ['lint', 'type', 'test', 'api', 'review', 'feature-map', 'prose', 'none']
 // Every correction of this run (a finding that was fixed, a stage that sent work
 // back) is named by a lesson, and each lesson says which check would catch its
 // kind next time, or why none can.
