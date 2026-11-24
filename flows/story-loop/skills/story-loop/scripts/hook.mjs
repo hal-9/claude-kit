@@ -78,6 +78,18 @@ export function checkAgent({ subagent_type: type = 'general-purpose', model } = 
   return null
 }
 
+// Front-end work is briefed with modern-web-guidance in hand: the conductor runs the
+// skill before the first worker brief in build that names an HTML, CSS or client-side JS file.
+// ponytail: file extensions in the brief decide what is front-end work; a brief naming no file is not caught.
+const FRONTEND = /\.(html?|haml|erb|slim|css|scss|sass|[cm]?jsx?|tsx?|vue|svelte)\b/i
+export function guidanceProblem(ti = {}, run = {}) {
+  if (run.web_guidance || !run.stages || current(run) !== 'build') return null
+  if (!/^(story-loop:)?worker-/.test(ti.subagent_type ?? '') || !FRONTEND.test(String(ti.prompt ?? ''))) return null
+  return 'story-loop: this brief names front-end files and modern-web-guidance has not run for this story. ' +
+    'Run the modern-web-guidance skill now and put the patterns it returns into the brief as concrete specs; ' +
+    'only where the human says it cannot be used: loop.mjs put web_guidance "human: <why>".'
+}
+
 // A refusal never reaches the tool, so no later hook sees it: it is recorded here,
 // before the exit. record() cannot throw, so a recording failure never weakens a denial.
 let DENIED = null // { root, tool, tool_use_id } once the checkout of the event is known
@@ -227,8 +239,11 @@ function main() {
         deny(`story-loop: session ${run.owner?.session} took over run ${run.story}; this session and its workers no longer change its code. Stop here and report what you had done.`)
       // Every refusal is decided before any write, so a busy lock can never turn one into an allow.
       if (tool === 'Agent' || tool === 'Task') {
-        const refused = (ours || state === 'unowned') && checkAgent(ti)
+        const refused = (ours || state === 'unowned') && (checkAgent(ti) ?? guidanceProblem(ti, run))
         if (refused) deny(refused)
+      }
+      if (tool === 'Skill' && ours && /(^|:)modern-web-guidance$/.test(String(ti.skill ?? '')) && !run.web_guidance) {
+        try { update(root, r => r.web_guidance ? undefined : { ...r, web_guidance: 'used' }) } catch { /* recorded on its next run */ }
       }
       // The first session to drive loop.mjs owns an unowned run.
       if (!input.agent_id && input.session_id && state === 'unowned' && tool === 'Bash' && /loop\.mjs/.test(command)) {

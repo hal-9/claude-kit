@@ -48,6 +48,9 @@ export const CHECKS = [
   ['start-story skill in this repo', 'the contract stage for a Shortcut story: the signed-off contract and the draft PR', s =>
     s.source === 'github' ? ok('not needed for GitHub issues') : ['.claude', '.github', '.cursor', '.pi'].some(dir => s.exists(join(s.cwd, dir, 'skills/start-story/SKILL.md')))
       ? ok() : blocker('no start-story skill found', 'Sync the shared skills into this repo (ai-hub / agent-bridge), or run story-loop from a repo that has start-story.')],
+  ['modern-web-guidance skill', 'build: front-end briefs carry current web-platform patterns; the hook refuses a worker brief naming HTML, CSS or client-side JS files until the skill has run', s =>
+    [join(homedir(), '.claude'), ...['.claude', '.github', '.cursor', '.pi'].map(dir => join(s.cwd, dir))].some(dir => s.exists(join(dir, 'skills/modern-web-guidance/SKILL.md')))
+      ? ok() : blocker('not installed for Claude Code (user or repo skills)', 'In a terminal: npx skills add GoogleChrome/modern-web-guidance   (pick Claude Code, global). It runs through npx, so it needs Node and network.')],
   ['.start-story/ is gitignored', 'run state, briefs and screenshots live there and must not reach the PR', s =>
     s.run('git', ['check-ignore', '-q', '.start-story/x']).ok ? ok() : blocker('not ignored', 'Add ".start-story/" to .gitignore (or to .git/info/exclude for yourself only).')],
   ['Commits can be signed', 'publish.mjs refuses unsigned commits where signing is switched on', s => {

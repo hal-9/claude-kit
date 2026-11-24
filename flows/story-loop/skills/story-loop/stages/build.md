@@ -16,6 +16,12 @@ from a later stage, the task is only the defects named in the `back` reason.
    (structure, states, which existing components to reuse). Workers never
    invent UI. No design link for a UI story is a gap start-story should have
    grilled; `LOOP wait build human` and ask.
+   Any task that touches HTML, CSS or client-side JS: run the
+   `modern-web-guidance` skill once, before writing the briefs, and put the
+   patterns it returns into them as concrete specs (the native element or API
+   to use, the deprecated one to avoid). The hook refuses a worker brief that
+   names front-end files until the skill has run in this story; only on the
+   human's word that it cannot be used: `LOOP put web_guidance "human: <why>"`.
 3. Break the work into tasks, each with:
    - a self-contained brief: what, where, constraints, definition of done, how
      to verify, the Test Step(s) it serves;

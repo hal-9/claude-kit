@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { checkCommand, checkAgent } from '../skills/story-loop/scripts/hook.mjs'
+import { checkCommand, checkAgent, guidanceProblem } from '../skills/story-loop/scripts/hook.mjs'
 import { newRun, save, load, move, readInbox, writeInbox, LEASE_MS } from '../skills/story-loop/scripts/loop.mjs'
 import { B } from './helpers.mjs'
 
@@ -293,4 +293,27 @@ test('the conductor may also go idle while the loop\'s own helpers run, or when 
   save(codex, run)
   assert.equal(fire(codex, { hook_event_name: 'Stop' }).stdout, '')
   assert.throws(() => move(load(gone), 'wait', 'contract', 'nobody', 'x'), /human \| copilot \| background/)
+})
+
+test('a front-end brief in build waits for modern-web-guidance; running the skill or the human\'s word opens it', () => {
+  const inBuild = (patch = {}) => { const run = { ...newRun('sc-1'), ...patch }; run.stages.contract.status = 'passed'; return run }
+  const brief = prompt => ({ subagent_type: 'story-loop:worker-sonnet', prompt })
+  assert.match(guidanceProblem(brief('Edit app/views/x.html.haml and app/frontends/a/b.tsx'), inBuild()), /modern-web-guidance has not run/)
+  assert.match(guidanceProblem(brief('Style app/assets/x.css'), inBuild()), /modern-web-guidance/)
+  // back-end work, read-only agents, other stages, and a run where it ran or the human waived it pass
+  for (const [ti, run] of [[brief('Fix app/models/x.rb and its spec, read config.json'), inBuild()],
+    [{ subagent_type: 'Explore', model: 'haiku', prompt: 'find a.tsx' }, inBuild()],
+    [brief('a.tsx'), newRun('sc-1')], [brief('a.tsx'), inBuild({ web_guidance: 'used' })], [brief('a.tsx'), inBuild({ web_guidance: 'human: not installed' })]])
+    assert.equal(guidanceProblem(ti, run), null, ti.prompt)
+
+  // through the hook: the brief is refused, the conductor runs the skill, the same brief goes through
+  const root = runDirWith(owned())
+  const run = load(root); run.stages.contract.status = 'passed'; save(root, run)
+  const agent = { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { ...brief('Build app/frontends/a/b.tsx'), description: 't1' } }
+  const refused = fire(root, agent)
+  assert.equal(refused.status, 2)
+  assert.match(refused.stderr, /modern-web-guidance/)
+  assert.equal(fire(root, { hook_event_name: 'PreToolUse', tool_name: 'Skill', tool_input: { skill: 'modern-web-guidance' } }).status, 0)
+  assert.equal(load(root).web_guidance, 'used')
+  assert.equal(fire(root, agent).status, 0)
 })

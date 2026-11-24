@@ -211,7 +211,7 @@ screenshots.
 
 ## What you need
 
-`/story-loop setup` checks the first seven for you. Without Codex the second review still runs, by a fresh Claude on another model; that is weaker than a model from another vendor, and the report says which reviewer was used.
+`/story-loop setup` checks the first eight for you. Without Codex the second review still runs, by a fresh Claude on another model; that is weaker than a model from another vendor, and the report says which reviewer was used.
 
 | Needed | For | Get it |
 | --- | --- | --- |
@@ -219,6 +219,7 @@ screenshots.
 | GitHub CLI, signed in | PR, push, Copilot review | `brew install gh`, `gh auth login` |
 | Shortcut CLI 5+ (Shortcut stories only) | reading the story, moving the card | `npm i -g @shortcut-cli/shortcut-cli`, `short install` |
 | `start-story` skill in the repo (Shortcut stories only) | the contract stage | synced with the shared skills |
+| `modern-web-guidance` skill | build: front-end briefs carry current web-platform patterns; without it the hook refuses briefs that name HTML, CSS or client-side JS files | `npx skills add GoogleChrome/modern-web-guidance` (Claude Code, global) |
 | `.start-story/` gitignored | run files and screenshots stay out of the PR (a blocker if not) | one line in `.gitignore` |
 | Signed commits, if the repo requires them | the publisher refuses unsigned commits when signing is on; setup signs a throwaway commit to prove it works | the repo's signed-commits guide |
 | Codex plugin, signed in (recommended, not required) | the strongest second review: a model from another vendor | `/plugin install codex@openai-codex`, `/codex:setup` |

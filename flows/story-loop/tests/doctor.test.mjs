@@ -28,7 +28,7 @@ test('a set-up machine has no blockers', () => {
 
 test('each missing prerequisite is named with its fix', () => {
   const broken = diagnose(healthy({
-    missing: ['start-story'],
+    missing: ['start-story', 'modern-web-guidance'],
     run: {
       'gh auth status': { ok: false, out: 'not logged in' },
       'claude plugin list': { ok: true, out: '  ❯ savvy-flow@claude-kit\n    Version: 1.2.0\n    Status: ✘ disabled\n' },
@@ -36,8 +36,10 @@ test('each missing prerequisite is named with its fix', () => {
   }))
   assert.equal(statusOf(broken, 'GitHub CLI'), 'blocker')
   assert.equal(statusOf(broken, 'start-story'), 'blocker')
+  assert.equal(statusOf(broken, 'modern-web-guidance'), 'blocker')
   assert.match(render(broken), /✘ GitHub CLI signed in — not signed in\n {4}for: .*\n {4}fix: Run: gh auth login/)
-  assert.match(render(broken), /2 blockers left/)
+  assert.match(render(broken), /npx skills add GoogleChrome\/modern-web-guidance/)
+  assert.match(render(broken), /3 blockers left/)
 
   const noLogin = diagnose(healthy({ run: { [`node ${process.env.HOME}/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs setup --json`]: { ok: true, out: JSON.stringify({ codex: { available: true }, auth: { loggedIn: false } }) } } }))
   assert.equal(statusOf(noLogin, 'A second model'), 'warning')

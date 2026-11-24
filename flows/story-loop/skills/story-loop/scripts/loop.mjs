@@ -18,7 +18,7 @@ export const GRAPH = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.m
 export const SCHEMA = 3
 export const LEASE_MS = 15 * 60_000
 const DONE = new Set(['passed', 'skipped'])
-const PUT_KEYS = new Set(['title', 'branch', 'pr', 'base', 'repo', 'tasks', 'findings', 'browser', 'environment', 'required_checks', 'lane', 'lessons', 'evidence_sharing'])
+const PUT_KEYS = new Set(['title', 'branch', 'pr', 'base', 'repo', 'tasks', 'findings', 'browser', 'environment', 'required_checks', 'lane', 'lessons', 'evidence_sharing', 'web_guidance'])
 // Which stages may be skipped, and on whose word. Everything else needs only a reason.
 const SKIP = {
   contract: 'never', build: 'never', second_review: 'never', push: 'never', report: 'never',
@@ -1319,6 +1319,7 @@ function command(root, run, verb, args) {
     if (key === 'required_checks') Array.isArray(value) && value.every(n => typeof n === 'string' && n.trim()) || fail('required_checks is a JSON list of check names, e.g. \'["rspec","lint"]\', or \'[]\' for none')
     if (key === 'lane') { const problem = laneProblem(value); problem && fail(problem) }
     if (key === 'lessons') Array.isArray(value) || fail('lessons is a JSON list, \'[]\' when nothing was corrected')
+    if (key === 'web_guidance') /^human:\s*\S/i.test(String(value)) || fail('web_guidance is set by the hook when the modern-web-guidance skill runs; put it only on the human\'s word: put web_guidance "human: <why it is not used>"')
     if (key === 'evidence_sharing') ['pr', 'artifact', 'none'].includes(value) || fail('evidence_sharing is pr (screenshots attached to the PR), artifact (a private page linked from the report) or none')
     let dropped = false
     update(root, r => {
