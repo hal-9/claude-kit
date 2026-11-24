@@ -278,7 +278,7 @@ export function summarize({ events, run, manifest }) {
 
   say('## Outcome', '')
   if (!run) say('No state file for this run was found; everything below comes from events alone.')
-  else if (!currentStage) say('All nine stages are done. The PR is a draft waiting for human review; this is an agent\'s run, not a human review.')
+  else if (!currentStage) say(`All ${stages.length} stages are done: the human review round ended with the PR merged or closed, and the retro is written.`)
   else say(`Stopped at **${currentStage[0]}** (${currentStage[1].status}${currentStage[1].waiting_on ? `, waiting on ${currentStage[1].waiting_on}` : ''})${currentStage[1].reason ? `: ${redact(currentStage[1].reason)}` : '.'}`)
   const parked = (run?.findings ?? []).filter(f => f.verdict === 'parked')
   const unsettled = (run?.findings ?? []).filter(f => ['open', 'fix_requested'].includes(f.verdict))

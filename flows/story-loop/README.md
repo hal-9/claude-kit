@@ -40,22 +40,25 @@ flowchart LR
 | # | Stage | What the agent does | What proves it |
 | --- | --- | --- | --- |
 | 1 | Contract | From the story (`start-story`) or the issue: drafts the PR description, asks about gaps, proposes a lane by how costly a mistake would be, shows the plan on one page, opens the draft PR | **Your sign-off**, with the lane, the hard decisions and the feature-flag answer recorded |
-| 2 | Build | Splits the plan into tasks; worker agents on Haiku, Sonnet or Opus build test-first, each told which existing pattern to copy | Every task accepted, everything committed |
-| 3 | Quality gate | Runs the repo's linters on the changed files and reads the added lines for slop: a linter switched off, a skipped test, a comment excusing a shortcut, a diff over the lane's budget | Lint clean on this exact code; every signal removed or accepted with a reason |
+| 2 | Build | Splits the plan into tasks; worker agents on Haiku, Sonnet or Opus build test by test through the public interface, each told which existing pattern to copy; a bug whose cause is not obvious is first reproduced by a failing command | Every task accepted, everything committed |
+| 3 | Quality gate | Runs the repo's linters on the changed files and reads the added lines for slop: a linter switched off, a skipped test, a comment excusing a shortcut, code over the lane's budget (test lines are reported beside it, not counted) | Lint clean on this exact code; every signal removed or accepted with a reason |
 | 4 | Test review | Breaks each changed line on purpose, in throwaway copies (several at once where the tests share nothing), and checks a test notices. How many mutants and which files follow the lane: 10 front-end mutants on light, 25 on standard, all on heavy. Tests it adds go through the quality gate again at once | Mutation results for this exact code: killed, survived, invalid, timed out |
 | 5 | Browser verify | A second agent that has not seen the code checks every Test Step in a real browser, booting and logging in from the repo's `.devloops` `uiReview` recipe when there is one, and failing a check whose server log shows an error | Every check of the matrix you approved, once, with a real screenshot |
-| 6 | Second review | Another model tries to break the work, and names what the next change would copy: Codex by default, any reviewer CLI you name, or a fresh Claude on another model. Alongside it, every review angle with a prompt in the repo's `.devloops` file (the dev-loops config), each allowed to leave the diff | Every finding with a severity, one finding per defect however many sources named it: fixed with its commit, rejected with a reason, or parked for you |
+| 6 | Second review | Another model tries to break the work, and names what the next change would copy: Codex by default, any reviewer CLI you name, or a fresh Claude on another model, flagging behaviour no goal asks for too. Alongside it, a standards angle that judges the diff against the repo's documented rules (CLAUDE.md, AGENTS.md, review checklists) and common smells, and every review angle with a prompt in the repo's `.devloops` file (the dev-loops config), each allowed to leave the diff | Every finding with a severity, one finding per defect however many sources named it: fixed with its commit, rejected with a reason, or parked for you |
 | 7 | Push | Publishes the checked commit to the story branch, nothing else | The remote read back at that commit |
 | 8 | Copilot review | Marks the PR ready for review (so CI that skips drafts runs), requests GitHub Copilot's review and waits for it in the background, with a deadline | A Copilot review of exactly that commit |
 | 9 | Fix comments | Triages every comment, answers every thread from one map (fixed, rejected, deferred) and resolves only the fixed ones; any code change goes back to Build | Every comment settled |
 | 10 | Report | Posts the results on the PR, what needs your decision first, with the user flow as a chart and the evidence where you chose to share it | Required CI green on the final commit; one report comment |
 | 11 | Human review | Fetches what human reviewers wrote, triages it like any review, sends real defects back to Build | Every reviewer comment settled, and the PR merged or closed **by a human** |
-| 12 | Retro | Names a lesson for every correction of the run and the check that would catch its kind next time: a lint rule, a type, a test, an API that makes the mistake impossible, and prose only as the last resort | A lesson for every fixed finding and every round sent back; the run's line in the ledger |
+| 12 | Retro | Names a lesson for every correction of the run and the check that would catch its kind next time: a lint rule, a type, a test, an API that makes the mistake impossible, a rule for the standards reviewer, and prose only as the last resort; a check the repo already has but never runs comes first | A lesson for every fixed finding and every round sent back; the run's line in the ledger |
 
 A later stage can send work back to Build, twice at most. Then it stops and
 shows you instead of trying a third time. Going back makes the earlier tests,
 browser checks and reviews stale: they run again on the new code, and the old
-results stay in the run's history.
+results stay in the run's history. On a later attempt the browser re-runs only
+the checks whose Test Step a changed file serves (the others carry over, marked
+*carried*), and the second review looks only at the fix when it stays in the
+files of the findings sent back and is at most a quarter of the branch.
 
 ## What stays yours
 
@@ -298,6 +301,7 @@ lets the run start.
 | Board | `board/server.mjs`, `board/index.html` | one local page, no build step, no external requests |
 | Conductor | `skills/story-loop/SKILL.md`, `stages/*.md` | the instructions the agent follows |
 | Workers | `agents/worker-*.md` | four agents with fixed models |
+| Advisor | `agents/advisor-fable.md` | read-only Fable for the contract, triage, the retro and the fallback review |
 
 Everything is plain Node with no dependencies. The build stage is adapted
 from [savvy-flow](https://github.com/johnnyvizz/claude-kit) (MIT).

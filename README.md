@@ -11,7 +11,7 @@ Claude Code plugins by hal-9, MIT licensed, in one marketplace (`hal-9`). Two ki
 | [relay](mods/relay) | mod | Role buttons above the prompt: review or adversarially review the working tree with Codex, hand a task to Codex, or verify with a second Claude model; findings become fix prompts. |
 | [cache-meter](mods/cache-meter) | mod | Band above the prompt: prompt-cache countdown, cache hit rate of the last request, context fill against auto-compact, and a Compact button. |
 | [mod-switch](mods/mod-switch) | mod | Footer menu that switches your mods on and off per session. |
-| [story-loop](flows/story-loop) | flow | One command takes a Shortcut story or a GitHub issue to a reviewed draft PR: signed-off plan, workers building test-first, mutants on the diff, a browser check with screenshots, a second-model review and a Copilot review, all on a live board. [How it works](flows/story-loop/README.md). Experimental, in a supervised pilot. |
+| [story-loop](flows/story-loop) | flow | One command takes a Shortcut story or a GitHub issue through review to a PR a human merges: signed-off plan, workers building test-first, a quality gate and mutants on the diff, a browser check with screenshots, a second-model review and a Copilot review, the human review round and a retro that turns corrections into lessons, all on a live board. [How it works](flows/story-loop/README.md). Experimental, in a supervised pilot. |
 | [savvy-flow](flows/savvy-flow) | flow | Fork of johnnyvizz/claude-kit's savvy-flow: tiered workers build test-first at named seams; a code-review pass closes the flow. |
 
 ## Install
