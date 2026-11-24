@@ -17,8 +17,12 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const argv = process.argv.slice(2)
 const flag = name => { const i = argv.indexOf(`--${name}`); return i < 0 ? undefined : argv[i + 1] ?? true }
 const DEMO = argv.includes('--demo')
-const PORT = Number(flag('port') ?? 4317)
 const ROOT = DEMO ? mkdtempSync(join(tmpdir(), 'story-loop-demo-')) : resolve(flag('root') ?? process.cwd())
+// --port wins; else the port `loop.mjs worktree` gave this checkout; else 4317. Without
+// --port, a taken port moves the board to the next free one (parallel runs).
+const ASKED_PORT = flag('port')
+let PORT = Number(ASKED_PORT ?? (() => { try { return JSON.parse(readFileSync(join(ROOT, '.start-story', 'ports.json'), 'utf8')).board } catch { return undefined } })() ?? 4317)
+let tries = 0
 const P = paths(ROOT)
 
 const QUESTIONS = {
@@ -314,16 +318,18 @@ createServer(async (req, res) => {
     record(ROOT, 'board.error', { outcome: 'request failed', reason: error.message, path: String(req.url ?? '').split('?')[0] })
     text(res, 500, error.message)
   }
-}).on('error', error => {
-  // A board that cannot start (the port is taken) says so here and in the run's diagnostics, then gives up.
+}).on('error', function (error) {
+  // Another run's board holds the port: take the next one, unless --port named it.
+  if (error.code === 'EADDRINUSE' && ASKED_PORT === undefined && ++tries < 20) return this.listen(++PORT, '127.0.0.1')
+  // A board that cannot start says so here and in the run's diagnostics, then gives up.
   record(ROOT, 'board.error', { outcome: 'could not start', reason: error.message, port: PORT })
   console.error(`story-loop board: could not listen on 127.0.0.1:${PORT} (${error.message}); pass --port <n>`)
   process.exit(1)
-}).listen(PORT, '127.0.0.1', () => {
+}).on('listening', () => {
   record(ROOT, 'board.start', { port: PORT })
   console.log(`story-loop board: http://127.0.0.1:${PORT}${DEMO ? ' (demo)' : ` · ${ROOT}`}`)
   if (!DEMO && !existsSync(P.active)) console.log('no active run yet; the board fills in once loop.mjs init has run')
-})
+}).listen(PORT, '127.0.0.1')
 
 // ---- demo: a scripted run, so the page can be seen and designed without a story
 

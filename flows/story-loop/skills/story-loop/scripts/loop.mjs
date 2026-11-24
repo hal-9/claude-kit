@@ -5,11 +5,11 @@
 // under .start-story/, which must be gitignored.
 import {
   readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, rmSync, renameSync, copyFileSync,
-  statSync, realpathSync, openSync, readSync, closeSync,
+  statSync, realpathSync, openSync, readSync, closeSync, cpSync, symlinkSync, readdirSync,
 } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bind, record, toggle, exportBundle, diagDir, readEvents, readManifest } from './diag.mjs'
 import { appendLedger, readLedger, summary as ledgerSummary, ledgerFile } from './ledger.mjs'
@@ -892,6 +892,66 @@ function setDiagnostics(root, enabled) {
   })
 }
 
+// ---- parallel runs ----------------------------------------------------------------
+// One checkout holds one run. A second story runs in its own worktree beside the
+// checkout (<repo>-story-loop/<story>), with the untracked files the repo's .devloops
+// lists (worktree.entries: copy or link) and its own ports, recorded in
+// .start-story/ports.json for the board and the browser check.
+
+// worktree.entries from the repo's .devloops; node_modules linked when there is none.
+// ponytail: reads that one YAML block by pattern; a YAML parser if the file grows more shapes.
+export function worktreeEntries(root) {
+  let text = ''
+  try { text = readFileSync(join(root, '.devloops'), 'utf8') } catch { return [{ path: 'node_modules', mode: 'link' }] }
+  const block = text.match(/^worktree:[^\n]*\n((?:[ \t]+[^\n]*\n?|\n)*)/m)?.[1] ?? ''
+  const entries = [...block.matchAll(/-\s*path:\s*(\S+)\s*\n\s+mode:\s*(copy|link)\b/g)].map(([, path, mode]) => ({ path, mode }))
+  return entries.length ? entries : [{ path: 'node_modules', mode: 'link' }]
+}
+
+// Ports for the n-th parallel run: the board and the app each get their own.
+export const portsFor = n => ({ board: 4317 + n, app: 3000 + n })
+
+// Why Rails specs of two runs would collide: one test database for every checkout.
+export function sharedTestDatabase(root) {
+  let yml
+  try { yml = readFileSync(join(root, 'config', 'database.yml'), 'utf8') } catch { return null }
+  const test = yml.match(/^test:[^\n]*\n((?:[ \t]+[^\n]*\n?)*)/m)?.[1] ?? ''
+  return /TEST_ENV_NUMBER/.test(test) ? null
+    : 'config/database.yml names one test database for every checkout: two runs must not run Rails specs or Rails mutants at the same time (name it after TEST_ENV_NUMBER to separate them)'
+}
+
+export function parallelWorktree(root, input, { fetch = true } = {}) {
+  const story = storyId(input) ?? fail('usage: loop.mjs worktree SC-12345 | gh-123 | <story or issue URL>')
+  const git = gitIn(root)
+  const home = join(dirname(root), `${basename(root)}-story-loop`)
+  const dir = join(home, story)
+  if (existsSync(dir)) {
+    existsSync(join(dir, '.git')) || fail(`${dir} exists and is not a worktree; move it away first`)
+    let ports = null
+    try { ports = JSON.parse(readFileSync(join(dir, '.start-story', 'ports.json'), 'utf8')) } catch {}
+    return { story, dir, existing: true, ports, linked: [], missing: [], warning: sharedTestDatabase(root) }
+  }
+  if (fetch) try { git('fetch', '--quiet', 'origin') } catch { /* offline: the last fetched base will do */ }
+  let base = 'HEAD'
+  try { base = git('symbolic-ref', '--short', 'refs/remotes/origin/HEAD').trim() } catch { try { git('rev-parse', '--verify', '--quiet', 'origin/main'); base = 'origin/main' } catch {} }
+  mkdirSync(home, { recursive: true })
+  const n = readdirSync(home).length + 1
+  git('worktree', 'add', '--detach', '--quiet', dir, base)
+  const linked = [], missing = []
+  for (const { path, mode } of worktreeEntries(root)) {
+    const from = join(root, path), to = join(dir, path)
+    if (!existsSync(from)) { missing.push(path); continue }
+    if (existsSync(to)) continue
+    mkdirSync(dirname(to), { recursive: true })
+    mode === 'copy' ? cpSync(from, to, { recursive: true }) : symlinkSync(from, to)
+    linked.push(`${path} (${mode})`)
+  }
+  const ports = portsFor(n)
+  mkdirSync(join(dir, '.start-story'), { recursive: true })
+  writeFileSync(join(dir, '.start-story', 'ports.json'), JSON.stringify(ports, null, 2) + '\n')
+  return { story, dir, base, existing: false, ports, linked, missing, warning: sharedTestDatabase(root) }
+}
+
 function init(input, diagnostics = false) {
   const story = storyId(input) ?? fail('usage: loop.mjs init SC-12345 | gh-123 | <story or issue URL> [--diagnostics]')
   const root = repoRoot()
@@ -905,7 +965,7 @@ function init(input, diagnostics = false) {
   console.log(status(withLock(root, () => {
     if (existsSync(p.active)) {
       const old = load(root)
-      old.story === story || current(old) === null || fail(`another run is active here (${old.story}); finish it or run: loop.mjs end`)
+      old.story === story || current(old) === null || fail(`another run is active here (${old.story}); run this story beside it with: loop.mjs worktree ${story}, or finish that one first (loop.mjs end)`)
       if (old.story === story) {
         if (!diagnostics || old.diagnostics?.enabled) return old
         const next = { ...old, diagnostics: toggle(root, old, true), revision: (old.revision ?? 0) + 1 }
@@ -1013,6 +1073,19 @@ function main(argv) {
   const [verb, ...args] = argv
   if (verb === 'init') return init(args.filter(a => a !== '--diagnostics').join(' '), args.includes('--diagnostics'))
   if (verb === 'diagnostics' && args[0] === 'export') return exportDiagnostics(args.slice(1))
+  // A second story beside the active run: its own worktree, files and ports.
+  if (verb === 'worktree') {
+    const w = parallelWorktree(findRoot() ?? repoRoot(), args.join(' '))
+    console.log([
+      `${w.existing ? 'Worktree already there' : 'Worktree ready'} for ${w.story}: ${w.dir}${w.base ? ` (from ${w.base})` : ''}`,
+      w.linked.length ? `set up: ${w.linked.join(', ')}` : null,
+      w.missing.length ? `not found in this checkout, so not set up: ${w.missing.join(', ')}` : null,
+      w.ports ? `ports: board ${w.ports.board}, app ${w.ports.app} (in .start-story/ports.json)` : null,
+      w.warning ? `careful: ${w.warning}` : null,
+      `Next: open a new Claude Code session in that folder, on Opus, and run /story-loop ${w.story} there.`,
+    ].filter(Boolean).join('\n'))
+    return
+  }
   // The ledger outlives every run, so it is read with or without an active one.
   if (verb === 'ledger') {
     const at = findRoot() ?? repoRoot()

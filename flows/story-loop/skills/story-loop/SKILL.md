@@ -133,7 +133,18 @@ LOOP inbox             # after acquiring: every note that is not done yet, whoev
 LOOP init SC-12345     # no run yet (after the setup check above passes)
 LOOP init gh-123       # the same for a GitHub issue; `#123` and both kinds of URL work too
 LOOP recover           # the state file or the notes file is unreadable: restore the last good copy
+LOOP worktree SC-12346 # another run is active here: set up a worktree beside this checkout for the new story
 ```
+
+**A second story while a run is active:** one checkout holds one run, and
+`init` refuses a second. Run `LOOP worktree <story>` instead: it creates
+`<repo>-story-loop/<story>` beside the checkout, sets up the untracked files
+`.devloops` lists under `worktree.entries` (`node_modules` linked when there is
+none), and writes a board and an app port to `.start-story/ports.json`. Tell
+the human to open a new session in that folder and run `/story-loop <story>`
+there; do not drive two runs from one session. When it warns that the test
+database is shared, the two runs must not run Rails specs or mutants at the
+same time. The ledger is shared by every worktree of the repository.
 
 **Continuing a run in a new session:** `LOOP acquire`, then `LOOP inbox` and
 `LOOP status` before anything else. Notes the earlier session received and
@@ -158,7 +169,7 @@ Then start the board in the background and open it for the human (browser
 pane or preview tool when the host has one, otherwise `open <url>`):
 
 ```bash
-node ${CLAUDE_SKILL_DIR}/board/server.mjs --root "$PWD"     # http://127.0.0.1:4317, --port to change
+node ${CLAUDE_SKILL_DIR}/board/server.mjs --root "$PWD"     # 4317, or ports.json's board port, or the next free one; --port to fix it
 ```
 
 ## 1 · contract
@@ -452,6 +463,7 @@ starting the stage:
 
 ```bash
 # Supported path: a server you started from this checkout, on a local address
+# (in a worktree from `LOOP worktree`, start it on the app port in .start-story/ports.json)
 LOOP put environment '{"url":"http://127.0.0.1:3000","kind":"local","server":"bin/dev, started from this checkout at <time>"}'
 # A deployment that reports the commit it serves (read it from the deployment itself: a version endpoint, a deploy status)
 LOOP put environment '{"url":"https://pr-12.preview.example","kind":"remote","revision":"<that commit>"}'
@@ -975,7 +987,7 @@ ledger line too, so a run that never reached the retro still counts.
 
 ## The ledger
 
-`.start-story/ledger.jsonl` keeps one line per run, across stories, whether or
+The ledger (`<git common dir>/story-loop/ledger.jsonl`, shared by every worktree of the repository) keeps one line per run, across stories, whether or
 not diagnostics were on: the factory version, the lane, where the run was sent
 back and why, findings by source and verdict, tasks by tier and whether they
 were returned, mutant and quality outcomes, the lessons, and tokens by stage

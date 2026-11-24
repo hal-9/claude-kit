@@ -1,13 +1,23 @@
-// The ledger: one line per run in .start-story/ledger.jsonl, written whether or
-// not diagnostics are on, kept across stories. It is what the loop learns from:
-// where runs went back, what reviewers found, what the tiers returned, what it
-// cost in tokens, and the lessons the retro stage recorded.
-// ponytail: one file per checkout; a shared store only when several people run the loop.
+// The ledger: one line per run, written whether or not diagnostics are on, kept
+// across stories and shared by every worktree of the repository (parallel runs
+// learn together). It is what the loop learns from: where runs went back, what
+// reviewers found, what the tiers returned, what it cost in tokens, and the
+// lessons the retro stage recorded.
+// ponytail: one file per repository on this machine; a shared store only when several people run the loop.
 import { readFileSync, appendFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const ledgerFile = root => join(root, '.start-story', 'ledger.jsonl')
+// One ledger per repository, shared by its worktrees: under the git common dir, which
+// every worktree of the repository resolves to. Outside git, the checkout's own file.
+export const localLedgerFile = root => join(root, '.start-story', 'ledger.jsonl')
+export function ledgerFile(root) {
+  try {
+    const common = execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    return join(resolve(root, common), 'story-loop', 'ledger.jsonl')
+  } catch { return localLedgerFile(root) }
+}
 const VERSION = (() => {
   try { return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '.claude-plugin', 'plugin.json'), 'utf8')).version } catch { return null }
 })()
@@ -83,10 +93,13 @@ export function appendLedger(root, run, opts) {
   return entry
 }
 
-// The newest line of each run.
+// The newest line of each run. Lines a checkout wrote before the ledger was shared
+// (0.10 and earlier) are read first, so the shared file's newer lines win.
 export function readLedger(root) {
   const byRun = new Map()
-  for (const entry of jsonl(ledgerFile(root))) byRun.set(entry.run, entry)
+  const shared = ledgerFile(root), local = localLedgerFile(root)
+  for (const file of shared === local ? [shared] : [local, shared])
+    for (const entry of jsonl(file)) byRun.set(entry.run, entry)
   return [...byRun.values()]
 }
 

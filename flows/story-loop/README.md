@@ -70,7 +70,7 @@ results stay in the run's history.
 
 ## The ledger: how the loop learns
 
-Every run leaves one line in `.start-story/ledger.jsonl`, also a run that was
+Every run leaves one line in the repository's ledger (`.git/story-loop/ledger.jsonl`, shared by every worktree), also a run that was
 dropped half way, and whether or not diagnostics were on: the factory version,
 the lane, where work was sent back and why, findings by source and verdict,
 how often each worker tier was returned, the lessons of the retro, and tokens
@@ -166,6 +166,13 @@ Switch the session to Opus 5.5 first (`/model`): the conductor runs on it, and t
 A run belongs to the session that drives it. To continue in a new session, run
 `/story-loop` again there: it takes the run over with `loop.mjs acquire` once
 the old session has been quiet for 15 minutes (or at once, when you say so).
+
+To run a second story while one is active, `/story-loop SC-12346` sets up a
+worktree beside the checkout (`<repo>-story-loop/sc-12346`) with its untracked
+files and its own board and app ports. Open a new session in that folder and
+run `/story-loop SC-12346` there. Both runs write to one ledger. When the test
+database is shared, it says so: the two runs then must not run Rails specs at
+the same time.
 
 ### 4. Record a run (optional, for the pilot)
 
@@ -281,7 +288,7 @@ lets the run start.
 | Publisher | `scripts/publish.mjs` | the only push of a run |
 | GitHub steps | `scripts/github.mjs` | Copilot request and bounded wait, comments, required CI, the report comment — each recorded so a retry reconciles |
 | Quality gate | `scripts/quality.mjs` | runs the lint commands it is given and reads the diff's added lines for slop signals; lane budgets are in `graph.json` |
-| Ledger | `scripts/ledger.mjs`, `.start-story/ledger.jsonl` | one line per run, written at the retro and at `end`; `loop.mjs ledger` reads it |
+| Ledger | `scripts/ledger.mjs`, `.git/story-loop/ledger.jsonl` | one line per run, written at the retro and at `end`; `loop.mjs ledger` reads it |
 | Mutants | `scripts/mutate.mjs` | breaks changed lines one at a time in a throwaway worktree; nothing to install (uses the project's `typescript` when it has one) |
 | Notes | `.start-story/<story>/inbox.json`, `scripts/hook.mjs` | carries what you write on the board to the agent |
 | Setup check | `scripts/doctor.mjs` | prerequisites and their fixes |
