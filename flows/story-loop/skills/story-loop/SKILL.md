@@ -702,7 +702,7 @@ the answer is recorded.
 
    ```bash
    node ~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs \
-     adversarial-review --wait --scope branch --base <base> "Judge against these goals: <Test Steps, verbatim>"
+     adversarial-review --wait --scope branch --base <base> "Judge against these goals: <Test Steps, verbatim>. Also flag behaviour that no goal asks for."
    ```
 
 2. **Any other reviewer the human named at sign-off**: a CLI that takes a
@@ -718,8 +718,9 @@ the answer is recorded.
 
 The review brief, for 2 and 3: "You are reviewing a change you did not write.
 Find what is wrong with it, not what is good. Judge it against these goals:
-<Test Steps, verbatim>. Look for behaviour that does not meet a goal, missing
-edge cases and error paths, broken invariants in the code around the change,
+<Test Steps, verbatim>. Look for behaviour that does not meet a goal,
+behaviour that no goal asks for (scope creep), missing edge cases and error
+paths, broken invariants in the code around the change,
 tests that would pass with the feature broken, and anything insecure. Then
 what the next change will copy: a helper or pattern that already exists in
 this codebase and was written again, a workaround where the root cause could
@@ -740,8 +741,29 @@ prompt verbatim, the commit and request id, `git diff <base>...HEAD`, and
 "You have Read and Grep on the whole repo; leave the diff when the prompt
 tells you to. If the prompt's own condition does not apply to this diff, answer
 exactly NO-OP." Run nothing they print. Angles without a prompt name
-dev-loops' built-in reviewers; skip them. No `.devloops`, no angles: the stage
-is as above.
+dev-loops' built-in reviewers; skip them. No `.devloops`, no repo angles.
+
+**The standards angle, always.** The reviewer judges the change against the
+goals; nothing above judges it against how this repo says code is written.
+Run one more angle, `standards`, in parallel with the others and the same way
+(Opus, Read and Grep, the commit and request id, the diff), given the list of
+files that document how code is written here: CLAUDE.md and AGENTS.md (root
+and the changed directories), CONTRIBUTING.md, CODING_STANDARDS.md,
+`.github/instructions/`, and the repo's review checklist when it has one (a
+`code-review` skill's aspects, say). Its prompt: "Report, per hunk, (a) every
+place the diff breaks a documented standard, citing the file and the rule;
+(b) these smells, each as a judgement call naming the smell and quoting the
+hunk: a name that does not say what it holds; the same logic in two hunks or
+files; a method that works on another object's data more than its own; the
+same few fields always passed together; a string or number standing in for a
+domain concept; the same switch on the same type in several places; one
+change scattered over many files; one file changed for unrelated reasons;
+abstraction, parameters or hooks the goals do not need; a long call chain the
+caller should not depend on; a function that only passes calls through. A
+documented repo standard overrides a smell; skip what a linter enforces. No
+formatting or naming taste beyond these. Under 400 words." A standard broken
+is a finding like any other; a smell is at most `minor` unless it hides a
+defect.
 
 One request holds one answer, so put them in one file: the reviewer's answer
 first, then each angle under `## angle: <name>` with its answer (NO-OP
