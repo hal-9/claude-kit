@@ -79,11 +79,22 @@ export function migrate(run) {
 
 const ids = () => GRAPH.stages.map(s => s.id)
 const fail = message => { throw new Error(message) }
+// The stages that run side by side (graph.json "parallel"): they read the same
+// committed code and none needs another's result.
+export const groupOf = stage => (GRAPH.parallel ?? []).find(g => g.includes(stage)) ?? [stage]
 
 // The stage the loop must work on next: the first one that is not done.
 export function current(run) {
   return ids().find(id => !DONE.has(run.stages[id].status)) ?? null
 }
+// Every stage that may be worked on now: the current one and the rest of its
+// parallel group that is not done yet.
+export function active(run) {
+  const cur = current(run)
+  return cur ? groupOf(cur).filter(id => !DONE.has(run.stages[id].status)) : []
+}
+// The stages that stop for the human: the contract, the report's open questions and the human review.
+export const HUMAN_STAGES = ['contract', 'report', 'human_review']
 
 // One move. Returns the new run; throws with the reason when the graph forbids it.
 // Evidence gates are separate (passProblem) so this stays pure.
@@ -93,8 +104,8 @@ export function move(run, verb, stage, arg, reason, now = new Date().toISOString
   const cur = current(next)
   const needReason = () => reason || fail(`"${verb}" needs a reason`)
   // A finished run can still be sent back from its last stage (a human note after the report).
-  const mustBeCurrent = () => stage === cur || (verb === 'back' && cur === null && stage === ids().at(-1)) ||
-    fail(`"${stage}" is not the current stage; current is "${cur}"`)
+  const mustBeCurrent = () => active(next).includes(stage) || (verb === 'back' && cur === null && stage === ids().at(-1)) ||
+    fail(`"${stage}" is not the current stage; current is "${active(next).join('", "') || cur}"`)
 
   switch (verb) {
     case 'start':
@@ -165,13 +176,13 @@ export const liveHelpers = run => Object.values(run.ops ?? {}).filter(o => alive
 // Workers or background helpers still running let it end: the conductor waits for
 // their reports by being idle (their end wakes it), never by polling files.
 export function stopReason(run, now = Date.now()) {
-  const cur = current(run)
-  if (!cur) return null
-  const st = run.stages[cur]
-  if (st.status === 'waiting' || st.status === 'blocked') return null
+  const open = active(run).filter(id => !['waiting', 'blocked'].includes(run.stages[id].status))
+  if (!open.length) return null
   if (liveWorkers(run, now).length || liveHelpers(run).length) return null
-  return `story-loop ${run.story}: stage "${cur}" is ${st.status}. Carry on with it, or record why it stops: ` +
-    `loop.mjs wait ${cur} human "<reason>" | loop.mjs block ${cur} "<reason>".`
+  const cur = open[0]
+  const human = HUMAN_STAGES.includes(cur) ? 'human' : 'human "critical: <what>"'
+  return `story-loop ${run.story}: stage "${cur}" is ${run.stages[cur].status}. Carry on with it, or record why it stops: ` +
+    `loop.mjs wait ${cur} background "<what runs>" | loop.mjs wait ${cur} ${human} | loop.mjs block ${cur} "<reason>".`
 }
 
 // ---- ownership ----------------------------------------------------------------
@@ -398,8 +409,11 @@ export function dirty(root) { try { return gitIn(root)('status', '--porcelain') 
 // Stages whose evidence covers a different tree than the code now has. A passed
 // stage that names no tree (a run from before 0.7) proves nothing about this code.
 export function staleStages(root, run, tree = headTree(root)) {
-  return FRESH.filter(id => run.stages[id]?.status === 'passed' && run.stages[id].tree !== tree)
+  return FRESH.filter(id => run.stages[id]?.status === 'passed' && run.stages[id].tree !== tree &&
+    !(CODE_ONLY.includes(id) && run.stages[id].commit && testsOnlySince(root, run.stages[id].commit)))
 }
+// Evidence about the code, not the tests: a commit that adds or changes tests only leaves it standing.
+const CODE_ONLY = ['verify', 'second_review']
 
 // ---- notes from the board ----------------------------------------------------
 // A note is the human's instruction, typed on the board, kept per run.
@@ -535,7 +549,7 @@ export function verifyRequest(run, tree, commit = null) {
   const checks_revision = run.checks_revision ?? 0
   const environment = run.environment ? requestEnvironment(run.environment, tree, commit) : null
   const env = environment ? `-e${createHash('sha1').update(JSON.stringify(run.environment)).digest('hex').slice(0, 6)}` : ''
-  return { id: `${runKey(run)}-a${attempt}-c${checks_revision}-${String(tree).slice(0, 12)}${env}`, tree, commit, attempt, checks_revision, environment }
+  return { id: `${runKey(run)}-a${attempt}-c${checks_revision}-${String(tree).slice(0, 12)}${env}`, tree, commit, attempt, checks_revision, environment, env_tag: env }
 }
 
 // Where the browser will test, and what ties that place to the code under review.
@@ -656,6 +670,17 @@ export const verifyProblem = (root, run) => verifyReport(root, run).problem
 // small fix confirms the fix instead of reading the whole branch blind again.
 // ponytail: path patterns decide what a test file is; a helper outside them counts as code (reruns more, never less).
 export const isTestFile = f => /(^|\/)(spec|specs|test|tests|__tests__)\/|_spec\.rb$|\.(test|spec)\.[cm]?[jt]sx?$/.test(f)
+// Only test files changed since `commit`: what the browser saw and the reviewer read is still the code.
+// Lets test review commit tests while verify and the second review run on the same code.
+export function testsOnlySince(root, commit) {
+  const d = changedSince(root, commit)
+  return Boolean(d) && d.files.every(isTestFile)
+}
+// Uncommitted changes outside test files (a test-review worker may be writing tests meanwhile).
+export function dirtyCode(root) {
+  return dirty(root).split('\n').filter(Boolean).map(l => l.slice(3).split(' -> ').pop().replace(/^"|"$/g, ''))
+    .filter(f => !isTestFile(f)).join('\n')
+}
 
 // prior: what the last attempt's browser accepted ({ checks_revision, environment, results }).
 // delta: files changed since then. tasks: [{ files, steps }] — which Test Steps each file serves.
@@ -905,10 +930,12 @@ export function passProblem(root, run, stage) {
     }
     case 'verify': {
       const request = run.stages.verify.request
-      if (request && request.tree !== tree) return 'the code changed since verify started; run loop.mjs start verify again so the browser tests this code'
-      if (dirty(root)) return 'the checkout has uncommitted changes; the browser must have tested committed code'
-      if (request && run.environment && verifyRequest(run, tree, head).id !== request.id && request.checks_revision === (run.checks_revision ?? 0))
-        return 'the environment changed since verify started; run loop.mjs start verify again so the results name where they ran'
+      if (request && request.tree !== tree && !testsOnlySince(root, request.commit)) return 'the code changed since verify started; run loop.mjs start verify again so the browser tests this code'
+      if (dirtyCode(root)) return 'the checkout has uncommitted changes outside tests; the browser must have tested committed code'
+      const envNow = run.environment ? verifyRequest(run, tree, head) : null
+      const moved = request && envNow && request.checks_revision === (run.checks_revision ?? 0) &&
+        (request.env_tag !== undefined ? request.env_tag !== envNow.env_tag : envNow.id !== request.id)
+      if (moved) return 'the environment changed since verify started; run loop.mjs start verify again so the results name where they ran'
       return verifyProblem(root, run) ??
         (run.browser ? null : 'record the browser that was used (loop.mjs put browser chrome|browseros|playwright)')
     }
@@ -917,11 +944,11 @@ export function passProblem(root, run, stage) {
       const request = run.stages.second_review.request
       const usage = 'loop.mjs review codex|claude|<name> <file with the reviewer\'s output> --request <id>'
       if (!request) return 'second_review was not started on this attempt; loop.mjs start second_review prints the request id the review is recorded under'
-      if (request.tree !== tree) return 'the code changed since this review was requested; run loop.mjs start second_review again and review this code'
+      if (request.tree !== tree && !testsOnlySince(root, request.commit)) return 'the code changed since this review was requested; run loop.mjs start second_review again and review this code'
       if (!review) return `record the review of this code (${usage})`
-      if (review.request !== request.id || review.attempt !== (run.stages.second_review.attempt ?? 1) || review.tree !== tree)
+      if (review.request !== request.id || review.attempt !== (run.stages.second_review.attempt ?? 1) || review.tree !== request.tree)
         return `the recorded review covered older code or an earlier attempt; review this code and record it (${usage})`
-      return findingsProblem((run.findings ?? []).filter(f => f.source !== 'copilot')) ?? (dirty(root) ? 'commit first' : null)
+      return findingsProblem((run.findings ?? []).filter(f => f.source !== 'copilot')) ?? (dirtyCode(root) ? 'commit first' : null)
     }
     case 'push':
       if (stale()) return stale()
@@ -962,19 +989,20 @@ export function passStamp(root, stage, run) {
 
 function status(run) {
   const cur = current(run)
+  const now = active(run)
   const rows = GRAPH.stages.map(({ id, label }) => {
     const s = run.stages[id]
     const extra = [s.rounds ? `round ${s.rounds + 1}` : '', s.waiting_on ? `waiting on ${s.waiting_on}` : '', s.reason ?? '',
       s.status === 'running' && s.request ? `request ${s.request.id}` : '',
       id === 'verify' && (s.provenance ?? s.request?.environment?.provenance) === 'unlinked' ? 'environment NOT linked to this code' : '']
       .filter(Boolean).join(' · ')
-    return `${id === cur ? '>' : ' '} ${label.padEnd(15)} ${s.status.padEnd(8)} ${extra}`
+    return `${now.includes(id) ? '>' : ' '} ${label.padEnd(15)} ${s.status.padEnd(8)} ${extra}`
   })
   const owner = run.owner?.session ? `owner ${run.owner.session}` : 'no owner yet'
   // Helpers still at work for this run: a new owner should know before starting the same thing again.
   const ops = Object.entries(run.ops ?? {}).map(([op, o]) => `outstanding: ${o.kind} ${op} for ${o.stage} attempt ${o.attempt}, started ${o.started_at} (${alive(o.pid) ? `pid ${o.pid}, still running` : 'its process is gone'})`)
   return [`story-loop ${run.story}${run.branch ? ` · ${run.branch}` : ''}${run.pr ? ` · PR ${run.pr}` : ''} · ${owner}${run.diagnostics?.enabled ? ' · diagnostics on' : ''}`, ...rows, ...ops,
-    cur ? `next: ${cur}` : 'all stages done'].join('\n')
+    cur ? `next: ${now.join(' + ')}${now.length > 1 ? ' (side by side)' : ''}` : 'all stages done'].join('\n')
 }
 
 function repoRoot() {
@@ -1284,12 +1312,12 @@ function command(root, run, verb, args) {
     output.trim() || fail(`${file} is empty; a review that said nothing still says so`)
     const sha256 = createHash('sha256').update(output).digest('hex')
     const next = update(root, r => {
-      current(r) === 'second_review' && r.stages.second_review.status === 'running' || fail('a review is recorded while second_review is running (loop.mjs start second_review)')
+      active(r).includes('second_review') && r.stages.second_review.status === 'running' || fail('a review is recorded while second_review is running (loop.mjs start second_review)')
       const request = r.stages.second_review.request ?? fail('this attempt has no review request; run loop.mjs start second_review, then start the reviewer')
       id || fail(`name the request this answer is for (it is ${request.id} now): ${usage}`)
       id === request.id || fail(`that answer is for request "${id}"; the review requested now is "${request.id}". An answer to an earlier request is history, not this review: run the reviewer again on this code`)
-      dirty(root) && fail('commit first; a review is recorded for committed code')
-      request.tree === headTree(root) || fail(`the code changed since request ${request.id} was made (${request.commit?.slice(0, 7)} then, ${headCommit(root)?.slice(0, 7)} now); that answer reviewed the older code. Run loop.mjs start second_review again and review this code`)
+      dirtyCode(root) && fail('commit first; a review is recorded for committed code')
+      request.tree === headTree(root) || testsOnlySince(root, request.commit) || fail(`the code changed since request ${request.id} was made (${request.commit?.slice(0, 7)} then, ${headCommit(root)?.slice(0, 7)} now); that answer reviewed the older code. Run loop.mjs start second_review again and review this code`)
       const earlier = (r.reviews ?? []).find(v => v.sha256 === sha256)
       earlier && fail(`this exact answer is already recorded for request ${earlier.request}; reading an old answer again is not a new review`)
       const kept = join(runDir(root, r), 'reviews', `${request.id}.txt`)
@@ -1395,7 +1423,7 @@ function command(root, run, verb, args) {
     const moved = move(r, verb, stage, arg, reason)
     if (verb === 'start' && stage === 'verify') {
       // The request exists before the browser runs; results are checked against it, never stamped afterwards.
-      dirty(root) && fail('verify starts on committed code; the checkout has uncommitted changes')
+      dirtyCode(root) && fail('verify starts on committed code; the checkout has uncommitted changes outside tests')
       const env = r.environment ?? fail('record where the browser will test, and what ties it to this code, before verify starts: ' +
         'loop.mjs put environment \'{"url":"http://127.0.0.1:3000","kind":"local","server":"<how it was started from this checkout>"}\' ' +
         '(a deployment: "kind":"remote" with "revision":"<the commit it reports>")')
@@ -1416,7 +1444,7 @@ function command(root, run, verb, args) {
     }
     if (verb === 'start' && stage === 'second_review') {
       // Made before the reviewer is started: the code it is asked to review, under an id no earlier answer can carry.
-      dirty(root) && fail('the second review starts on committed code; the checkout has uncommitted changes')
+      dirtyCode(root) && fail('the second review starts on committed code; the checkout has uncommitted changes outside tests')
       const attempt = r.stages.second_review.attempt ?? 1
       const tree = headTree(root) ?? fail('not a git checkout')
       const open = r.stages.second_review.request

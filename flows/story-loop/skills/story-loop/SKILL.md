@@ -360,6 +360,18 @@ report. `LOOP pass quality "<lint clean · n signals accepted>"`: refused
 while lint fails, a signal is undecided, or the results cover older code. The
 stage is never skipped: with nothing flagged it passes as it is.
 
+## Side by side: test review, verify, second review
+
+Once quality passes, `LOOP status` marks three stages with `>`: start all
+three at once, each as its own work — the mutants in the background, the
+browser verifier and the second reviewer (with its angles) as agents — and
+pass each when its evidence is in. They read the same committed code; a
+commit that only adds or changes tests (test review killing a survivor) leaves
+the browser's passes and the recorded review standing. Uncommitted test files
+do not block verify or the review either. Push waits for all three. Any of
+them sending work back resets all three, and the next round reruns only what
+the fix can have changed.
+
 ## 4 · test_review
 
 Everything is committed (the quality gate passed on a clean checkout). For every changed

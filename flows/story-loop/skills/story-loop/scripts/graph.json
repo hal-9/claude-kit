@@ -25,6 +25,7 @@
     ["human_review", "build"],
     ["retro", "build"]
   ],
+  "parallel": [["test_review", "verify", "second_review"]],
   "maxRounds": 2,
   "lanes": {
     "light": { "diff_lines": 150, "mutants": { "max": 10, "exts": [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"] } },

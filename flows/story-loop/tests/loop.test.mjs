@@ -10,6 +10,7 @@ import {
   load, save, update, withLock, migrate, passProblem, findingsProblem, readInbox, addNote, deliver, staleStages,
   verifyRequest, commentsProblem, mutantsProblem, imageProblem, verifyReport, environmentProblem,
   FRESH, runProblem, laneProblem, qualityProblem, humanReviewProblem, lessonsProblem, verifyCarry, reviewScope, figmaRef, checksProblem,
+  active, findRoot,
 } from '../skills/story-loop/scripts/loop.mjs'
 import { readLedger, summary, usage } from '../skills/story-loop/scripts/ledger.mjs'
 import { signalsFor } from '../skills/story-loop/scripts/quality.mjs'
@@ -1030,4 +1031,24 @@ test('a check with a Figma frame or a prototype passes only when the page was co
   // a prototype capture must be kept as a screenshot of the check
   writeFileSync(resultsFile(root, run), written(run.stages.verify.request.id, [a({ reference: 'figma:AbC123:12:34', verdict: 'match' }), { ...b, evidence: ['b.png'] }]))
   assert.match(verifyProblem(root, run), /prototype capture/)
+})
+
+test('test review, verify and the second review run side by side; push waits for all three', () => {
+  let run = done(newRun('sc-1'), 'contract', 'build', 'quality')
+  assert.deepEqual(active(run), ['test_review', 'verify', 'second_review'])
+  run = move(move(run, 'start', 'verify'), 'start', 'second_review')
+  assert.throws(() => move(run, 'start', 'push'), /not the current stage/)
+  run = done(run, 'test_review')
+  run = move(run, 'pass', 'second_review')
+  assert.deepEqual(active(run), ['verify'])
+  run = move(run, 'pass', 'verify')
+  assert.equal(current(run), 'push')
+  // any of them sends the whole group back with build
+  run = done(newRun('sc-1'), 'contract', 'build', 'quality', 'test_review')
+  run = move(move(run, 'start', 'second_review'), 'back', 'second_review', 'build', 'a defect')
+  assert.deepEqual(['test_review', 'verify', 'second_review'].map(s => run.stages[s].status), ['pending', 'pending', 'pending'])
+  // the stop gate lets go only when every stage that may run is waiting or blocked
+  run = done(newRun('sc-1'), 'contract', 'build', 'quality')
+  run = move(move(run, 'start', 'test_review'), 'wait', 'test_review', 'background', 'mutants')
+  assert.match(stopReason(run), /stage "verify" is pending/)
 })
