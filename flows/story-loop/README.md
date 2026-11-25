@@ -89,6 +89,10 @@ now), where runs go back, which tier keeps being returned, and the share of
 tokens spent checking the work. Change the loop from what this shows, not from
 how one run felt.
 
+The lessons also flow forward: `loop.mjs ledger --lessons` prints them alone,
+and the contract stage hands them to the advisor as known pitfalls, so a new
+plan names what guards against a mistake an earlier run was corrected for.
+
 What it is not yet: nothing scores finished runs on its own, nothing replays
 old tasks against other models, and no agent opens a PR against the loop's own
 instructions. Those need a ledger with real runs in it first.

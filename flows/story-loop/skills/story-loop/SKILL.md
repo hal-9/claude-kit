@@ -216,7 +216,9 @@ sections; every later stage reads only that.
 
 **Before the sign-off, ask the advisor.** Once the description is drafted and
 before it goes to the human, start `story-loop:advisor-fable` with job
-`contract`, the story or issue text and the drafted description. Work its
+`contract`, the story or issue text, the drafted description and the known
+pitfalls: the output of `LOOP ledger --lessons` (what earlier runs here got
+corrected for, most frequent first). Work its
 gaps, hard decisions and lane into the description and the sign-off; where you
 disagree with it, say so to the human with both reasons. This is the plan
 everything after it builds on, so it is the one place Fable always runs.
