@@ -464,7 +464,7 @@ test('a second attempt takes over kills that still hold and runs only what can h
   r.git('add', '.'); r.git('commit', '-qm', 'round 2')
   const second = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'other.mjs')
   assert.equal(second.status, 0, second.stderr)
-  assert.match(second.stdout, new RegExp(`${killedFirst} mutants? killed on \\w{7} and unchanged since: taken over`))
+  assert.match(second.stdout, new RegExp(`${killedFirst} mutants? killed on \\w{7} on lines unchanged since: taken over`))
   assert.match(second.stdout, /^carried {2}calc\.mjs:1/m)
   assert.doesNotMatch(second.stdout, /^carried {2}other\.mjs/m, 'the changed file runs again')
   const m = load(dir).evidence.mutants
@@ -472,12 +472,24 @@ test('a second attempt takes over kills that still hold and runs only what can h
   assert.ok(m.carried.every(id => id.startsWith('calc.mjs:') && m.outcomes[id] === 'killed'))
   assert.equal(result(second.stdout).carried, killedFirst)
 
-  // Round 3 edits an existing test: a weaker test could let a mutant through, so nothing carries.
+  // Round 3 adds lines to an existing test and a line to calc.mjs: the kills on calc.mjs's
+  // untouched first line hold, and nothing on the new line is carried.
   sendBack()
-  writeFileSync(join(dir, 'helper.test.mjs'), '// edited\n')
+  writeFileSync(join(dir, 'helper.test.mjs'), '// a test file the rule watches\n// one more case\n')
+  writeFileSync(join(dir, 'calc.mjs'), source + 'export const huge = n => n > 1000\n')
   r.git('commit', '-qam', 'round 3')
   const third = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'other.mjs')
   assert.equal(third.status, 0, third.stderr)
-  assert.match(third.stdout, /nothing taken over from the earlier results: tests were changed or removed since \(helper\.test\.mjs\)/)
-  assert.equal(result(third.stdout).carried, 0)
+  assert.match(third.stdout, /^carried {2}calc\.mjs:1 /m)
+  assert.doesNotMatch(third.stdout, /^carried {2}calc\.mjs:2 /m, 'a new line runs')
+  assert.equal(result(third.stdout).carried, killedFirst)
+
+  // Round 4 takes a line out of an existing test: a weaker test could let a mutant through, so nothing carries.
+  sendBack()
+  writeFileSync(join(dir, 'helper.test.mjs'), '// edited\n')
+  r.git('commit', '-qam', 'round 4')
+  const fourth = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'other.mjs')
+  assert.equal(fourth.status, 0, fourth.stderr)
+  assert.match(fourth.stdout, /nothing taken over from the earlier results: tests lost lines since \(helper\.test\.mjs\)/)
+  assert.equal(result(fourth.stdout).carried, 0)
 })

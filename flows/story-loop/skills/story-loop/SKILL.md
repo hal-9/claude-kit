@@ -475,11 +475,13 @@ another: run the mutants again. Name the lane's left-out files in the report.
 
 **A second attempt runs only what can have changed.** After a round back to
 build (or new commits in this stage), the script takes over every earlier kill
-whose file is unchanged since, on the same base, and runs the rest: changed
-files, and every earlier survivor, timeout or unclear result. When a test file
-was edited or deleted since (not only added), nothing is taken over and every
-mutant runs: a weakened test could let one through. Run the same calls as the
-first time; the output says how many were carried over, and the report says so.
+on a line the change did not touch, on the same base: a mutant is matched by
+its file and what it changes the line to, so a line that only moved keeps its
+kill. It runs the rest: changed lines, and every earlier survivor, timeout or
+unclear result. Tests that only gained lines keep every kill; when a test file
+lost a line or was deleted, nothing is taken over and every mutant runs: a
+weakened test could let one through. Run the same calls as the first time;
+the output says how many were carried over, and the report says so.
 
 **Tests you add here go through the quality gate now.** A survivor killed with
 a new test changes the code after the quality gate passed. Before passing test
@@ -818,10 +820,12 @@ overwritten, with the code tree that request named. It refuses:
 - the exact answer that is already on record for another request: reading an
   old answer file again is not a new review.
 
-Starting the stage again while the reviewer is still out keeps its request.
-A request is tied to the code tree: the same tree under another commit (an
-amended message) is the same code; any changed file is not. After any commit
-that changes code, start the stage again, review again and record again.
+Starting the stage again on the same code keeps its request, and a review
+already recorded for it: a resume after a wait reviews nothing new. A request
+is tied to the code: the same tree under another commit (an amended message)
+is the same code, and so is code where only test files changed; any changed
+source file is not. After a commit that changes code, start the stage again,
+review again and record again.
 
 **One defect, one finding.** Before triage, merge what several sources found:
 the reviewer, an angle, the quality gate, a surviving mutant, and in later
@@ -866,7 +870,8 @@ build round fixes exactly those, and quality, test review, verify and this revie
   (tests aside) and is at most a quarter of the branch's lines: review
   `<since>..HEAD` (Codex: `--base <since>`; others: `git diff <since>..HEAD`),
   with the findings it names quoted, "Confirm each is closed, and find what this
-  change broke". The angles still run on the whole branch.
+  change broke". The angles get the same delta, not the whole branch: the
+  rest was reviewed already.
 - **full**, otherwise: the blind review above, as the first time.
 
 The script refuses a pass while

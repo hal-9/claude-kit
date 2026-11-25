@@ -72,23 +72,38 @@ export function laneBudget(name) {
 }
 const laneAllows = (lane, file) => !lane.exts || lane.exts.includes(extname(file))
 // The kills an earlier attempt established that still hold for this code: same base,
-// the mutated file unchanged since, and no test file edited or deleted (tests that were
-// only added can catch more, never less). Survivors, timeouts and anything unclear run
-// again. changedSince(tree) lists [{ status, file }] between that tree and this code.
+// the mutated line unchanged since, and no test file lost a line (tests that only gained
+// lines can catch more, never less). A mutant is matched by file and what it changes the
+// line to, so a line that only moved keeps its kill. Survivors, timeouts and anything
+// unclear run again. changedSince(tree) lists [{ status, file, deleted }] between that tree
+// and this code; linesSince(tree, file) the line numbers of this code changed since.
+// ponytail: an edit elsewhere in a file can, rarely, make an untouched line's mutant
+// unobservable; the carry trusts the line. Rerun with no earlier results to be strict.
 const fileOfId = id => id.split(':').slice(0, -2).join(':')
-export function carriedKills(run, { tree, base, changedSince }) {
-  const none = why => ({ from: null, ids: new Set(), why })
+const keyOfId = id => `${fileOfId(id)}:${id.split(':').at(-1)}`
+export function carriedKills(run, { tree, base, changedSince, linesSince = () => null }) {
+  const none = why => ({ from: null, ids: new Set(), holds: () => false, why })
   const earlier = [run?.evidence?.mutants, ...[...(run?.history ?? [])].reverse().map(h => h.evidence?.mutants)]
     .find(m => m?.tree && m.tree !== tree && m.outcomes)
   if (!earlier) return none(null)
   if (earlier.base !== base) return none('the base moved since the earlier results')
   let changed
   try { changed = changedSince(earlier.tree) } catch { return none('the earlier code is not in this repository') }
-  const touched = changed.filter(c => IS_TEST.test(c.file) && c.status !== 'A').map(c => c.file)
-  if (touched.length) return none(`tests were changed or removed since (${touched.join(', ')}); every mutant runs again`)
-  const files = new Set(changed.map(c => c.file))
-  const ids = new Set(Object.entries(earlier.outcomes).filter(([id, o]) => o === 'killed' && !files.has(fileOfId(id))).map(([id]) => id))
-  return { from: earlier.tree, ids, why: null }
+  const touched = changed.filter(c => IS_TEST.test(c.file) && (c.status === 'D' || (c.status !== 'A' && c.deleted !== 0))).map(c => c.file)
+  if (touched.length) return none(`tests lost lines since (${touched.join(', ')}); every mutant runs again`)
+  const files = new Map(changed.map(c => [c.file, c]))
+  const killed = Object.entries(earlier.outcomes).filter(([, o]) => o === 'killed').map(([id]) => id)
+  const ids = new Set(killed.filter(id => !files.has(fileOfId(id))))
+  const keys = new Set(killed.map(keyOfId))
+  const touchedLines = new Map()
+  const lines = file => {
+    if (!touchedLines.has(file)) { let l = null; try { l = linesSince(earlier.tree, file) } catch {} touchedLines.set(file, l ? new Set(l) : null) }
+    return touchedLines.get(file)
+  }
+  // An unchanged file keeps its kills by id; a changed one keeps those on lines the change did not touch.
+  const holds = (id, file, line) => ids.has(id) ||
+    (files.get(file)?.status === 'M' && keys.has(keyOfId(id)) && lines(file) !== null && !lines(file).has(line))
+  return { from: earlier.tree, ids, holds, why: null }
 }
 // What a mutant is in the results: where, what was changed, and nothing of the work copy.
 const row = ({ id, file, line, from, to }) => ({ id, file, line, from, to })
@@ -218,9 +233,14 @@ async function main(argv) {
   const laneName = runNow?.lane?.lane ?? null
   const lane = laneBudget(laneName)
   // A second attempt re-runs only what can have changed; earlier kills that still hold carry over.
-  const carry = carriedKills(runNow, { tree, base, changedSince: from =>
-    git('diff', '--name-status', '-z', '--no-renames', from, tree).split('\0').filter(Boolean)
-      .reduce((out, part, i, all) => i % 2 ? out : [...out, { status: part, file: all[i + 1] }], []) })
+  const carry = carriedKills(runNow, { tree, base,
+    changedSince: from => {
+      const deleted = new Map(git('diff', '--numstat', '-z', '--no-renames', from, tree).split('\0').filter(Boolean)
+        .map(row => row.split('\t')).map(([, d, file]) => [file, d === '-' ? 1 : Number(d)]))
+      return git('diff', '--name-status', '-z', '--no-renames', from, tree).split('\0').filter(Boolean)
+        .reduce((out, part, i, all) => i % 2 ? out : [...out, { status: part, file: all[i + 1], deleted: deleted.get(all[i + 1]) ?? 0 }], [])
+    },
+    linesSince: (from, file) => changedLines(git('diff', '-U0', '--no-renames', from, tree, '--', file)) })
   opt.max = opt.max !== undefined ? Number(opt.max) : lane.max
   const results = []
   if (runRoot) {
@@ -295,13 +315,19 @@ async function main(argv) {
     const outcomes = new Array(queue.length)
     // Kills that still hold are taken over and cost no run, and no share of --max.
     const fresh = []
-    queue.forEach((m, i) => { if (carry.ids.has(m.id)) outcomes[i] = { ...row(m), outcome: 'killed', carried: true }; else fresh.push(i) })
+    queue.forEach((m, i) => { if (carry.holds(m.id, m.file, m.line)) outcomes[i] = { ...row(m), outcome: 'killed', carried: true }; else fresh.push(i) })
     const runnable = fresh.slice(0, Number(opt.max))
     for (const i of fresh.slice(runnable.length)) outcomes[i] = { ...row(queue[i]), outcome: 'skipped' }
     const carried = queue.length - fresh.length
-    if (carried) console.log(`${carried} mutant${carried === 1 ? '' : 's'} killed on ${carry.from.slice(0, 7)} and unchanged since: taken over, not run again`)
+    if (carried) console.log(`${carried} mutant${carried === 1 ? '' : 's'} killed on ${carry.from.slice(0, 7)} on lines unchanged since: taken over, not run again`)
     else if (carry.why) console.log(`nothing taken over from the earlier results: ${carry.why}`)
     note('mutate.carry', { carried, from: carry.from, why: carry.why, to_run: runnable.length })
+    const progress = { files: covered, total: runnable.length, done: 0, killed: 0, survived: 0, other: 0, carried, running: [] }
+    const report = () => {
+      if (!live) return
+      try { update(live.runRoot, r => r.ops?.[live.ctx.op] ? { ...r, ops: { ...r.ops, [live.ctx.op]: { ...r.ops[live.ctx.op], progress: { ...progress, at: new Date().toISOString() } } } } : undefined) } catch { /* progress is a view, never a reason to stop */ }
+    }
+    report()
 
     // Each slot takes the next mutant, breaks its own copy of the file, runs, and puts it back.
     let next = 0

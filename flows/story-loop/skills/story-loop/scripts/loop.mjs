@@ -689,15 +689,19 @@ export function dirtyCode(root) {
 
 // prior: what the last attempt's browser accepted ({ checks_revision, environment, results }).
 // delta: files changed since then. tasks: [{ files, steps }] — which Test Steps each file serves.
-export function verifyCarry({ checks = [], checksRevision = 0, environment = null, prior = null, delta = null, tasks = [] }) {
+export function verifyCarry({ checks = [], checksRevision = 0, environment = null, prior = null, delta = null, tasks = [], attempt = null }) {
   const all = checks.map(c => c.id)
   const none = why => ({ carry: [], rerun: all, why })
   if (!prior?.results?.length) return none('no earlier passes to keep')
   if (!Array.isArray(delta)) return none('the code the earlier passes covered cannot be compared with HEAD')
   if (prior.checks_revision !== checksRevision) return none('the check list changed')
   if (!sameEnvironment(prior.environment, environment)) return none('the browser tests another environment')
-  const owners = new Map()
-  for (const t of tasks) for (const f of t.files ?? []) owners.set(f, [...(owners.get(f) ?? []), ...(t.steps ?? [])])
+  // A file this round's tasks changed serves the steps those tasks name (a fix names the steps it changes);
+  // a file no task of this round names falls back to every step any task mapped it to.
+  const ownersOf = list => { const m = new Map(); for (const t of list) for (const f of t.files ?? []) m.set(f, [...(m.get(f) ?? []), ...(t.steps ?? [])]); return m }
+  const all_ = ownersOf(tasks)
+  const round = ownersOf(tasks.filter(t => attempt != null && t.attempt === attempt))
+  const owners = new Map([...all_].map(([f, s]) => [f, round.get(f)?.length ? round.get(f) : s]))
   const code = delta.filter(f => !isTestFile(f))
   const unowned = code.filter(f => !owners.get(f)?.length)
   if (unowned.length) return none(`changed code no task maps to a Test Step: ${unowned.join(', ')}`)
@@ -1464,7 +1468,7 @@ function command(root, run, verb, args) {
       const request = verifyRequest(r, headTree(root) ?? fail('not a git checkout'), head)
       const prior = r.verify_prior
       const plan = verifyCarry({ checks: r.checks ?? [], checksRevision: r.checks_revision ?? 0, environment: env.url,
-        prior, delta: prior ? changedSince(root, prior.commit)?.files ?? null : null, tasks: r.tasks ?? [] })
+        prior, delta: prior ? changedSince(root, prior.commit)?.files ?? null : null, tasks: r.tasks ?? [], attempt: r.stages.build.attempt ?? 1 })
       const same = readResultsFile(root, r)?.request === request.id
       if (!same) archiveAttempt(root, r, `${request.attempt}-superseded`)
       // Restarting under the same request keeps what is in the file; a new request carries over afresh.
@@ -1478,8 +1482,9 @@ function command(root, run, verb, args) {
       const attempt = r.stages.second_review.attempt ?? 1
       const tree = headTree(root) ?? fail('not a git checkout')
       const open = r.stages.second_review.request
-      // Starting again while the reviewer is still out keeps its request; changed code, or an answer already on record, gets a new one.
-      const keep = open && open.attempt === attempt && open.tree === tree && !(r.reviews ?? []).some(v => v.request === open.id)
+      // Starting again on the same code keeps the request, and with it an answer already on record
+      // (a resume after a wait reviews nothing new). Changed code gets a new one; added tests do not.
+      const keep = open && open.attempt === attempt && (open.tree === tree || testsOnlySince(root, open.commit))
       if (keep) moved.stages.second_review.request = open
       else {
         const prior = (r.reviews ?? []).filter(v => v.attempt < attempt).at(-1) ?? null

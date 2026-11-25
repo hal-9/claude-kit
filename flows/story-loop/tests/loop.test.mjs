@@ -1075,3 +1075,34 @@ test('one finding changes without restating the list, and a partial list never d
   assert.equal(cli(dir, 'put', 'tasks', '[{"id":"t1","status":"accepted"}]').status, 0)
   assert.equal(load(dir).tasks[0].attempt, 1)
 })
+
+test('a browser pass and a review stand when only tests were committed since, and a resumed review keeps its answer', () => {
+  const { dir, commit, report, requestId } = atVerify()
+  const req = requestId(cli(dir, 'start', 'verify').stdout)
+  report(req)
+  commit('a_spec.rb', 'it { }\n')
+  writeFileSync(join(dir, 'b_spec.rb'), 'uncommitted test\n')
+  assert.equal(cli(dir, 'pass', 'verify').status, 0, cli(dir, 'pass', 'verify').stderr)
+  const reviewId = cli(dir, 'start', 'second_review').stdout.match(/review request: (\S+)/)[1]
+  writeFileSync(join(dir, '..', 'review.txt'), 'no findings')
+  assert.equal(cli(dir, 'review', 'codex', join(dir, '..', 'review.txt'), '--request', reviewId).status, 0)
+  commit('b_spec.rb', 'it { }\n')
+  assert.equal(cli(dir, 'wait', 'second_review', 'background', 'advisor triage').status, 0)
+  assert.equal(cli(dir, 'start', 'second_review').stdout.match(/review request: (\S+)/)[1], reviewId)
+  assert.equal(cli(dir, 'pass', 'second_review', 'nothing found').status, 0)
+  // a code change is new code: a new request
+  const codeStale = () => staleStages(dir, load(dir)).filter(s => ['verify', 'second_review'].includes(s))
+  assert.deepEqual(codeStale(), [])
+  commit('a.txt', 'code')
+  assert.deepEqual(codeStale(), ['verify', 'second_review'])
+})
+
+test('a fix round reruns the browser checks of the steps its own tasks name, not every step the file ever served', () => {
+  const checks = [{ id: 'a', step: 1 }, { id: 'b', step: 2 }, { id: 'c', step: 3 }]
+  const prior = { checks_revision: 1, environment: ENV.url, results: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] }
+  const tasks = [{ id: 't1', files: ['app/x.tsx'], steps: [1, 2, 3], attempt: 1 }, { id: 't9', files: ['app/x.tsx'], steps: [2], attempt: 2 }]
+  const plan = attempt => verifyCarry({ checks, checksRevision: 1, environment: ENV.url, prior, delta: ['app/x.tsx'], tasks, attempt })
+  assert.deepEqual(plan(2).rerun, ['b'])
+  // a round whose tasks do not name the file falls back to every step it served
+  assert.deepEqual(plan(3).rerun, ['a', 'b', 'c'])
+})
