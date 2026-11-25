@@ -13,6 +13,7 @@ import { basename, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bind, record, toggle, exportBundle, diagDir, readEvents, readManifest, scrub } from './diag.mjs'
 import { appendLedger, readLedger, summary as ledgerSummary, ledgerFile } from './ledger.mjs'
+import { acquire } from './lease.mjs'
 
 export const GRAPH = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'graph.json'), 'utf8'))
 export const SCHEMA = 3
@@ -1102,7 +1103,9 @@ export function parallelWorktree(root, input, { fetch = true } = {}) {
   let base = 'HEAD'
   try { base = git('symbolic-ref', '--short', 'refs/remotes/origin/HEAD').trim() } catch { try { git('rev-parse', '--verify', '--quiet', 'origin/main'); base = 'origin/main' } catch {} }
   mkdirSync(home, { recursive: true })
-  const n = readdirSync(home).length + 1
+  // Ports are leased to the worktree, not counted from the folder: a removed worktree frees
+  // its own number and never makes a new story take a live neighbour's.
+  const n = acquire(root, 'ports', { path: dir })
   git('worktree', 'add', '--detach', '--quiet', dir, base)
   const linked = [], missing = []
   for (const { path, mode } of worktreeEntries(root)) {

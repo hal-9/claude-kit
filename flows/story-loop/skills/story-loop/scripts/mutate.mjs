@@ -28,6 +28,7 @@ import { dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { GRAPH, findRoot, load, emit, update, headTree, opStart, opUpdate, opEnd } from './loop.mjs'
 import { record } from './diag.mjs'
+import { acquire, release } from './lease.mjs'
 
 const COMMON = [
   [/===/, '!=='], [/!==/, '==='], [/(?<![=!])==(?!=)/, '!='], [/!=(?!=)/, '=='],
@@ -146,6 +147,7 @@ function cleanup() {
     try { if (slot.child?.pid) process.kill(-slot.child.pid, 'SIGKILL') } catch {}
     try { execFileSync('git', ['worktree', 'remove', '--force', slot.worktree], { cwd: active.root, stdio: 'ignore' }) } catch {}
     rmSync(slot.worktree, { recursive: true, force: true })
+    release(active.root, 'test-env', slot.n)
   }
   active = null
 }
@@ -257,7 +259,10 @@ async function main(argv) {
   const jobs = Number(opt.jobs)
   const stamp = `${process.pid}-${Date.now()}`
   active = { root, slots: [] }
-  for (let n = 1; n <= jobs; n++) {
+  for (let i = 1; i <= jobs; i++) {
+    // The slot number (and TEST_ENV_NUMBER) is leased across every mutate call in every
+    // checkout of this repository: two stories' slots never share a test database.
+    const n = acquire(root, 'test-env', { pid: process.pid })
     const worktree = join(tmpdir(), `${WORKTREE_PREFIX}${stamp}-${n}`)
     git('worktree', 'add', '--detach', '--quiet', worktree, 'HEAD')
     active.slots.push({ n, worktree, inside: realpathSync(worktree) + sep, child: null })
