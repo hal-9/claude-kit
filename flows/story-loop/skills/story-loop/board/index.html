@@ -1515,7 +1515,7 @@ function needsYou() {
   if (!run) return out
   for (const s of S.graph.stages) {
     const st = run.stages?.[s.id]
-    if (st?.status === 'waiting' && st.waiting_on === 'human') out.push({ kind: `${s.label} needs you`, what: cap(st.reason || s.hint), stage: s.id, question: st.reason ?? null })
+    if (st?.status === 'waiting' && st.waiting_on === 'human') out.push({ kind: `${s.label} needs you`, what: cap(st.reason || s.hint), stage: s.id, question: st.reason ?? null, run: run.run_key, attempt: st.attempt ?? 1, question_id: st.question_id })
     if (st?.status === 'blocked') {
       const gate = STOP_GATE.test(st.reason ?? '')
       out.push({ kind: `${s.label} is blocked`, what: cap(blockSummary(st.reason)) || 'No reason given.',
@@ -1548,7 +1548,7 @@ function answerControls(item) {
     if (verdict === 'no' && !why.value.trim()) { status.textContent = 'Say what to do instead.'; why.focus(); return }
     button.disabled = true; status.textContent = 'Sending…'
     try {
-      const res = await fetch('/api/answer', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ stage: item.stage, verdict, text: verdict === 'no' ? why.value : undefined }) })
+      const res = await fetch('/api/answer', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ stage: item.stage, run: item.run, attempt: item.attempt, question_id: item.question_id, verdict, text: verdict === 'no' ? why.value : undefined }) })
       const msg = await res.text()
       if (!res.ok) throw new Error(msg)
       status.textContent = 'Sent. The agent picks it up in a moment.'

@@ -1,14 +1,14 @@
 // The board server with a fake `claude` on PATH: what the explainer may use, and that cancelling stops it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync, rmSync, symlinkSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { repo, withRun, PNG, ENV, META } from './helpers.mjs'
 import { mkdirSync } from 'node:fs'
-import { resultsFile, evidenceDir, load, update, addNote, readInbox, verifyRequest, verifyProblem } from '../skills/story-loop/scripts/loop.mjs'
+import { resultsFile, evidenceDir, runDir, load, update, addNote, readInbox, verifyRequest, verifyProblem } from '../skills/story-loop/scripts/loop.mjs'
 
 const SERVER = fileURLToPath(new URL('../skills/story-loop/board/server.mjs', import.meta.url))
 const bin = mkdtempSync(join(tmpdir(), 'sl-fakeclaude-'))
@@ -78,9 +78,9 @@ async function stream(base) {
   const until = async (pattern, ms = 4000) => { for (let i = 0; i < ms / 50 && !pattern.test(state.text); i++) await wait(50); return pattern.test(state.text) }
   return { state, until, close: () => reader.cancel().catch(() => {}) }
 }
-async function board(t, dir, offset) {
+async function board(t, dir, offset, env = process.env) {
   const port = 44000 + offset + (process.pid % 1000)
-  const server = spawn('node', [SERVER, '--root', dir, '--port', String(port)], { stdio: 'ignore' })
+  const server = spawn('node', [SERVER, '--root', dir, '--port', String(port)], { env, stdio: 'ignore' })
   t.after(() => server.kill())
   await wait(600)
   return { server, base: `http://127.0.0.1:${port}` }
@@ -212,14 +212,17 @@ test('the board answers a stage waiting on the human: yes, or no with what to do
   withRun(dir)
   update(dir, r => { r.stages.contract.status = 'passed'; r.stages.build.status = 'passed'; r.stages.quality = { ...r.stages.quality, status: 'waiting', waiting_on: 'human', reason: 'accept the new size of 1058 lines?' }; return r })
   const { base } = await board(t, dir, 4)
-  const send = payload => fetch(`${base}/api/answer`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+  // What the page rendered the question with: the run, the stage's attempt and the question's id.
+  const { run } = await snapshot(base)
+  const bound = { run: run.run_key, attempt: run.stages.quality.attempt, question_id: run.stages.quality.question_id }
+  const send = payload => fetch(`${base}/api/answer`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...bound, ...payload }) })
 
   assert.equal((await send({ stage: 'build', verdict: 'yes' })).status, 409, 'build is not waiting on the human')
   assert.equal((await send({ stage: 'quality', verdict: 'maybe' })).status, 400)
   const bareNo = await send({ stage: 'quality', verdict: 'no', text: '  ' })
   assert.equal(bareNo.status, 400)
   assert.match(await bareNo.text(), /what the agent should do instead/)
-  const foreign = await fetch(`${base}/api/answer`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://evil.example' }, body: JSON.stringify({ stage: 'quality', verdict: 'yes' }) })
+  const foreign = await fetch(`${base}/api/answer`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://evil.example' }, body: JSON.stringify({ ...bound, stage: 'quality', verdict: 'yes' }) })
   assert.equal(foreign.status, 403)
   assert.equal(readInbox(dir, load(dir)).length, 0, 'nothing reached the inbox')
 
@@ -230,4 +233,149 @@ test('the board answers a stage waiting on the human: yes, or no with what to do
   const no = await send({ stage: 'quality', verdict: 'no', text: 'split the story instead' })
   assert.equal(no.status, 200)
   assert.equal(readInbox(dir, load(dir))[1].text, 'split the story instead')
+})
+
+test('an answer is bound to the question it answers: run, stage, attempt and question id; a repeat is one note', async t => {
+  const { dir } = repo()
+  withRun(dir)
+  const ask = reason => update(dir, r => { r.stages.contract.status = 'passed'; r.stages.build.status = 'passed'; r.stages.quality = { ...r.stages.quality, status: 'waiting', waiting_on: 'human', reason }; return r })
+  ask('accept the new size of 1058 lines?')
+  const { base } = await board(t, dir, 6)
+  const page = await fetch(`${base}/`)
+  assert.equal(page.headers.get('x-frame-options'), 'DENY')
+  assert.match(page.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/)
+  assert.match(await page.text(), /question_id: item\.question_id/, 'the page sends the id of the question it rendered')
+
+  const { run } = await snapshot(base)
+  const bound = { stage: 'quality', run: run.run_key, attempt: run.stages.quality.attempt, question_id: run.stages.quality.question_id }
+  assert.ok(bound.run && bound.attempt && /^[0-9a-f]{64}$/.test(bound.question_id), 'the board receives what identifies the question')
+  const send = payload => fetch(`${base}/api/answer`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+
+  for (const wrong of [{ run: 'another-run' }, { attempt: bound.attempt + 1 }, { question_id: 'f'.repeat(64) }, { question_id: undefined }, { run: undefined }]) {
+    const res = await send({ ...bound, ...wrong, verdict: 'yes' })
+    assert.equal(res.status, 409, JSON.stringify(wrong))
+  }
+  assert.equal(readInbox(dir, load(dir)).length, 0, 'no mismatched answer reached the inbox')
+
+  const first = await send({ ...bound, verdict: 'yes' })
+  assert.equal(first.status, 200)
+  const again = await send({ ...bound, verdict: 'yes' })
+  assert.equal(again.status, 200)
+  assert.deepEqual(await again.json(), await first.json(), 'the repeat names the same note')
+  const notes = readInbox(dir, load(dir))
+  assert.equal(notes.length, 1, 'a repeated answer is one note')
+  assert.deepEqual([notes[0].run, notes[0].attempt, notes[0].question_id], [bound.run, bound.attempt, bound.question_id])
+
+  // The stage now asks something else: an answer to the old question no longer fits.
+  ask('accept 1200 lines?')
+  assert.equal((await send({ ...bound, verdict: 'no', text: 'split it' })).status, 409)
+  assert.equal(readInbox(dir, load(dir)).length, 1)
+})
+
+test('the evidence route serves only real images inside the run\'s evidence folder', async t => {
+  const { dir } = repo()
+  const run = withRun(dir)
+  const ev = evidenceDir(dir, run)
+  mkdirSync(ev, { recursive: true })
+  writeFileSync(join(ev, 'ok.png'), PNG)
+  const outside = mkdtempSync(join(tmpdir(), 'sl-outside-'))
+  writeFileSync(join(outside, 'secret.png'), PNG)
+  symlinkSync(join(outside, 'secret.png'), join(ev, 'link.png'))
+  writeFileSync(join(ev, 'fake.png'), 'not an image at all, only text with a png name '.repeat(4))
+  // A real PNG header and end, over the size cap.
+  writeFileSync(join(ev, 'huge.png'), Buffer.concat([PNG, Buffer.alloc(21 << 20), PNG.subarray(-12)]))
+  writeFileSync(join(runDir(dir, run), 'up.png'), PNG)
+  const { base } = await board(t, dir, 7)
+  const get = name => fetch(`${base}/evidence/${name}`)
+
+  const ok = await get('ok.png')
+  assert.equal(ok.status, 200)
+  assert.equal(ok.headers.get('content-type'), 'image/png')
+  assert.deepEqual(Buffer.from(await ok.arrayBuffer()), PNG)
+  for (const name of ['link.png', 'fake.png', 'huge.png', '..%2Fup.png', 'missing.png']) {
+    const res = await get(name)
+    assert.equal(res.status, 404, name)
+    await res.arrayBuffer()
+  }
+})
+
+// A fake `claude` whose auth check is slow, so requests pile up while it runs.
+function slowClaude() {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-slowclaude-'))
+  const f = { dir, starts: join(dir, 'starts'), auths: join(dir, 'auths'), out: join(dir, 'logged-out') }
+  writeFileSync(join(dir, 'claude'), `#!/usr/bin/env node
+const fs = require('fs')
+if (process.argv[2] === 'auth') { fs.appendFileSync(${JSON.stringify(f.auths)}, 'x\\n'); setTimeout(() => process.stdout.write(JSON.stringify({ loggedIn: !fs.existsSync(${JSON.stringify(f.out)}) })), 400); return }
+fs.appendFileSync(${JSON.stringify(f.starts)}, process.pid + '\\n')
+process.stdout.write('thinking...')
+setTimeout(() => {}, 60000)
+`)
+  chmodSync(join(dir, 'claude'), 0o755)
+  const lines = file => existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : []
+  return { ...f, env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, startPids: () => lines(f.starts).map(Number), authCount: () => lines(f.auths).length }
+}
+function explainer(base) {
+  return () => {
+    const abort = new AbortController()
+    const res = fetch(`${base}/api/explain`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: 'a.txt', question: 'explain' }), signal: abort.signal })
+    return { res, abort: () => abort.abort() }
+  }
+}
+
+test('at most two explainers run however many requests arrive during the auth check, and every path hands its slot back', async t => {
+  const { dir, commit } = repo()
+  withRun(dir)
+  commit('a.txt', 'changed')
+  const fake = slowClaude()
+  const { base } = await board(t, dir, 8, fake.env)
+  const ask = explainer(base)
+
+  // Auth fails: the two that got a slot say so, the rest are turned away, nothing starts.
+  writeFileSync(fake.out, '')
+  const out = [ask(), ask(), ask()]
+  const outStatus = await Promise.all(out.map(async r => { const res = await r.res; await res.text(); return res.status }))
+  assert.deepEqual(outStatus.sort(), [429, 503, 503])
+  assert.equal(fake.authCount(), 1, 'simultaneous auth checks are one check')
+  assert.deepEqual(fake.startPids(), [])
+  rmSync(fake.out)
+
+  // Six at once while the auth check runs: two start, four are turned away.
+  const six = Array.from({ length: 6 }, ask)
+  const responses = await Promise.all(six.map(r => r.res))
+  assert.deepEqual(responses.map(r => r.status).sort(), [200, 200, 429, 429, 429, 429])
+  await wait(800)
+  assert.equal(fake.startPids().length, 2, 'only two explainers started')
+  assert.equal(fake.authCount(), 2)
+
+  // A bad request and the cancelled two hand their slots back.
+  for (const r of six) r.abort()
+  for (let i = 0; i < 30 && fake.startPids().some(alive); i++) await wait(100)
+  assert.equal(fake.startPids().some(alive), false)
+  await wait(200)
+  const bad = await fetch(`${base}/api/explain`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: 'nope' }) })
+  assert.equal(bad.status, 400)
+  const next = [ask(), ask(), ask()]
+  const nextStatus = await Promise.all(next.map(async r => (await r.res).status))
+  assert.deepEqual(nextStatus.sort(), [200, 200, 429], 'all slots came back: two run again, the third waits')
+  for (const r of next) r.abort()
+  for (let i = 0; i < 30 && fake.startPids().some(alive); i++) await wait(100)
+})
+
+test('an explanation cancelled while the auth check runs starts nothing and hands its slot back', async t => {
+  const { dir, commit } = repo()
+  withRun(dir)
+  commit('a.txt', 'changed')
+  const fake = slowClaude()
+  const { base } = await board(t, dir, 9, fake.env)
+  const ask = explainer(base)
+  const gone = ask()
+  gone.res.catch(() => {})
+  await wait(100)
+  gone.abort()
+  await wait(800)
+  assert.deepEqual(fake.startPids(), [], 'nothing started for a page that left')
+  const both = [ask(), ask()]
+  assert.deepEqual(await Promise.all(both.map(async r => (await r.res).status)), [200, 200])
+  for (const r of both) r.abort()
+  for (let i = 0; i < 30 && fake.startPids().some(alive); i++) await wait(100)
 })

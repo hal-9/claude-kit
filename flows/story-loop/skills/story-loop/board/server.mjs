@@ -5,12 +5,13 @@
 // The one thing it starts is `claude -p` for an "explain" request: only the
 // Read, Grep and Glob tools exist in it, no MCP servers, bounded in time and count.
 import { createServer } from 'node:http'
-import { readFileSync, writeFileSync, statSync, existsSync, mkdtempSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, statSync, existsSync, mkdtempSync, mkdirSync, realpathSync, openSync, fstatSync, closeSync, constants } from 'node:fs'
 import { execFile, execFileSync, spawn } from 'node:child_process'
-import { basename, dirname, extname, join, resolve } from 'node:path'
+import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, paths, newRun, move, save, emit, readInbox, addNote, deliver, readResults, resultsFile, evidenceDir, runDir, staleStages, headCommit, verifyReport, diffBase } from '../scripts/loop.mjs'
+import { GRAPH, paths, newRun, move, save, emit, readInbox, addNote, deliver, readResults, resultsFile, evidenceDir, runDir, staleStages, headCommit, verifyReport, diffBase, imageProblem, runKey } from '../scripts/loop.mjs'
 import { record } from '../scripts/diag.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -44,7 +45,16 @@ const readEvents = () => {
 }
 const EXPLAIN_SECONDS = 180
 const EXPLAIN_MAX = 2
+const EXPLAIN_OUTPUT_MAX = 256 << 10
+const BODY_MAX = 20_000
 let explaining = 0
+// One explanation slot, taken before the first await so requests arriving together
+// cannot all pass the limit; the release runs once whatever path ends the request.
+function takeSlot() {
+  explaining++
+  let held = true
+  return () => { if (held) { held = false; explaining-- } }
+}
 const stamp = file => { try { const s = statSync(file); return `${s.mtimeMs}:${s.size}` } catch { return '' } }
 
 function mergeBase(run) {
@@ -107,10 +117,35 @@ function tested(run, report = gate(run), rows = results(run, report)) {
     all_accepted: all && !stale, provenance: report?.provenance ?? run.stages?.verify?.provenance ?? null,
   }
 }
+// Which question a stage waiting on the human asks: an answer must name it back.
+const questionId = st => createHash('sha256').update(String(st?.reason ?? '')).digest('hex')
+const waitsOnHuman = st => st?.status === 'waiting' && st.waiting_on === 'human'
 // The run as the page sees it: the state file plus which evidence is stale for the code now.
 function view(run) {
   if (!run) return run
-  return { ...run, stale: DEMO ? (run.stale ?? []) : staleStages(ROOT, run), head: DEMO ? 'demo' : headCommit(ROOT) }
+  const stages = Object.fromEntries(Object.entries(run.stages ?? {}).map(([id, st]) => [id, waitsOnHuman(st) ? { ...st, question_id: questionId(st) } : st]))
+  return { ...run, stages, run_key: runKey(run), stale: DEMO ? (run.stale ?? []) : staleStages(ROOT, run), head: DEMO ? 'demo' : headCommit(ROOT) }
+}
+// Evidence is served over loopback only; the boundary matters only to a writer able to
+// put a symlink (or a swapped file) into the evidence folder. Only a regular image file
+// whose real path is inside that folder is served, read from the descriptor that was checked.
+const EVIDENCE_MAX_BYTES = 20 << 20
+function evidenceShot(run, name) {
+  const type = IMAGE_TYPES[extname(name).toLowerCase()]
+  if (!run || !type || name !== basename(name) || name === '..') return null
+  const dir = evidenceDir(ROOT, run)
+  // The demo's stand-in screenshots are SVG, which the image check rightly refuses.
+  if (!(DEMO && type === 'image/svg+xml') && imageProblem(dir, name)) return null
+  let real, checked
+  try { real = realpathSync(join(dir, name)); checked = statSync(real) } catch { return null }
+  if (!real.startsWith(realpathSync(dir) + sep)) return null
+  let fd
+  try { fd = openSync(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)) } catch { return null }
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile() || st.dev !== checked.dev || st.ino !== checked.ino || st.size > EVIDENCE_MAX_BYTES) return null
+    return { type, data: readFileSync(fd) }
+  } finally { closeSync(fd) }
 }
 // Rows and summary from one reading of the gate, so they can never disagree.
 function testedView(run) {
@@ -160,7 +195,7 @@ tick(() => {
 function body(req) {
   return new Promise((ok, no) => {
     let text = ''
-    req.on('data', chunk => { text += chunk; if (text.length > 20_000) no(new Error('too large')) })
+    req.on('data', chunk => { if (text.length > BODY_MAX) return; text += chunk; if (text.length > BODY_MAX) no(new Error('too large')) })
     req.on('end', () => { try { ok(JSON.parse(text)) } catch (error) { no(error) } })
   })
 }
@@ -170,64 +205,81 @@ function body(req) {
 // the answer. Ask first. A yes is remembered for five minutes, a no never.
 const NOT_SIGNED_IN = 'The explanations run the `claude` CLI, and it is not signed in on its own (the desktop app\'s session does not carry over). In a terminal run `claude auth login`, then ask again.'
 let signedInUntil = 0
+let checking = null
+// Requests that arrive while a check runs share it.
 function signedIn() {
   if (Date.now() < signedInUntil) return Promise.resolve(true)
-  return new Promise(done => execFile('claude', ['auth', 'status'], { timeout: 15_000 }, (_error, stdout) => {
+  return checking ??= new Promise(done => execFile('claude', ['auth', 'status'], { timeout: 15_000 }, (_error, stdout) => {
     let yes = false
     try { yes = JSON.parse(stdout).loggedIn === true } catch {}
     if (yes) signedInUntil = Date.now() + 5 * 60_000
+    checking = null
     done(yes)
   }))
 }
 
 async function explain(req, res) {
   if (!/^application\/json/.test(req.headers['content-type'] ?? '')) return text(res, 415, 'json only')
-  const { file, question, text: custom } = await body(req)
-  const run = readJson(P.active)
-  const known = changes(run).map(c => c.file)
-  // Trust boundary: the page may only ask about files that are part of this change.
-  if (file && !known.includes(file)) return text(res, 400, 'that file is not part of this change')
-  const ask = question === 'custom' ? String(custom ?? '').slice(0, 500) : QUESTIONS[question]
-  if (!ask) return text(res, 400, 'unknown question')
   if (explaining >= EXPLAIN_MAX) return text(res, 429, `${EXPLAIN_MAX} explanations are already running; wait for one to finish`)
-  if (!DEMO && !(await signedIn())) return text(res, 503, NOT_SIGNED_IN)
-  const head = DEMO ? 'demo' : headCommit(ROOT) ?? ''
-  res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-story-loop-head': head })
-  if (DEMO) return res.end(question === 'quiz' ? DEMO_QUIZ : DEMO_ANSWER)
-  const prompt = [
-    `You are explaining a code change to the developer who owns it and wants to understand it, not to review it.`,
-    `Story ${run?.story ?? ''}${run?.title ? `: ${run.title}` : ''}. Changed files: ${known.join(', ')}.`,
-    file ? `Focus on ${file}. Its diff:\n\n${diffOf(run, file).slice(0, 30_000)}` : 'Cover the change as a whole; read the files you need.',
-    ask,
-    'Read the surrounding code before answering. Under 250 words, markdown, name real files and methods.',
-  ].join('\n\n')
-  // --tools makes Read, Grep and Glob the only tools that exist (--allowedTools alone
-  // only skips their prompts); --strict-mcp-config with no config loads no MCP server.
-  const child = spawn('claude', ['-p', prompt, '--tools', 'Read,Grep,Glob', '--allowedTools', 'Read,Grep,Glob',
-    '--strict-mcp-config', '--no-session-persistence'], {
-    cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, STORY_LOOP_EXPLAINER: '1' },
-  })
-  explaining++
-  const began = Date.now()
-  record(ROOT, 'board.explain', { outcome: 'started', question, file })
-  let wrote = false, stderr = '', finished = false, ended = null
-  const stop = () => { try { process.kill(-child.pid, 'SIGKILL') } catch {} }
-  const timer = setTimeout(() => { ended = 'timeout'; if (!res.writableEnded) res.write(`\n\n_Stopped: no answer within ${EXPLAIN_SECONDS} seconds._`); stop() }, EXPLAIN_SECONDS * 1000)
-  const done = (outcome, reason) => {
-    if (finished) return
-    finished = true; explaining--; clearTimeout(timer)
-    record(ROOT, 'board.explain', { outcome: ended ?? outcome, reason, question, file, elapsed_ms: Date.now() - began })
+  const release = takeSlot()
+  // The page closed or cancelled: the work stops with it, or never starts.
+  let gone = false, cancel = null
+  res.on('close', () => { gone = true; cancel?.() })
+  let child
+  try {
+    const { file, question, text: custom } = await body(req)
+    const run = readJson(P.active)
+    const known = changes(run).map(c => c.file)
+    // Trust boundary: the page may only ask about files that are part of this change.
+    if (file && !known.includes(file)) return text(res, 400, 'that file is not part of this change')
+    const ask = question === 'custom' ? String(custom ?? '').slice(0, 500) : QUESTIONS[question]
+    if (!ask) return text(res, 400, 'unknown question')
+    if (!DEMO && !(await signedIn())) return text(res, 503, NOT_SIGNED_IN)
+    if (gone) return
+    const head = DEMO ? 'demo' : headCommit(ROOT) ?? ''
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-story-loop-head': head })
+    if (DEMO) return res.end(question === 'quiz' ? DEMO_QUIZ : DEMO_ANSWER)
+    const prompt = [
+      `You are explaining a code change to the developer who owns it and wants to understand it, not to review it.`,
+      `Story ${run?.story ?? ''}${run?.title ? `: ${run.title}` : ''}. Changed files: ${known.join(', ')}.`,
+      file ? `Focus on ${file}. Its diff:\n\n${diffOf(run, file).slice(0, 30_000)}` : 'Cover the change as a whole; read the files you need.',
+      ask,
+      'Read the surrounding code before answering. Under 250 words, markdown, name real files and methods.',
+    ].join('\n\n')
+    // --tools makes Read, Grep and Glob the only tools that exist (--allowedTools alone
+    // only skips their prompts); --strict-mcp-config with no config loads no MCP server.
+    child = spawn('claude', ['-p', prompt, '--tools', 'Read,Grep,Glob', '--allowedTools', 'Read,Grep,Glob',
+      '--strict-mcp-config', '--no-session-persistence'], {
+      cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, STORY_LOOP_EXPLAINER: '1' },
+    })
+    const began = Date.now()
+    record(ROOT, 'board.explain', { outcome: 'started', question, file })
+    let written = 0, stderr = '', finished = false, ended = null
+    const stop = () => { try { process.kill(-child.pid, 'SIGKILL') } catch {} }
+    cancel = () => { if (!finished) { ended ??= 'cancelled'; stop() } }
+    const timer = setTimeout(() => { ended = 'timeout'; if (!res.writableEnded) res.write(`\n\n_Stopped: no answer within ${EXPLAIN_SECONDS} seconds._`); stop() }, EXPLAIN_SECONDS * 1000)
+    const done = (outcome, reason) => {
+      if (finished) return
+      finished = true; release(); clearTimeout(timer)
+      record(ROOT, 'board.explain', { outcome: ended ?? outcome, reason, question, file, elapsed_ms: Date.now() - began })
+    }
+    child.stdout.on('data', chunk => {
+      if (written >= EXPLAIN_OUTPUT_MAX) return
+      written += chunk.length
+      res.write(chunk)
+      if (written >= EXPLAIN_OUTPUT_MAX) { ended = 'too long'; res.write(`\n\n_Stopped: the answer passed ${EXPLAIN_OUTPUT_MAX >> 10} KB._`); stop() }
+    })
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2000) })
+    child.on('error', error => { done('failed', error.message); if (!res.writableEnded) res.end(`_Could not start claude: ${error.message}_`) })
+    child.on('close', code => {
+      done(code === 0 ? 'ok' : 'failed', code === 0 ? undefined : `exit ${code ?? 'killed'}`)
+      if (res.writableEnded) return
+      res.end(code === 0 || written ? '' : `_The explanation failed (exit ${code ?? 'killed'})${stderr ? `: ${stderr.trim().split('\n').at(-1)}` : ''}_`)
+    })
+  } finally {
+    // Every path that started no child hands the slot back here; a child's end does it otherwise.
+    if (!child) release()
   }
-  child.stdout.on('data', chunk => { wrote = true; res.write(chunk) })
-  child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2000) })
-  child.on('error', error => { done('failed', error.message); if (!res.writableEnded) res.end(`_Could not start claude: ${error.message}_`) })
-  child.on('close', code => {
-    done(code === 0 ? 'ok' : 'failed', code === 0 ? undefined : `exit ${code ?? 'killed'}`)
-    if (res.writableEnded) return
-    res.end(code === 0 || wrote ? '' : `_The explanation failed (exit ${code ?? 'killed'})${stderr ? `: ${stderr.trim().split('\n').at(-1)}` : ''}_`)
-  })
-  // The page closed or cancelled: the work stops with it.
-  res.on('close', () => { if (!finished) { ended ??= 'cancelled'; stop() } })
 }
 
 const isJson = req => /^application\/json/.test(req.headers['content-type'] ?? '')
@@ -253,17 +305,22 @@ async function steer(req, res) {
 
 // The human answers the question a stage is waiting on: yes, or no with what to do
 // instead. It lands in the inbox like any note; the conductor's waiter hands it over.
+// The answer names the question the page showed (run, stage, attempt, question id):
+// one for an older run, attempt or question is refused, and sending it twice is one note.
 async function answer(req, res) {
   if (!isJson(req)) return text(res, 415, 'json only')
-  const { stage, verdict, text: said } = await body(req)
+  const { stage, verdict, text: said, run: key, attempt, question_id: qid } = await body(req)
   const run = readJson(P.active)
   if (!run) return text(res, 409, 'no active run')
   const st = run.stages?.[stage]
-  if (!st || st.status !== 'waiting' || st.waiting_on !== 'human') return text(res, 409, 'that stage is not waiting on you any more')
+  if (!waitsOnHuman(st)) return text(res, 409, 'that stage is not waiting on you any more')
+  if (key !== runKey(run) || attempt !== (st.attempt ?? 1) || qid !== questionId(st)) return text(res, 409, 'that question is no longer the one waiting; reload the board')
   if (!['yes', 'no'].includes(verdict)) return text(res, 400, 'answer yes or no')
   const why = typeof said === 'string' ? said.trim().slice(0, 2000) : ''
   if (verdict === 'no' && !why) return text(res, 400, 'say what the agent should do instead')
-  const id = addNote(ROOT, { kind: 'answer', stage, verdict, text: why || undefined, question: st.reason ?? undefined })
+  // No await between this check and addNote: two submissions cannot both pass it.
+  const same = readInbox(ROOT, run).find(n => n.kind === 'answer' && n.run === key && n.stage === stage && n.attempt === attempt && n.question_id === qid && n.verdict === verdict)
+  const id = same?.id ?? addNote(ROOT, { kind: 'answer', stage, verdict, text: why || undefined, question: st.reason ?? undefined, run: key, attempt, question_id: qid })
   res.writeHead(200, { 'content-type': 'application/json' })
   res.end(JSON.stringify({ id }))
 }
@@ -278,7 +335,7 @@ createServer(async (req, res) => {
     if (req.method !== 'GET' && req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) return text(res, 403, 'local page only')
     const url = new URL(req.url, 'http://localhost')
     if (url.pathname === '/') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'" })
       return res.end(readFileSync(join(HERE, 'index.html')))
     }
     if (url.pathname === '/events') {
@@ -297,14 +354,12 @@ createServer(async (req, res) => {
       return text(res, 200, diffOf(run, file))
     }
     if (url.pathname.startsWith('/evidence/')) {
-      const run = readJson(P.active)
-      // Only image files that sit directly in this run's evidence folder.
-      const name = basename(decodeURIComponent(url.pathname))
-      const type = IMAGE_TYPES[extname(name).toLowerCase()]
-      const file = run && join(evidenceDir(ROOT, run), name)
-      if (!type || !file || !existsSync(file)) return text(res, 404, 'not found')
-      res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'" })
-      return res.end(readFileSync(file))
+      let name
+      try { name = decodeURIComponent(url.pathname.slice('/evidence/'.length)) } catch { return text(res, 404, 'not found') }
+      const shot = evidenceShot(readJson(P.active), name)
+      if (!shot) return text(res, 404, 'not found')
+      res.writeHead(200, { 'content-type': shot.type, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'" })
+      return res.end(shot.data)
     }
     if (url.pathname === '/api/explain' && req.method === 'POST') return await explain(req, res)
     if (url.pathname === '/api/steer' && req.method === 'POST') return await steer(req, res)
