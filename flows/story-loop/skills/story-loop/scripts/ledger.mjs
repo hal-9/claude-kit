@@ -4,7 +4,7 @@
 // reviewers found, what the tiers returned, what it cost in tokens, and the
 // lessons the retro stage recorded.
 // ponytail: one file per repository on this machine; a shared store only when several people run the loop.
-import { readFileSync, appendFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, appendFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, renameSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -117,25 +117,53 @@ export function readLedger(root) {
 const total = b => (b?.input ?? 0) + (b?.cache_write ?? 0) + (b?.cache_read ?? 0) + (b?.output ?? 0)
 const VERIFICATION = ['quality', 'test_review', 'verify', 'second_review', 'copilot_review', 'fix_comments']
 
+// Patterns whose check has landed, { [pattern]: { at, by } }, kept next to the ledger.
+// A file that exists but cannot be read is an error, never "nothing handled".
+export const handledFile = root => join(dirname(ledgerFile(root)), 'handled.json')
+export function readHandled(root) {
+  try { return JSON.parse(readFileSync(handledFile(root), 'utf8')) } catch (error) {
+    if (error.code === 'ENOENT') return {}
+    throw new Error(`${handledFile(root)} cannot be read (${error.message}); fix or remove it`)
+  }
+}
+export function markHandled(root, pattern, by, at = new Date().toISOString()) {
+  const file = handledFile(root)
+  const all = { ...readHandled(root), [pattern]: { at, by } }
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(`${file}.tmp`, JSON.stringify(all, null, 2) + '\n')
+  renameSync(`${file}.tmp`, file)
+  return all[pattern]
+}
+
 // The lessons of all runs, one line per pattern, most frequent first. The contract
-// advisor reads these as known pitfalls (`loop.mjs ledger --lessons`).
-export function lessons(entries) {
+// advisor reads these as known pitfalls (`loop.mjs ledger --lessons`). A handled
+// pattern says where its check landed; a run started after that which still hit it
+// shows the check did not hold.
+export function lessons(entries, handled = {}) {
   const patterns = new Map()
   for (const e of entries) for (const l of e.lessons ?? []) {
-    const p = patterns.get(l.pattern) ?? { runs: new Set(), checks: new Set(), proposal: null }
-    p.runs.add(e.run); p.checks.add(l.check); p.proposal ??= l.proposal ?? null
+    const p = patterns.get(l.pattern) ?? { runs: new Set(), checks: new Set(), proposal: null, hits: [] }
+    p.runs.add(e.run); p.checks.add(l.check); p.proposal ??= l.proposal ?? null; p.hits.push(e)
     patterns.set(l.pattern, p)
   }
   const ranked = [...patterns].sort((a, b) => b[1].runs.size - a[1].runs.size)
   if (!ranked.length) return '  no lessons recorded yet'
-  return ranked.map(([pattern, p]) => `  ${String(p.runs.size).padStart(2)}×  ${pattern}  [${[...p.checks].join(', ')}]${p.proposal ? `  → ${p.proposal}` : ''}`).join('\n')
+  return ranked.flatMap(([pattern, p]) => {
+    const out = [`  ${String(p.runs.size).padStart(2)}×  ${pattern}  [${[...p.checks].join(', ')}]${p.proposal ? `  → ${p.proposal}` : ''}`]
+    const h = handled[pattern]
+    if (!h) return out
+    out.push(`       ✓ check landed ${String(h.at).slice(0, 10)} (${h.by})`)
+    const after = [...new Set(p.hits.filter(e => e.started_at > h.at).map(e => e.story ?? e.run))]
+    if (after.length) out.push(`       ⚠ came back after its check landed: ${after.join(', ')}`)
+    return out
+  }).join('\n')
 }
 
 // What the runs so far say, in the order it is worth acting on.
-export function summary(entries) {
+export function summary(entries, handled = {}) {
   if (!entries.length) return 'the ledger is empty: no run has ended or reached the retro stage in this checkout yet'
   const lines = [`${entries.length} run${entries.length === 1 ? '' : 's'} · factory versions: ${[...new Set(entries.map(e => e.factory ?? 'unknown'))].join(', ')}`]
-  lines.push('', 'Lessons by how many runs hit them (two or more: build the check now, it keeps recurring):', lessons(entries))
+  lines.push('', 'Lessons by how many runs hit them (two or more: build the check now, it keeps recurring):', lessons(entries, handled))
   const backs = count(entries.flatMap(e => e.backs ?? []), b => `${b.from} → ${b.to}${b.human ? ' (human)' : ''}`)
   lines.push('', 'Sent back:', ...(Object.keys(backs).length ? Object.entries(backs).sort((a, b) => b[1] - a[1]).map(([k, n]) => `  ${String(n).padStart(2)}×  ${k}`) : ['  never']))
   const tiers = {}

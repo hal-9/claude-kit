@@ -1176,8 +1176,9 @@ in two or more runs, and the tiers that keep being returned.
 A pattern in two or more runs is a check worth building now, as a GitHub issue
 of its own that a later run can take (`/story-loop gh-<n>`). For each one, run
 `GH promote <pattern> --dry-run`: `exists: <url>` means it is already filed
-(open or closed), so give the link; otherwise it prints the issue's title and
-body. Show that draft to the human and file it only on their yes, with
+(open, or closed without being done), so give the link; `handled` means its
+issue was closed as completed, and the pattern is now marked handled; otherwise
+it prints the issue's title and body. Show that draft to the human and file it only on their yes, with
 `GH promote <pattern>`. It works after the run has ended; it reads the ledger,
 not the run.
 
@@ -1204,6 +1205,18 @@ at every retro, and before changing this skill, a stage file, a worker prompt
 or the tier table: change what the ledger shows, not what one run felt like.
 When a task is returned, count it on the task (`"returns": 1` in
 `LOOP put tasks`), so the tier table can be judged later.
+
+When the check for a lesson lands, mark its pattern handled:
+
+```bash
+LOOP handled <pattern> "<where it landed: PR, commit or issue>"
+```
+
+`GH promote` does this on its own when the pattern's issue was closed as
+completed. A handled pattern shows `✓ check landed <date>` under it in the
+ledger; a run started after that date which still hit it adds
+`⚠ came back after its check landed: <stories>`. The check did not hold: tell
+the human at the retro, and fix that check rather than file a new one.
 
 ## Notes from the board
 

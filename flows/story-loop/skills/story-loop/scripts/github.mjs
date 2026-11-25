@@ -21,7 +21,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findRoot, repoRoot, load, update, emit, baseName, runKey, opContext, opStart, opUpdate, opEnd } from './loop.mjs'
 import { bind, record } from './diag.mjs'
-import { readLedger } from './ledger.mjs'
+import { readLedger, readHandled, markHandled } from './ledger.mjs'
 
 const fail = message => { throw new Error(message) }
 const GH = process.env.STORY_LOOP_GH || 'gh'
@@ -426,8 +426,13 @@ export function promote(root, pattern, { dryRun = false } = {}) {
   hits.length >= 2 || fail(`${pattern} was seen in ${hits.length} run${hits.length === 1 ? '' : 's'}; an issue is filed once it recurs (two or more)`)
   const repo = hits.at(-1).repo ?? fail('the ledger names no repository for these runs')
   const title = `story-loop check: ${pattern}`
-  const found = JSON.parse(gh(['issue', 'list', '-R', repo, '--state', 'all', '--search', `"${title}" in:title`, '--json', 'title,url', '--limit', '50'], root))
+  const found = JSON.parse(gh(['issue', 'list', '-R', repo, '--state', 'all', '--search', `"${title}" in:title`, '--json', 'title,url,state,stateReason,closedAt', '--limit', '50'], root))
     .find(i => i.title === title)
+  // Closed as completed means the check was built: the pattern is handled (a mark made by hand stays).
+  if (found?.state === 'CLOSED' && found.stateReason === 'COMPLETED') {
+    readHandled(root)[pattern] ?? markHandled(root, pattern, found.url, found.closedAt)
+    return { state: 'handled', title, url: found.url }
+  }
   if (found) return { state: 'exists', title, url: found.url }
   const seen = hits.flatMap(e => e.lessons.filter(l => l.pattern === pattern).map(l => ({ ...l, story: e.story, pr: e.pr })))
   const body = [
@@ -445,7 +450,8 @@ async function main([cmd, ...args]) {
   if (cmd === 'promote') {
     const pattern = args.find(a => !a.startsWith('--')) ?? fail('promote needs a pattern slug')
     const result = promote(findRoot() ?? repoRoot(), pattern, { dryRun: args.includes('--dry-run') })
-    return console.log(result.state === 'draft' ? `${result.title}\n\n${result.body}` : `${result.state}: ${result.url}`)
+    const said = { draft: `${result.title}\n\n${result.body}`, handled: `handled (its issue was closed as completed): ${result.url}` }
+    return console.log(said[result.state] ?? `${result.state}: ${result.url}`)
   }
   const root = findRoot() ?? fail('no active story-loop run here')
   const opt = name => { const i = args.indexOf(`--${name}`); return i < 0 ? undefined : args[i + 1] }

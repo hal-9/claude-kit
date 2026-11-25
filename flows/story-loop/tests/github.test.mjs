@@ -10,7 +10,7 @@ import { load, update } from '../skills/story-loop/scripts/loop.mjs'
 import { repo, withRun, B } from './helpers.mjs'
 import { passProblem, FRESH } from '../skills/story-loop/scripts/loop.mjs'
 import { readEvents, diagDir } from '../skills/story-loop/scripts/diag.mjs'
-import { ledgerFile } from '../skills/story-loop/scripts/ledger.mjs'
+import { ledgerFile, readHandled } from '../skills/story-loop/scripts/ledger.mjs'
 
 const dir = mkdtempSync(join(tmpdir(), 'sl-fakegh-'))
 const RULES = join(dir, 'rules.json')
@@ -557,4 +557,15 @@ test('promote files the issue once: an issue with the same title, open or closed
   assert.equal(calls().filter(c => /issue create/.test(c)).length, 1)
   // the log splits a call at the newlines of its body: check the lines a call starts on
   assert.ok(calls().filter(c => /^issue /.test(c)).every(c => /^issue \w+ -R acme\/app/.test(c)), 'every call names the ledger\'s repository')
+})
+
+test('an issue closed as completed marks its pattern handled; one closed as not planned does not', () => {
+  const root = ledgerWith([['a', 'sc-1', 'hardcoded-path'], ['b', 'sc-2', 'hardcoded-path']])
+  const issue = (stateReason, closedAt) => [{ title: TITLE, url: 'https://github.com/acme/app/issues/9', state: 'CLOSED', stateReason, closedAt }]
+  rules([{ match: 'issue list -R acme/app --state all .* --json title,url,state,stateReason,closedAt', stdout: JSON.stringify(issue('NOT_PLANNED', '2026-03-01T00:00:00Z')), times: 1 }])
+  assert.deepEqual(gh.promote(root, 'hardcoded-path', { dryRun: true }), { state: 'exists', title: TITLE, url: 'https://github.com/acme/app/issues/9' })
+  assert.equal(readHandled(root)['hardcoded-path'], undefined)
+  rules([{ match: 'issue list -R acme/app --state all', stdout: JSON.stringify(issue('COMPLETED', '2026-03-02T00:00:00Z')), times: 1 }])
+  assert.deepEqual(gh.promote(root, 'hardcoded-path', { dryRun: true }), { state: 'handled', title: TITLE, url: 'https://github.com/acme/app/issues/9' })
+  assert.deepEqual(readHandled(root)['hardcoded-path'], { at: '2026-03-02T00:00:00Z', by: 'https://github.com/acme/app/issues/9' })
 })

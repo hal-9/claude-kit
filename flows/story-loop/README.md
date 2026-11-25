@@ -99,6 +99,12 @@ and proposal behind it, and on the human's yes `github.mjs promote <pattern>`
 files it, once per pattern (an issue with the same title, open or closed, is
 reported instead). A later story-loop run can take that issue like any other.
 
+Once a check lands, its pattern is handled: `loop.mjs handled <pattern> "<PR>"`
+by hand, or on its own when `promote` finds the issue closed as completed
+(`.git/story-loop/handled.json`). The ledger then shows where the check landed,
+and flags any run started after that which still hit the pattern: the check did
+not hold.
+
 What it is not yet: nothing scores finished runs on its own, nothing replays
 old tasks against other models, and no agent opens a PR against the loop's own
 instructions. Those need a ledger with real runs in it first.

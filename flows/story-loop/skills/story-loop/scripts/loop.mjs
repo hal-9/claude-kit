@@ -12,7 +12,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bind, record, toggle, exportBundle, diagDir, readEvents, readManifest, scrub } from './diag.mjs'
-import { appendLedger, readLedger, summary as ledgerSummary, lessons as ledgerLessons, ledgerFile } from './ledger.mjs'
+import { appendLedger, readLedger, summary as ledgerSummary, lessons as ledgerLessons, ledgerFile, readHandled, markHandled } from './ledger.mjs'
 import { acquire } from './lease.mjs'
 
 export const GRAPH = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'graph.json'), 'utf8'))
@@ -1317,8 +1317,18 @@ function main(argv) {
   // The ledger outlives every run, so it is read with or without an active one.
   if (verb === 'ledger') {
     const at = findRoot() ?? repoRoot()
-    if (args[0] === '--lessons') return console.log(ledgerLessons(readLedger(at)))
-    return console.log(`${ledgerSummary(readLedger(at))}\n\n(${ledgerFile(at)})`)
+    if (args[0] === '--lessons') return console.log(ledgerLessons(readLedger(at), readHandled(at)))
+    return console.log(`${ledgerSummary(readLedger(at), readHandled(at))}\n\n(${ledgerFile(at)})`)
+  }
+  // A check built for a lesson landed: the pattern is marked handled, so a later run that hits it again shows the check did not hold.
+  if (verb === 'handled') {
+    const at = findRoot() ?? repoRoot()
+    const [pattern, by] = args
+    pattern ?? fail('usage: loop.mjs handled <pattern> <where the check landed: PR, commit or issue>')
+    readLedger(at).some(e => (e.lessons ?? []).some(l => l.pattern === pattern)) || fail(`no lesson in the ledger has the pattern ${pattern} (loop.mjs ledger --lessons lists them)`)
+    by || fail('say where the check landed: loop.mjs handled <pattern> "<PR, commit or issue>"')
+    const h = markHandled(at, pattern, by)
+    return console.log(`${pattern} handled: check landed ${h.at.slice(0, 10)} (${h.by})`)
   }
   const root = findRoot() ?? fail('no active story-loop run here (loop.mjs init SC-12345)')
   if (verb === 'recover') return recover(root)

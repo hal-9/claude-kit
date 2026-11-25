@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   newRun, move, current, stopReason, GRAPH, verifyProblem, resultsFile, evidenceDir, storyId, issueRepo, remoteRepo,
@@ -12,7 +12,7 @@ import {
   FRESH, runProblem, laneProblem, qualityProblem, humanReviewProblem, lessonsProblem, verifyCarry, reviewScope, figmaRef, checksProblem,
   active, findRoot,
 } from '../skills/story-loop/scripts/loop.mjs'
-import { readLedger, summary, lessons, usage } from '../skills/story-loop/scripts/ledger.mjs'
+import { readLedger, summary, lessons, usage, ledgerFile, readHandled } from '../skills/story-loop/scripts/ledger.mjs'
 import { signalsFor } from '../skills/story-loop/scripts/quality.mjs'
 import { repo, withRun, PNG, B, ENV, META, LANE } from './helpers.mjs'
 
@@ -1134,4 +1134,30 @@ test('a checkout nested inside the run\'s checkout is not part of the run', () =
   writeFileSync(join(root, 'wt', '.git'), 'gitdir: elsewhere\n')
   assert.equal(findRoot(join(root, 'wt', 'app')), null)
   assert.equal(findRoot(join(root, 'lib')), root)
+})
+
+// ---- 0.18: a lesson whose check landed is marked handled ------------------------------
+test('a handled lesson says where its check landed, and a run after that date that hits it again is flagged', () => {
+  const { dir } = repo()
+  const file = ledgerFile(dir)
+  mkdirSync(dirname(file), { recursive: true })
+  const line = (run, started_at, pattern) => JSON.stringify({ run, story: `sc-${run}`, started_at, lessons: [{ id: 'l1', pattern, check: 'lint', proposal: 'a rule' }] })
+  writeFileSync(file, [line('1', '2026-01-01T00:00:00Z', 'hardcoded-path'), line('2', '2026-02-01T00:00:00Z', 'empty-state')].join('\n') + '\n')
+  // only a pattern the ledger knows can be handled: a typo would hide the next recurrence
+  assert.match(cli(dir, 'handled', 'hardcoded-pth', 'PR #9').stderr, /no lesson in the ledger has the pattern hardcoded-pth/)
+  assert.match(cli(dir, 'handled', 'hardcoded-path').stderr, /say where the check landed/)
+  const marked = cli(dir, 'handled', 'hardcoded-path', 'PR #9')
+  assert.equal(marked.status, 0, marked.stderr)
+  assert.equal(readHandled(dir)['hardcoded-path'].by, 'PR #9')
+  assert.match(cli(dir, 'ledger', '--lessons').stdout, /hardcoded-path  \[lint\].*\n\s+✓ check landed \d{4}-\d\d-\d\d \(PR #9\)/)
+  assert.doesNotMatch(cli(dir, 'ledger', '--lessons').stdout, /came back/)
+  // a run that started after the check landed and still hit the pattern: the check did not hold
+  const handled = { 'hardcoded-path': { at: '2026-01-15T00:00:00Z', by: 'PR #9' } }
+  const entries = [JSON.parse(line('1', '2026-01-01T00:00:00Z', 'hardcoded-path')), JSON.parse(line('3', '2026-03-01T00:00:00Z', 'hardcoded-path'))]
+  assert.match(lessons(entries, handled), /✓ check landed 2026-01-15 \(PR #9\)\n\s+⚠ came back after its check landed: sc-3/)
+  assert.match(summary(entries, handled), /⚠ came back after its check landed: sc-3/)
+  // a broken file is said, never read as "nothing handled" and overwritten
+  writeFileSync(join(dirname(file), 'handled.json'), '{ cut off')
+  assert.match(cli(dir, 'handled', 'empty-state', 'PR #10').stderr, /handled\.json cannot be read/)
+  assert.equal(readFileSync(join(dirname(file), 'handled.json'), 'utf8'), '{ cut off')
 })
