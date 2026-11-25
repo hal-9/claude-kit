@@ -12,7 +12,7 @@ import {
   FRESH, runProblem, laneProblem, qualityProblem, humanReviewProblem, lessonsProblem, verifyCarry, reviewScope, figmaRef, checksProblem,
   active, findRoot,
 } from '../skills/story-loop/scripts/loop.mjs'
-import { readLedger, summary, usage } from '../skills/story-loop/scripts/ledger.mjs'
+import { readLedger, summary, lessons, usage } from '../skills/story-loop/scripts/ledger.mjs'
 import { signalsFor } from '../skills/story-loop/scripts/quality.mjs'
 import { repo, withRun, PNG, B, ENV, META, LANE } from './helpers.mjs'
 
@@ -887,6 +887,11 @@ test('the retro names a lesson for every correction, and each run leaves one lin
   assert.match(text, /1×  second_review → build/)
   assert.match(text, /sonnet\s+1 \/ 1\n\s+haiku\s+0 \/ 1/)
   assert.match(summary([]), /the ledger is empty/)
+  // the contract advisor gets the past lessons alone, not the stats around them
+  const lessonsOnly = cli(dir, 'ledger', '--lessons').stdout
+  assert.match(lessonsOnly, /1×  missing-empty-state  \[review\]  → review aspect/)
+  assert.doesNotMatch(lessonsOnly, /Sent back|Tokens|factory versions/)
+  assert.equal(lessons([]), '  no lessons recorded yet')
 })
 
 test('token usage is read from the sessions\' transcripts, once per message, under the stage that was running', () => {

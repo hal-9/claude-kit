@@ -117,10 +117,9 @@ export function readLedger(root) {
 const total = b => (b?.input ?? 0) + (b?.cache_write ?? 0) + (b?.cache_read ?? 0) + (b?.output ?? 0)
 const VERIFICATION = ['quality', 'test_review', 'verify', 'second_review', 'copilot_review', 'fix_comments']
 
-// What the runs so far say, in the order it is worth acting on.
-export function summary(entries) {
-  if (!entries.length) return 'the ledger is empty: no run has ended or reached the retro stage in this checkout yet'
-  const lines = [`${entries.length} run${entries.length === 1 ? '' : 's'} · factory versions: ${[...new Set(entries.map(e => e.factory ?? 'unknown'))].join(', ')}`]
+// The lessons of all runs, one line per pattern, most frequent first. The contract
+// advisor reads these as known pitfalls (`loop.mjs ledger --lessons`).
+export function lessons(entries) {
   const patterns = new Map()
   for (const e of entries) for (const l of e.lessons ?? []) {
     const p = patterns.get(l.pattern) ?? { runs: new Set(), checks: new Set(), proposal: null }
@@ -128,9 +127,15 @@ export function summary(entries) {
     patterns.set(l.pattern, p)
   }
   const ranked = [...patterns].sort((a, b) => b[1].runs.size - a[1].runs.size)
-  lines.push('', 'Lessons by how many runs hit them (two or more: build the check now, it keeps recurring):')
-  if (!ranked.length) lines.push('  none recorded yet')
-  for (const [pattern, p] of ranked) lines.push(`  ${String(p.runs.size).padStart(2)}×  ${pattern}  [${[...p.checks].join(', ')}]${p.proposal ? `  → ${p.proposal}` : ''}`)
+  if (!ranked.length) return '  no lessons recorded yet'
+  return ranked.map(([pattern, p]) => `  ${String(p.runs.size).padStart(2)}×  ${pattern}  [${[...p.checks].join(', ')}]${p.proposal ? `  → ${p.proposal}` : ''}`).join('\n')
+}
+
+// What the runs so far say, in the order it is worth acting on.
+export function summary(entries) {
+  if (!entries.length) return 'the ledger is empty: no run has ended or reached the retro stage in this checkout yet'
+  const lines = [`${entries.length} run${entries.length === 1 ? '' : 's'} · factory versions: ${[...new Set(entries.map(e => e.factory ?? 'unknown'))].join(', ')}`]
+  lines.push('', 'Lessons by how many runs hit them (two or more: build the check now, it keeps recurring):', lessons(entries))
   const backs = count(entries.flatMap(e => e.backs ?? []), b => `${b.from} → ${b.to}${b.human ? ' (human)' : ''}`)
   lines.push('', 'Sent back:', ...(Object.keys(backs).length ? Object.entries(backs).sort((a, b) => b[1] - a[1]).map(([k, n]) => `  ${String(n).padStart(2)}×  ${k}`) : ['  never']))
   const tiers = {}
