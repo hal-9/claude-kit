@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bind, record, toggle, exportBundle, diagDir, readEvents, readManifest } from './diag.mjs'
+import { bind, record, toggle, exportBundle, diagDir, readEvents, readManifest, scrub } from './diag.mjs'
 import { appendLedger, readLedger, summary as ledgerSummary, ledgerFile } from './ledger.mjs'
 
 export const GRAPH = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'graph.json'), 'utf8'))
@@ -265,7 +265,8 @@ export function save(root, run) {
   renameSync(tmp, p.active)
 }
 export function emit(root, event) {
-  appendFileSync(paths(root).events, JSON.stringify({ ts: new Date().toISOString(), ...event }) + '\n')
+  // Scrubbed at the boundary, diagnostics on or off: stage reasons and notes can quote a command.
+  appendFileSync(paths(root).events, JSON.stringify(scrub({ ts: new Date().toISOString(), ...event })) + '\n')
   // The board feed is emptied by every init; the diagnostic stream of a run is not.
   if (event.kind === 'note' || event.kind === 'session') record(root, 'feed', { feed: event.kind, phase: event.phase, text: event.text })
 }

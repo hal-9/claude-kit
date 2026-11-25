@@ -11,8 +11,11 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, LEASE_MS, findRoot, load, update, emit, stopReason, liveWorkers, liveHelpers, deliver, current, ownerState, gitIn } from './loop.mjs'
-import { bind, record } from './diag.mjs'
+import { GRAPH, LEASE_MS, findRoot, load, update, emit as emitRaw, stopReason, liveWorkers, liveHelpers, deliver, current, ownerState, gitIn } from './loop.mjs'
+import { bind, record, redact, scrub, commandSummary } from './diag.mjs'
+
+// The board feed is written whether or not diagnostics are on: everything it keeps is scrubbed first.
+const emit = (root, event) => emitRaw(root, scrub(event))
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const MAX_STOP_BLOCKS = 3
@@ -107,12 +110,12 @@ const deny = message => {
 function toolSummary(root, input) {
   const ti = input.tool_input ?? {}
   const tr = input.tool_response
-  const response = tr == null ? undefined : typeof tr === 'string' ? tr.slice(0, 500)
+  const response = tr == null ? undefined : typeof tr === 'string' ? redact(tr).slice(0, 500)
     : { status: tr.status, agent_id: tr.agentId, resolved_model: tr.resolvedModel, total_tokens: tr.totalTokens, total_duration_ms: tr.totalDurationMs, exit_code: tr.exitCode ?? tr.exit_code, interrupted: tr.interrupted }
   return {
     tool: input.tool_name ?? null, tool_use_id: input.tool_use_id ?? null,
     file: ti.file_path ? relative(root, resolve(root, ti.file_path)) : undefined,
-    command: typeof ti.command === 'string' ? ti.command.slice(0, 300) : undefined,
+    ...(typeof ti.command === 'string' ? (({ program, text }) => ({ program, command: text }))(commandSummary(ti.command, 300)) : {}),
     subagent: ti.subagent_type, model: ti.model, description: ti.description, response,
   }
 }
@@ -124,7 +127,7 @@ function diagnose(root, input, model) {
   switch (event) {
     case 'PreToolUse': return record(root, 'tool.start', toolSummary(root, input))
     case 'PostToolUse': return record(root, 'tool.end', { ...toolSummary(root, input), outcome: 'ok', elapsed_ms })
-    case 'PostToolUseFailure': return record(root, 'tool.failed', { ...toolSummary(root, input), outcome: input.is_interrupt ? 'interrupted' : 'error', reason: String(input.error ?? '').slice(0, 1000), elapsed_ms })
+    case 'PostToolUseFailure': return record(root, 'tool.failed', { ...toolSummary(root, input), outcome: input.is_interrupt ? 'interrupted' : 'error', reason: redact(String(input.error ?? '')).slice(0, 1000), elapsed_ms })
     case 'SubagentStart': case 'SubagentStop': return record(root, event === 'SubagentStart' ? 'agent.start' : 'agent.stop', { agent_type: input.agent_type ?? null, agent_id: input.agent_id ?? null })
     case 'SessionStart': return record(root, 'session.start', { source: input.source ?? null, model: input.model ?? model })
     case 'SessionEnd': return record(root, 'session.end', { reason: input.reason ?? null })
@@ -271,7 +274,7 @@ function main() {
         return
       }
       const file = ti.file_path ? relative(root, resolve(root, ti.file_path)) : undefined
-      emit(root, { kind: 'tool', agent, agent_id, tool, file, text: tool === 'Bash' ? command.slice(0, 140) : undefined })
+      emit(root, { kind: 'tool', agent, agent_id, tool, file, ...(tool === 'Bash' ? commandSummary(command) : {}) })
       return
     }
     case 'SubagentStart':
@@ -314,7 +317,7 @@ function main() {
         const cur = current(run)
         const why = `stop gate: the conductor stopped ${MAX_STOP_BLOCKS + 1} times without moving "${cur}"; resume with loop.mjs start ${cur}`
         update(root, r => ({ ...r, stop_blocks: 0, stages: { ...r.stages, [cur]: { ...r.stages[cur], status: 'blocked', reason: why } } }))
-        record(root, 'transition', { verb: 'block', stage: cur, outcome: 'accepted', reason: why, by: 'stop gate' })
+        record(root, 'transition', { verb: 'block', stage: cur, attempt: run.stages[cur].attempt ?? 1, outcome: 'accepted', reason: why, by: 'stop gate' })
         return emit(root, { kind: 'stage', stage: cur, verb: 'block', text: why })
       }
       update(root, r => ({ ...r, stop_blocks: (r.stop_blocks ?? 0) + 1 }))

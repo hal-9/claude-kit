@@ -40,13 +40,24 @@ function transcriptFiles(path) {
 }
 
 // Tokens by stage and model, from the transcripts the run's sessions wrote.
-// A message belongs to the stage that was started last before it; the stage
-// starts are the board feed's own events. `null` when no transcript is known.
+// A message belongs to the one stage that was open (started, not yet passed,
+// skipped or sent back) when it was written; with no stage open, to the stage
+// that ran last. While parallel stages overlap no row says which one spent it,
+// so it goes under `unknown`. The stage moves are the board feed's own events.
+// `null` when no transcript is known.
 export function usage(run, events) {
   const files = [...new Set((run.transcripts ?? []).flatMap(transcriptFiles))]
   if (!files.length) return null
-  const starts = events.filter(e => e.kind === 'stage' && e.verb === 'start').map(e => [Date.parse(e.ts), e.stage])
-  const stageAt = ts => { let stage = 'setup'; for (const [at, id] of starts) { if (at > ts) break; stage = id } return stage }
+  const moves = events.filter(e => e.kind === 'stage' && e.stage).map(e => [Date.parse(e.ts), e.verb, e.stage])
+  const stageAt = ts => {
+    const open = new Set()
+    let last = 'setup'
+    for (const [at, verb, id] of moves) {
+      if (at > ts) break
+      if (verb === 'start') { open.add(id); last = id } else if (verb === 'back') { open.clear() } else if (verb === 'pass' || verb === 'skip') open.delete(id)
+    }
+    return open.size > 1 ? 'unknown' : open.size ? [...open][0] : last
+  }
   const from = Date.parse(run.started_at)
   const seen = new Map() // one API message is written once per content block, with the same usage
   for (const file of files) for (const row of jsonl(file)) {

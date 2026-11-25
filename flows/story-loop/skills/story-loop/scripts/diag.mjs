@@ -21,7 +21,14 @@ const MAX_TEXT = 2000
 const MAX_LINE = 16_000
 const MAX_ARTIFACT = 5 << 20
 const IMAGES = new Set(['.png', '.jpg', '.jpeg', '.webp'])
-const TEXT = new Set(['.json', '.jsonl', '.txt', '.md', '.log'])
+// The files a run writes into its story folder, by path. Nothing else is read or copied by an export.
+const SHOT = String.raw`[^/]+\.(?:png|jpe?g|webp)`
+const ARTIFACTS = new RegExp(`^(?:${[
+  'results\\.json', 'inbox\\.json', 'report\\.md', 'flow\\.md', 'verifier-brief\\.md', 'signoff\\.html', 'mutants-[\\w.-]+\\.json',
+  `evidence/${SHOT}`, 'reviews/[^/]+\\.txt', 'stale/[^/]+\\.json', 'attempts/[^/]+/results\\.json', `attempts/[^/]+/evidence/${SHOT}`,
+].join('|')})$`, 'i')
+// Never exported, whatever folder they are found in: credentials, keys, databases.
+const CREDENTIAL = /^(?:\.env.*|.*\.(?:pem|key|p12|pfx|sqlite3?|db)|id_[^/]*|\.npmrc|\.netrc|\.pgpass|credentials(?:\.json)?)$/i
 
 // ---- redaction -----------------------------------------------------------------
 
@@ -30,16 +37,26 @@ const SECRETS = [
   [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/gi, '$1[redacted]@'], // credentials inside a URL
   [/\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key)\b(["']?\s*[:=]\s*)[^\n]+/gi, '$1$2[redacted]'],
   [/\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [redacted]'],
-  [/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b/g, '[redacted]'],
-  [/\b([A-Za-z0-9_-]*(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|credential)[A-Za-z0-9_-]*)(["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s'"&;,}]+)/gi, '$1$2[redacted]'],
+  [/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16})\b/g, '[redacted]'],
+  [/\b([A-Za-z0-9_-]*(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|_key\b|credential)[A-Za-z0-9_-]*)(["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s'"&;,}]+)/gi, '$1$2[redacted]'],
   [/(--(?:password|token|secret|api-key)\s+)\S+/gi, '$1[redacted]'],
+  [/(\s(?:-u|--user)\s+)[^\s:]+:\S+/g, '$1[redacted]'], // curl -u user:password
 ]
+// Redaction is best-effort: it catches the common shapes of secrets (above), not every one.
+// What must never leave the machine is kept out by not recording or exporting it at all.
 export function redact(text) {
   let out = String(text)
   for (const [pattern, replacement] of SECRETS) out = out.replace(pattern, replacement)
   return out
 }
 const clip = text => text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}… [truncated, ${text.length} chars]` : text
+// A shell command as the board feed keeps it: the program and a short redacted line.
+// Redacted before it is cut, so a cut never splits a secret into a shape redact misses.
+export function commandSummary(command, max = 140) {
+  const text = redact(String(command)).replace(/\s+/g, ' ').trim()
+  const program = text.split(' ').find(word => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word))?.split('/').pop().slice(0, 40) ?? null
+  return { program, text: text.length > max ? `${text.slice(0, max - 1)}…` : text }
+}
 // Bounded, redacted copy of any value: what a record may carry.
 export function scrub(value, depth = 0) {
   if (value === undefined) return undefined
@@ -194,28 +211,36 @@ export function exportBundle(root, runId, { screenshots = false, out, now = new 
   const artifacts = []
   const omitted = []
   const inside = realpathSync(storyDir) + sep
+  // Every rule is decided from the name and lstat alone; a file is read only once it is
+  // a known artifact, a regular file inside the folder, and small enough.
   for (const { path, st } of walk(storyDir)) {
     const rel = relative(storyDir, path)
     const name = rel.split(sep).pop()
+    const role = rel.split(sep).join('/')
     if (/^run-\d+\.json$/.test(name) || /^recording-failures-/.test(name)) continue
+    if (CREDENTIAL.test(name)) { omitted.push({ path: rel, why: 'credential, key or database file; never read' }); continue }
     if (/\.tmp$|\.prev$|\.broken-\d+$/.test(name)) { omitted.push({ path: rel, why: 'working copy or broken file, left where it is' }); continue }
     if (st.isSymbolicLink()) { omitted.push({ path: rel, why: 'symbolic link' }); continue }
+    if (!st.isFile()) continue
+    if (!ARTIFACTS.test(role)) { omitted.push({ path: rel, bytes: st.size, why: 'not a known run artifact; never read' }); continue }
+    if (st.size > MAX_ARTIFACT) { omitted.push({ path: rel, bytes: st.size, why: `larger than ${MAX_ARTIFACT >> 20} MB` }); continue }
     let real
     try { real = realpathSync(path) } catch { omitted.push({ path: rel, why: 'unreadable' }); continue }
     if (!real.startsWith(inside)) { omitted.push({ path: rel, why: 'resolves outside the run folder' }); continue }
-    if (!st.isFile()) continue
-    const ext = extname(name).toLowerCase()
     const data = readFileSync(real)
     const entry = { path: rel, bytes: st.size, sha256: sha256(data) }
-    if (IMAGES.has(ext) && !screenshots) { omitted.push({ ...entry, why: 'screenshot; pass --screenshots to include it' }); continue }
-    if (st.size > MAX_ARTIFACT) { omitted.push({ ...entry, why: `larger than ${MAX_ARTIFACT >> 20} MB` }); continue }
+    if (IMAGES.has(extname(name).toLowerCase())) {
+      if (!screenshots) { omitted.push({ ...entry, why: 'screenshot; pass --screenshots to include it' }); continue }
+      const target = join(dest, 'artifacts', rel)
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, data); artifacts.push(entry); continue
+    }
+    // Every other known artifact is text, redacted on the way out (best-effort, see redact()).
     const target = join(dest, 'artifacts', rel)
     mkdirSync(dirname(target), { recursive: true })
-    if (TEXT.has(ext)) {
-      const text = redact(data.toString('utf8'))
-      writeFileSync(target, text)
-      artifacts.push({ ...entry, redacted: text !== data.toString('utf8') })
-    } else { writeFileSync(target, data); artifacts.push(entry) }
+    const text = redact(data.toString('utf8'))
+    writeFileSync(target, text)
+    artifacts.push({ ...entry, redacted: text !== data.toString('utf8') })
   }
   writeFileSync(join(dest, 'events.jsonl'), events.map(e => JSON.stringify(e) + '\n').join(''))
   if (state) writeFileSync(join(dest, 'state.json'), redact(JSON.stringify(state.run, null, 2)) + '\n')
@@ -229,7 +254,7 @@ export function exportBundle(root, runId, { screenshots = false, out, now = new 
     state: state ? { from: relative(root, state.file) } : { missing: 'no state file for this run id was found; the summary is built from events alone' },
     events: { count: events.length, first: events[0]?.ts ?? null, last: events.at(-1)?.ts ?? null, unreadable_lines: unreadable, truncated_records: truncated },
     recording: { complete: !failures.length && !unreadable, write_failures: failures, off_periods: (recorded?.toggles ?? []).filter(t => !t.enabled).map(t => t.at) },
-    artifacts_note: 'artifacts are the files of the story folder at export time; a later run of the same story shares that folder',
+    artifacts_note: 'artifacts are the known run files of the story folder at export time (anything else is listed under omitted, unread); a later run of the same story shares that folder. Text is redacted best-effort: review before sharing',
     artifacts, omitted, screenshots_included: screenshots,
   }
   writeFileSync(join(dest, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n')
@@ -245,24 +270,45 @@ const ms = n => n == null ? 'not measured' : n < 60_000 ? `${Math.round(n / 1000
 const short = sha => sha ? String(sha).slice(0, 7) : 'unknown'
 
 // Time per stage from the accepted transitions: working, waiting on someone, blocked.
+// Stages of a parallel group overlap, so each (run, attempt, stage, op) has its own span:
+// a transition closes only the span it belongs to. `totals.worker_ms` sums the work spans
+// (overlaps count twice); `totals.elapsed_ms` is wall time from the first event to the last.
+const WAIT = { human: 'wait_human', copilot: 'wait_copilot', background: 'wait_background' }
 export function stageTimes(events) {
   const moves = events.filter(e => e.kind === 'transition' && e.outcome === 'accepted' && e.stage)
   const times = {}
-  let open = null
-  const close = at => {
-    if (!open) return
-    const t = times[open.stage] ??= { work: 0, wait_human: 0, wait_copilot: 0, blocked: 0 }
-    t[open.mode] += Math.max(0, Date.parse(at) - Date.parse(open.since))
-    open = null
+  const spans = new Map()
+  const close = (key, at) => {
+    const span = spans.get(key)
+    if (!span) return
+    spans.delete(key)
+    const t = times[span.stage] ??= { work: 0, wait_human: 0, wait_copilot: 0, wait_background: 0, blocked: 0 }
+    t[span.mode] += Math.max(0, Date.parse(at) - Date.parse(span.since))
   }
   for (const e of moves) {
-    close(e.ts)
+    const key = JSON.stringify([e.run ?? null, e.attempt ?? null, e.stage, e.op ?? null])
+    close(key, e.ts)
     const verb = e.details?.verb
-    if (verb === 'start') open = { stage: e.stage, mode: 'work', since: e.ts }
-    else if (verb === 'wait') open = { stage: e.stage, mode: e.details.to === 'copilot' ? 'wait_copilot' : 'wait_human', since: e.ts }
-    else if (verb === 'block') open = { stage: e.stage, mode: 'blocked', since: e.ts }
+    const mode = verb === 'start' ? 'work' : verb === 'wait' ? WAIT[e.details.to] ?? 'wait_human' : verb === 'block' ? 'blocked' : null
+    if (mode) spans.set(key, { stage: e.stage, mode, since: e.ts })
   }
-  return { times, open }
+  const opens = [...spans.values()]
+  const stamps = events.map(e => Date.parse(e.ts)).filter(Number.isFinite)
+  const sum = mode => Object.values(times).reduce((n, t) => n + t[mode], 0)
+  const totals = {
+    elapsed_ms: stamps.length ? Math.max(...stamps) - Math.min(...stamps) : 0,
+    worker_ms: sum('work'), human_wait_ms: sum('wait_human'),
+    background_wait_ms: sum('wait_copilot') + sum('wait_background'), blocked_ms: sum('blocked'),
+  }
+  // Tokens a tool call reported, under the agent or operation that spent them; never guessed from the stage.
+  const tokens = {}
+  for (const e of events) {
+    const n = e.details?.response?.total_tokens
+    if (!Number.isFinite(n)) continue
+    const who = e.details.response.agent_id ?? e.op ?? 'unknown'
+    tokens[who] = (tokens[who] ?? 0) + n
+  }
+  return { times, open: opens.at(-1) ?? null, opens, totals, tokens }
 }
 
 export function summarize({ events, run, manifest }) {
@@ -287,13 +333,14 @@ export function summarize({ events, run, manifest }) {
   say('')
 
   say('## Time by stage', '')
-  const { times, open } = stageTimes(events)
-  if (!Object.keys(times).length && !open) say('No stage transitions were recorded.')
+  const { times, opens, totals } = stageTimes(events)
+  if (!Object.keys(times).length && !opens.length) say('No stage transitions were recorded.')
   else {
-    say('| Stage | Working | Waiting on human | Waiting on Copilot | Blocked |', '| --- | --- | --- | --- | --- |')
-    for (const [stage, t] of Object.entries(times)) say(`| ${stage} | ${ms(t.work)} | ${ms(t.wait_human)} | ${ms(t.wait_copilot)} | ${ms(t.blocked)} |`)
-    if (open) say('', `Still open at the last event: ${open.stage} (${open.mode.replace('_', ' on ')}) since ${open.since}.`)
-    say('', 'Times run from one recorded transition to the next; a session that was closed in between counts as working.')
+    say('| Stage | Working | Waiting on human | Waiting on Copilot | Blocked | Waiting in background |', '| --- | --- | --- | --- | --- | --- |')
+    for (const [stage, t] of Object.entries(times)) say(`| ${stage} | ${ms(t.work)} | ${ms(t.wait_human)} | ${ms(t.wait_copilot)} | ${ms(t.blocked)} | ${ms(t.wait_background)} |`)
+    for (const open of opens) say('', `Still open at the last event: ${open.stage} (${open.mode.replace('_', ' on ')}) since ${open.since}.`)
+    say('', `Elapsed ${ms(totals.elapsed_ms)}; summed worker time ${ms(totals.worker_ms)} (stages that ran side by side each count); waiting on the human ${ms(totals.human_wait_ms)}; waiting on Copilot or background work ${ms(totals.background_wait_ms)}; blocked ${ms(totals.blocked_ms)}.`)
+    say('', 'Times run from one recorded transition to the next of the same stage and attempt; a session that was closed in between counts as working.')
   }
   say('')
 

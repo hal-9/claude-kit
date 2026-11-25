@@ -1,13 +1,15 @@
 // Diagnostic recording: off by default, never a source of truth, never in the way.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, writeFileSync, readFileSync, appendFileSync, existsSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, existsSync, symlinkSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { load, update, opStart, opUpdate, evidenceDir } from '../skills/story-loop/scripts/loop.mjs'
 import { bind, record, readEvents, redact, diagDir, stageTimes, summarize } from '../skills/story-loop/scripts/diag.mjs'
+import { usage } from '../skills/story-loop/scripts/ledger.mjs'
 import { repo, PNG } from './helpers.mjs'
 
 const LOOP = fileURLToPath(new URL('../skills/story-loop/scripts/loop.mjs', import.meta.url))
@@ -280,7 +282,7 @@ test('the summary separates work from waiting and counts returns, from the recor
     move(100, 'start', 'build'), move(400, 'pass', 'build'), move(400, 'start', 'verify'), move(460, 'back', 'verify', { to: 'build', reason: 'step 2 fails on mobile' }),
     move(460, 'start', 'build'), move(500, 'block', 'build', { reason: 'no database' })]
   const { times, open } = stageTimes(list)
-  assert.deepEqual(times.contract, { work: 40_000, wait_human: 60_000, wait_copilot: 0, blocked: 0 })
+  assert.deepEqual(times.contract, { work: 40_000, wait_human: 60_000, wait_copilot: 0, wait_background: 0, blocked: 0 })
   assert.deepEqual([times.build.work, times.verify.work], [340_000, 60_000])
   assert.deepEqual([open.stage, open.mode], ['build', 'blocked'])
   const manifest = { story: 'sc-1', run: 'r1', coverage: 'recorded from the start of the run', versions: {}, events: { first: at(0), last: at(500), unreadable_lines: 0, truncated_records: 0 }, recording: { off_periods: [], write_failures: [] }, omitted: [] }
@@ -289,4 +291,72 @@ test('the summary separates work from waiting and counts returns, from the recor
   assert.match(text, /back verify → build: step 2 fails on mobile \[e4600000\]/)
   assert.match(text, /No state file for this run was found/)
   assert.equal(summarize({ events: list, run: null, manifest }), text)
+})
+
+test('export copies only known run artifacts: credential files, unknown files and binaries are listed, never read or copied', () => {
+  const { dir } = recording()
+  const story = join(dir, '.start-story', 'sc-1')
+  const secret = fake(12)
+  const put = (rel, body) => { mkdirSync(join(story, rel, '..'), { recursive: true }); writeFileSync(join(story, rel), body) }
+  put('.env', `DEPLOY_PASSWORD=${secret}\n`)
+  put('.env.local', `X=${secret}\n`)
+  put('id_rsa', secret)
+  put('cert.pem', secret)
+  put('deploy.key', secret)
+  put('cache.sqlite', secret)
+  put('.npmrc', `//registry/:_authToken=${secret}\n`)
+  put('notes.txt', secret)
+  put('blob.bin', Buffer.from([0, 1, 2, 3]))
+  put('results.json', JSON.stringify({ request: 'r1', note: `token=${secret}` }))
+  put('reviews/r1.txt', `reviewed with token=${secret}`)
+  put('evidence/step1.png', PNG)
+  const dest = exported(cli(dir, 'diagnostics', 'export'))
+  const manifest = JSON.parse(readFileSync(join(dest, 'manifest.json'), 'utf8'))
+  const omitted = Object.fromEntries(manifest.omitted.map(o => [o.path, o.why]))
+  for (const name of ['.env', '.env.local', 'id_rsa', 'cert.pem', 'deploy.key', 'cache.sqlite', '.npmrc']) {
+    assert.match(omitted[name] ?? '', /credential/, `${name} is omitted as a credential file`)
+    assert.equal(existsSync(join(dest, 'artifacts', name)), false, `${name} not copied`)
+    assert.equal(manifest.omitted.find(o => o.path === name).sha256, undefined, `${name} was never read`)
+  }
+  for (const name of ['notes.txt', 'blob.bin']) {
+    assert.match(omitted[name] ?? '', /not a known run artifact/, name)
+    assert.equal(existsSync(join(dest, 'artifacts', name)), false, name)
+  }
+  assert.ok(existsSync(join(dest, 'artifacts', 'results.json')))
+  assert.ok(existsSync(join(dest, 'artifacts', 'reviews', 'r1.txt')))
+  const all = ['results.json', 'reviews/r1.txt'].map(p => readFileSync(join(dest, 'artifacts', p), 'utf8')).join('\n')
+  assert.equal(all.includes(secret), false, 'included text is redacted')
+  assert.match(omitted['evidence/step1.png'], /screenshot/)
+})
+
+test('overlapping stages each get their own time; elapsed, worker time and background waits are told apart', () => {
+  const at = s => new Date(Date.UTC(2026, 0, 1, 10, 0, s)).toISOString()
+  const move = (s, verb, stage, more = {}) => ({ id: `e${s}${stage}`.padEnd(8, '0'), ts: at(s), run: 'r1', attempt: 1, kind: 'transition', outcome: 'accepted', stage, reason: null, details: { verb, ...more } })
+  const list = [move(0, 'start', 'test_review'), move(1, 'start', 'quality'), move(10, 'pass', 'test_review'), move(11, 'pass', 'quality'),
+    move(11, 'start', 'second_review'), move(12, 'wait', 'second_review', { to: 'background' }), move(22, 'start', 'second_review'), move(23, 'pass', 'second_review')]
+  const { times, totals } = stageTimes(list)
+  assert.equal(times.test_review.work, 10_000)
+  assert.equal(times.quality.work, 10_000)
+  assert.deepEqual([times.second_review.wait_human, times.second_review.wait_background], [0, 10_000])
+  assert.equal(totals.elapsed_ms, 23_000)
+  assert.equal(totals.worker_ms, 22_000)
+  assert.notEqual(totals.elapsed_ms, totals.worker_ms)
+  assert.deepEqual([totals.human_wait_ms, totals.background_wait_ms, totals.blocked_ms], [0, 10_000, 0])
+  // tokens go to the agent or operation that reported them, never to whichever stage started last
+  const ended = (s, agentId, tokens) => ({ id: `t${s}`, ts: at(s), run: 'r1', kind: 'tool.end', stage: 'quality', op: null, agent: 'conductor', details: { tool: 'Agent', response: { agent_id: agentId, total_tokens: tokens } } })
+  const { tokens } = stageTimes([...list, ended(10, 'w1', 500), ended(11, undefined, 70)])
+  assert.deepEqual(tokens, { w1: 500, unknown: 70 })
+})
+
+test('ledger tokens spent while parallel stages overlap go under unknown, not the stage started last', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sl-usage-'))
+  const transcript = join(dir, 's1.jsonl')
+  const row = (id, ts, output) => JSON.stringify({ type: 'assistant', timestamp: ts, message: { id, model: 'opus', usage: { output_tokens: output } } })
+  writeFileSync(transcript, [row('m1', '2026-01-01T01:00:05Z', 1), row('m2', '2026-01-01T01:00:15Z', 10), row('m3', '2026-01-01T01:00:25Z', 100), row('m4', '2026-01-01T01:00:35Z', 1000)].join('\n'))
+  const ev = (s, verb, stage) => ({ kind: 'stage', verb, stage, ts: `2026-01-01T01:00:${String(s).padStart(2, '0')}Z` })
+  const events = [ev(0, 'start', 'test_review'), ev(10, 'start', 'quality'), ev(20, 'pass', 'test_review'), ev(30, 'pass', 'quality')]
+  const u = usage({ started_at: '2026-01-01T01:00:00Z', transcripts: [transcript] }, events)
+  assert.equal(u.by_stage.test_review.output, 1)
+  assert.equal(u.by_stage.unknown.output, 10)
+  assert.equal(u.by_stage.quality.output, 1100, 'alone again, then the last stage that ran')
 })

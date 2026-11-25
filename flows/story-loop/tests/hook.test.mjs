@@ -339,3 +339,23 @@ test('another session on another branch, or any session after the run is over, w
   save(dir, run)
   assert.equal(push('other').status, 0)
 })
+
+test('the board feed never keeps a secret from a command, with or without diagnostics', () => {
+  const root = runDirWith(owned())
+  // Made at run time with the shapes real ones have; nothing here is a credential.
+  const hex = n => Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join('')
+  const bearer = hex(32)
+  const pat = 'ghp_' + hex(36)
+  const word = hex(10)
+  const cut = 'echo ' + 'x'.repeat(120) + ' ' + 'ghp_' + hex(36) // a token where a plain cut would split it
+  fire(root, bash(`curl -H "Authorization: Bearer ${bearer}" https://api.example.com/x`))
+  fire(root, bash(`GH_TOKEN=${pat} gh pr view 7 --password ${word}`))
+  fire(root, bash(cut))
+  fire(root, { hook_event_name: 'SubagentStart', agent_id: 'w1', agent_type: 'story-loop:worker-haiku' })
+  const raw = readFileSync(join(root, '.start-story', 'events.jsonl'), 'utf8')
+  for (const secret of [bearer, pat, word, cut.slice(126, 140)]) assert.equal(raw.includes(secret), false, `${secret} reached the feed`)
+  const tools = raw.split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(e => e.kind === 'tool')
+  assert.deepEqual(tools.map(e => e.program), ['curl', 'gh', 'echo'])
+  assert.ok(tools.every(e => e.text.length <= 140))
+  assert.match(tools[1].text, /^GH_TOKEN=\[redacted\] gh pr view 7/)
+})
