@@ -1,15 +1,16 @@
 // github.mjs against a fake gh: a script that answers from a rules file and logs every call.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, chmodSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmodSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { load, update } from '../skills/story-loop/scripts/loop.mjs'
 import { repo, withRun, B } from './helpers.mjs'
 import { passProblem, FRESH } from '../skills/story-loop/scripts/loop.mjs'
 import { readEvents, diagDir } from '../skills/story-loop/scripts/diag.mjs'
+import { ledgerFile } from '../skills/story-loop/scripts/ledger.mjs'
 
 const dir = mkdtempSync(join(tmpdir(), 'sl-fakegh-'))
 const RULES = join(dir, 'rules.json')
@@ -519,4 +520,41 @@ test('human review: what counts are the humans\' top-level threads and review bo
   const run = load(root)
   assert.deepEqual([run.human_review.comments.ids, run.human_review.comments.pr_state, run.pr_state.state], [['11', 'review-5'], 'MERGED', 'MERGED'])
   assert.ok(calls().every(c => /acme\/app/.test(c)), 'every call names the run\'s repository')
+})
+
+// ---- 0.17: a lesson that recurs becomes one issue ------------------------------------
+function ledgerWith(runs) {
+  const { dir: root } = repo()
+  const file = ledgerFile(root)
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, runs.map(([run, story, pattern]) => JSON.stringify({ run, story, repo: 'acme/app', pr: 7,
+    lessons: [{ id: 'l1', pattern, check: 'lint', proposal: `rule from ${story}` }] })).join('\n') + '\n')
+  return root
+}
+const TITLE = 'story-loop check: hardcoded-path'
+
+test('a pattern seen in one run is not filed; at two runs the draft names every run and its proposal', () => {
+  const once = ledgerWith([['a', 'sc-1', 'hardcoded-path'], ['b', 'sc-2', 'other']])
+  rules([])
+  assert.throws(() => gh.promote(once, 'hardcoded-path'), /seen in 1 run; an issue is filed once it recurs/)
+  const twice = ledgerWith([['a', 'sc-1', 'hardcoded-path'], ['a', 'sc-1', 'hardcoded-path'], ['b', 'sc-2', 'hardcoded-path']])
+  rules([{ match: 'issue list -R acme/app --state all', stdout: '[]' }])
+  const draft = gh.promote(twice, 'hardcoded-path', { dryRun: true })
+  assert.equal(draft.state, 'draft')
+  assert.equal(draft.title, TITLE)
+  assert.match(draft.body, /2 story-loop runs/)
+  assert.match(draft.body, /sc-1.*rule from sc-1[\s\S]*sc-2.*rule from sc-2/)
+  assert.ok(!calls().some(c => /issue create/.test(c)), 'a draft creates nothing')
+})
+
+test('promote files the issue once: an issue with the same title, open or closed, is reported instead', () => {
+  const root = ledgerWith([['a', 'sc-1', 'hardcoded-path'], ['b', 'sc-2', 'hardcoded-path']])
+  rules([{ match: 'issue list -R acme/app --state all', stdout: '[]', times: 1 },
+    { match: `issue create -R acme/app --title ${TITLE} --body`, stdout: 'https://github.com/acme/app/issues/9\n', times: 1 },
+    { match: 'issue list -R acme/app --state all', stdout: JSON.stringify([{ title: `${TITLE} (old)`, url: 'x' }, { title: TITLE, url: 'https://github.com/acme/app/issues/9' }]) }])
+  assert.deepEqual(gh.promote(root, 'hardcoded-path'), { state: 'created', title: TITLE, url: 'https://github.com/acme/app/issues/9' })
+  assert.deepEqual(gh.promote(root, 'hardcoded-path'), { state: 'exists', title: TITLE, url: 'https://github.com/acme/app/issues/9' })
+  assert.equal(calls().filter(c => /issue create/.test(c)).length, 1)
+  // the log splits a call at the newlines of its body: check the lines a call starts on
+  assert.ok(calls().filter(c => /^issue /.test(c)).every(c => /^issue \w+ -R acme\/app/.test(c)), 'every call names the ledger\'s repository')
 })

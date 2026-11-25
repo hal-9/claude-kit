@@ -93,6 +93,12 @@ The lessons also flow forward: `loop.mjs ledger --lessons` prints them alone,
 and the contract stage hands them to the advisor as known pitfalls, so a new
 plan names what guards against a mistake an earlier run was corrected for.
 
+A lesson that recurs (two or more runs) becomes work: at the retro,
+`github.mjs promote <pattern> --dry-run` drafts a GitHub issue with every run
+and proposal behind it, and on the human's yes `github.mjs promote <pattern>`
+files it, once per pattern (an issue with the same title, open or closed, is
+reported instead). A later story-loop run can take that issue like any other.
+
 What it is not yet: nothing scores finished runs on its own, nothing replays
 old tasks against other models, and no agent opens a PR against the loop's own
 instructions. Those need a ledger with real runs in it first.

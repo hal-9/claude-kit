@@ -1077,7 +1077,7 @@ function status(run) {
     cur ? `next: ${now.join(' + ')}${now.length > 1 ? ' (side by side)' : ''}` : 'all stages done'].join('\n')
 }
 
-function repoRoot() {
+export function repoRoot() {
   try { return execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch { return process.cwd() }
 }
 

@@ -1171,8 +1171,15 @@ Update `.start-story/feature-map.md` now for every `feature-map` lesson (it is
 local, not part of the PR). `LOOP pass retro "<n lessons>"` — refused while a
 correction has no lesson — writes the run's line to the ledger. Then run
 `LOOP ledger` and tell the human, shortest first: any pattern that now shows
-in two or more runs with its proposal (that check is worth building now; offer
-it as its own story), and the tiers that keep being returned.
+in two or more runs, and the tiers that keep being returned.
+
+A pattern in two or more runs is a check worth building now, as a GitHub issue
+of its own that a later run can take (`/story-loop gh-<n>`). For each one, run
+`GH promote <pattern> --dry-run`: `exists: <url>` means it is already filed
+(open or closed), so give the link; otherwise it prints the issue's title and
+body. Show that draft to the human and file it only on their yes, with
+`GH promote <pattern>`. It works after the run has ended; it reads the ledger,
+not the run.
 
 Passing the retro ends the run: `active.json` is archived into
 `.start-story/<story>/run-<time>.json`, and the hooks stop guarding the

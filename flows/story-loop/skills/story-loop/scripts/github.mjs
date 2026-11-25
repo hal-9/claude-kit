@@ -19,8 +19,9 @@ import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { findRoot, load, update, emit, baseName, runKey, opContext, opStart, opUpdate, opEnd } from './loop.mjs'
+import { findRoot, repoRoot, load, update, emit, baseName, runKey, opContext, opStart, opUpdate, opEnd } from './loop.mjs'
 import { bind, record } from './diag.mjs'
+import { readLedger } from './ledger.mjs'
 
 const fail = message => { throw new Error(message) }
 const GH = process.env.STORY_LOOP_GH || 'gh'
@@ -416,7 +417,36 @@ export function report(root, bodyFile, attach = []) {
   return existing.id
 }
 
+// A lesson whose pattern came back in two or more runs gets one issue, so its check is
+// built as a story of its own. It is looked up by its exact title first, open or closed:
+// a retry, another worktree or another machine reports the issue instead of filing it again.
+// ponytail: GitHub's search can lag a few seconds behind a create; a retry inside that window could file twice.
+export function promote(root, pattern, { dryRun = false } = {}) {
+  const hits = readLedger(root).filter(e => (e.lessons ?? []).some(l => l.pattern === pattern))
+  hits.length >= 2 || fail(`${pattern} was seen in ${hits.length} run${hits.length === 1 ? '' : 's'}; an issue is filed once it recurs (two or more)`)
+  const repo = hits.at(-1).repo ?? fail('the ledger names no repository for these runs')
+  const title = `story-loop check: ${pattern}`
+  const found = JSON.parse(gh(['issue', 'list', '-R', repo, '--state', 'all', '--search', `"${title}" in:title`, '--json', 'title,url', '--limit', '50'], root))
+    .find(i => i.title === title)
+  if (found) return { state: 'exists', title, url: found.url }
+  const seen = hits.flatMap(e => e.lessons.filter(l => l.pattern === pattern).map(l => ({ ...l, story: e.story, pr: e.pr })))
+  const body = [
+    `The same kind of mistake was corrected in ${hits.length} story-loop runs. Build the check that catches it, so no reviewer has to.`,
+    '', `**Pattern:** \`${pattern}\``, `**Check:** ${[...new Set(seen.map(l => l.check))].join(', ')}`, '', '**Seen in, with what each retro proposed:**',
+    ...seen.map(l => `- ${l.story}${l.pr ? ` (PR #${l.pr})` : ''}: ${l.proposal ?? l.note ?? 'no proposal'}`),
+    '', '_Filed by the story-loop retro (`github.mjs promote`)._',
+  ].join('\n')
+  if (dryRun) return { state: 'draft', title, body }
+  const url = gh(['issue', 'create', '-R', repo, '--title', title, '--body', body], root).trim()
+  return { state: 'created', title, url }
+}
+
 async function main([cmd, ...args]) {
+  if (cmd === 'promote') {
+    const pattern = args.find(a => !a.startsWith('--')) ?? fail('promote needs a pattern slug')
+    const result = promote(findRoot() ?? repoRoot(), pattern, { dryRun: args.includes('--dry-run') })
+    return console.log(result.state === 'draft' ? `${result.title}\n\n${result.body}` : `${result.state}: ${result.url}`)
+  }
   const root = findRoot() ?? fail('no active story-loop run here')
   const opt = name => { const i = args.indexOf(`--${name}`); return i < 0 ? undefined : args[i + 1] }
   switch (cmd) {
@@ -450,7 +480,7 @@ async function main([cmd, ...args]) {
       const done = reply(root, opt('map') ?? fail('reply needs --map <file>'))
       return Object.entries(done).forEach(([id, r]) => console.log(`${id}  ${r.disposition}${r.commit ? ` ${r.commit.slice(0, 7)}` : ''}`))
     }
-    default: fail('usage: github.mjs ready | copilot-request | copilot-wait [--minutes n] | comments | human-comments | ci | report --body-file <f> [--attach img]... | reply --map <file>')
+    default: fail('usage: github.mjs ready | copilot-request | copilot-wait [--minutes n] | comments | human-comments | ci | report --body-file <f> [--attach img]... | reply --map <file> | promote <pattern> [--dry-run]')
   }
 }
 
