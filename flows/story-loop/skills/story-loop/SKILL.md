@@ -89,10 +89,12 @@ when this skill loaded). `LOOP status` prints every stage and which one is next.
    `story-loop:advisor-fable`, read-only, for the contract, triage of
    findings, the retro and the fallback second review (each stage says when).
    Give it the job name and only what that job needs; it answers, you decide
-   and record. Workers are the four `story-loop:worker-*` agents. Every other
-   agent you start (verifier, a search) gets an explicit `model` on the Agent
-   call: `opus` where judgment is needed, `sonnet` or `haiku` where it is not.
-   A hook refuses a delegation without one, refuses to start or advance a run
+   and record. Every agent you start is a story-loop agent, whose name carries
+   its model so the agent panel shows what it spends: the four
+   `story-loop:worker-*` agents for work (a search is `worker-haiku`),
+   `story-loop:verifier-opus` for the browser, `story-loop:angle-opus` for a
+   review angle. A hook refuses any other agent type (`general-purpose`,
+   `Explore`), refuses to start or advance a run
    from a session on another model, and keeps this session from switching
    away while the run is active (a switch would also throw away the prompt
    cache). If it says the session is on the wrong model, ask the human to
@@ -684,9 +686,11 @@ this, checked by the script against the approved list and the request:
 - `url` is the URL the check ended on;
 - `environment` is the environment URL of the request, as printed.
 
-Hand the brief to a fresh subagent (`model: opus`) with nothing else;
+Hand the brief to a fresh `story-loop:verifier-opus` with nothing else;
 split a large matrix across several verifiers and merge their `results` into
-the one file.
+the one file. The verifier never writes data with JavaScript in the page; a
+check that needs data the set-up did not make is `blocked`, and you fix the
+set-up.
 
 ### Then you
 
@@ -775,7 +779,7 @@ it.
 dev-loops config), read every entry under `gates.*.angles` that has a
 `prompt`: those are checks this team wrote for failures it has shipped before
 (an out-of-diff caller, an N+1, a missing locale key). Run each, in parallel
-with the reviewer above, as one subagent on Opus given only: the angle's
+with the reviewer above, as one `story-loop:angle-opus` given only: the angle's
 prompt verbatim, the commit and request id, `git diff <base>...HEAD`, and
 "You have Read and Grep on the whole repo; leave the diff when the prompt
 tells you to. If the prompt's own condition does not apply to this diff, answer
@@ -785,7 +789,7 @@ dev-loops' built-in reviewers; skip them. No `.devloops`, no repo angles.
 **The standards angle, always.** The reviewer judges the change against the
 goals; nothing above judges it against how this repo says code is written.
 Run one more angle, `standards`, in parallel with the others and the same way
-(Opus, Read and Grep, the commit and request id, the diff), given the list of
+(`story-loop:angle-opus`, the commit and request id, the diff), given the list of
 files that document how code is written here: CLAUDE.md and AGENTS.md (root
 and the changed directories), CONTRIBUTING.md, CODING_STANDARDS.md,
 `.github/instructions/`, and the repo's review checklist when it has one (a

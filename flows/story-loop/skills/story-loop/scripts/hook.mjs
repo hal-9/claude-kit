@@ -17,9 +17,13 @@ import { bind, record } from './diag.mjs'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const MAX_STOP_BLOCKS = 3
 const HEARTBEAT_MS = 60_000
-// The plugin's four worker profiles and the model each one is defined with.
-// The advisor is the one agent on the advisor model: read-only judgment for the contract, triage and the retro.
-export const PROFILES = { 'worker-haiku': 'haiku', 'worker-sonnet': 'sonnet', 'worker-opus': 'opus', 'worker-opus-max': 'opus', 'advisor-fable': 'fable' }
+// The plugin's agents and the model each one is defined with: the name carries the model,
+// so the agent panel always shows what an agent spends. The advisor is the one agent on the
+// advisor model: read-only judgment for the contract, triage, the retro.
+export const PROFILES = {
+  'worker-haiku': 'haiku', 'worker-sonnet': 'sonnet', 'worker-opus': 'opus', 'worker-opus-max': 'opus', 'advisor-fable': 'fable',
+  'verifier-opus': 'opus', 'angle-opus': 'opus',
+}
 // Commands with an effect outside this machine. With an unreadable state they are refused.
 const OUTWARD = /\bgit\b[^\n;&|]*\spush\b|\bgh\b[^\n;&|]*\b(pr|api|issue|release)\b/
 // Running a script that writes the run, not reading or grepping one (`grep x github.mjs` is no write).
@@ -74,8 +78,8 @@ export function checkAgent({ subagent_type: type = 'general-purpose', model } = 
     ? `story-loop: ${type} is defined on ${profile}; drop model: ${model}, or pick the worker defined on ${model}.`
     : null
   if (new RegExp(MODELS.advisor, 'i').test(type)) return `story-loop: "${type}" is not story-loop's ${MODELS.advisor} agent; use story-loop:advisor-${MODELS.advisor} for judgment, a story-loop worker for work.`
-  if (!model) return `story-loop: "${type}" would inherit the conductor's model. Use a story-loop worker (${Object.keys(PROFILES).join(', ')}) or add model: ${allowed.join(' | ')}.`
-  return null
+  // Any other type shows its own name, not its model, in the agent panel.
+  return `story-loop: delegate to the story-loop agents, whose names carry their model (${Object.keys(PROFILES).map(p => `story-loop:${p}`).join(', ')}), not "${type}": the verifier is verifier-opus, a review angle angle-opus, a search worker-haiku.`
 }
 
 // Front-end work is briefed with modern-web-guidance in hand: the conductor runs the

@@ -1009,7 +1009,7 @@ function roleOf(agent, stage) {
   const m = type.match(/^worker-(haiku|sonnet|opus-max|opus)$/)
   if (m) return m[1]
   if (/verif/i.test(type) || stage === 'verify') return 'verifier'
-  if (stage === 'second_review') return 'sceptic'
+  if (/^angle-/.test(type) || stage === 'second_review') return 'sceptic'
   if (stage === 'copilot_review') return 'copilot'
   return 'helper'
 }

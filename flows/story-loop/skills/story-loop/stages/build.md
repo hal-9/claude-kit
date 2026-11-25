@@ -10,7 +10,7 @@ from a later stage, the task is only the defects named in the `back` reason.
 ## 1. Plan
 
 1. Read what the plan names: the files, CLAUDE.md / AGENTS.md, recent history
-   of those files. Use an Explore subagent only for wide searches.
+   of those files. Use a `story-loop:worker-haiku` only for wide searches.
 2. If the story touches visible UI, design decisions are yours, from the
    story's design links: write them into the brief as concrete specs
    (structure, states, which existing components to reuse). Workers never

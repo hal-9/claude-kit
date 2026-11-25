@@ -159,16 +159,19 @@ test('a board note reaches the conductor once, never a worker', () => {
   assert.match(readFileSync(join(root, '.start-story', 'events.jsonl'), 'utf8'), /"phase":"idle"/)
 })
 
-test('work is delegated to the four worker profiles or a named delegate model, never the conductor\'s', () => {
+test('work is delegated to the story-loop agents, whose names carry their model, never the conductor\'s', () => {
   assert.equal(checkAgent({ subagent_type: 'story-loop:worker-opus-max' }), null)
   assert.equal(checkAgent({ subagent_type: 'worker-haiku' }), null)
   assert.equal(checkAgent({ subagent_type: 'worker-sonnet', model: 'sonnet' }), null)
-  assert.equal(checkAgent({ subagent_type: 'general-purpose', model: 'opus' }), null)
-  assert.equal(checkAgent({ subagent_type: 'Explore', model: 'haiku' }), null)
+  assert.equal(checkAgent({ subagent_type: 'story-loop:verifier-opus' }), null)
+  assert.equal(checkAgent({ subagent_type: 'story-loop:angle-opus' }), null)
+  // Any other type shows its own name in the agent panel, not the model it spends.
+  assert.match(checkAgent({ subagent_type: 'general-purpose', model: 'opus' }), /verifier-opus/)
+  assert.match(checkAgent({ subagent_type: 'Explore', model: 'haiku' }), /names carry their model/)
   assert.match(checkAgent({ subagent_type: 'worker-opus-max', model: 'haiku' }), /defined on opus/)
-  assert.match(checkAgent({ subagent_type: 'worker-evil' }), /would inherit/)
-  assert.match(checkAgent({ subagent_type: 'general-purpose' }), /would inherit/)
-  assert.match(checkAgent({}), /would inherit/)
+  assert.match(checkAgent({ subagent_type: 'worker-evil' }), /names carry their model/)
+  assert.match(checkAgent({ subagent_type: 'general-purpose' }), /names carry their model/)
+  assert.match(checkAgent({}), /names carry their model/)
   assert.match(checkAgent({ subagent_type: 'story-loop:worker-opus', model: 'fable' }), /opus, sonnet, haiku only/)
   assert.match(checkAgent({ subagent_type: 'general-purpose', model: 'fable' }), /opus, sonnet, haiku only.*advisor-fable/)
   assert.match(checkAgent({ subagent_type: 'savvy-flow:savvy-fable' }), /use story-loop:advisor-fable/)
@@ -195,9 +198,9 @@ test('the conductor stays on its model: runs start on it and cannot switch away'
   assert.equal(as(sid, { hook_event_name: 'PreModelSwitch', to_model: 'claude-fable-5-2' }).status, 2)
   assert.equal(as(sid, { hook_event_name: 'PreModelSwitch', to_model: 'claude-opus-5-5' }).status, 0)
   assert.equal(as('someone-else', { hook_event_name: 'PreModelSwitch', to_model: 'claude-fable-5-2' }).status, 0)
-  const spawn = model => as(sid, { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'general-purpose', description: 'verify', model } })
-  assert.equal(spawn(undefined).status, 2)
-  assert.equal(spawn('opus').status, 0)
+  const spawn = type => as(sid, { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: type, description: 'verify' } })
+  assert.equal(spawn('general-purpose').status, 2)
+  assert.equal(spawn('story-loop:verifier-opus').status, 0)
 })
 
 test('the session that ran init owns the new run at once', () => {
