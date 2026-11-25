@@ -26,7 +26,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, findRoot, load, emit, headTree, opStart, opUpdate, opEnd } from './loop.mjs'
+import { GRAPH, findRoot, load, emit, update, headTree, opStart, opUpdate, opEnd } from './loop.mjs'
 import { record } from './diag.mjs'
 
 const COMMON = [
@@ -337,6 +337,8 @@ async function main(argv) {
         const m = queue[i]
         const path = join(slot.worktree, m.file)
         const original = m.lines.join('\n')
+        progress.running = [...progress.running.filter(x => x.slot !== slot.n), { slot: slot.n, mutant: `${m.file}:${m.line}`, to: m.to.slice(0, 80) }]
+        report()
         writeFileSync(path, m.lines.with(m.line - 1, m.mutated).join('\n'))
         try {
           const valid = parses(root, m.file, path)
@@ -349,6 +351,11 @@ async function main(argv) {
             outcomes[i] = { ...row(m), outcome: outcome === 'killed' && valid === null ? 'unverified' : outcome, log: run.out.slice(-1500) }
           }
           results.push(outcomes[i])
+          const o = outcomes[i].outcome
+          progress.done++; progress[o === 'killed' ? 'killed' : o === 'survived' ? 'survived' : 'other']++
+          progress.running = progress.running.filter(x => x.slot !== slot.n)
+          progress.last = { mutant: `${m.file}:${m.line}`, outcome: o, tail: String(outcomes[i].log ?? '').trim().split('\n').slice(-3).join('\n').slice(-300) }
+          report()
           // syntax_checked: true/false is the checker's answer; null means nothing here can check this file type.
           note('mutate.mutant', { mutant: m.id, outcome: outcomes[i].outcome, slot: slot.n, syntax_checked: valid, elapsed_ms: Date.now() - began })
         } finally { writeFileSync(path, original) }

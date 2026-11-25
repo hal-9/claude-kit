@@ -1367,6 +1367,15 @@ function stageFacts(id, run) {
     add('Size', q.size ? `${q.size.files} files, +${q.size.added} −${q.size.removed}${q.size.tests == null ? '' : `, ${q.size.tests} of them in tests`} (${q.size.lane} lane: ${q.size.budget} lines of code)` : null)
     add('Signals', list(Object.entries(q.flags ?? {}).map(([k, f]) => `${f.text}${q.dispositions?.[k] ? ` → ${q.dispositions[k]}` : ''}`)))
   }
+  if (id === 'test_review') {
+    // A mutant call still running reports where it is, so a long run never looks hung.
+    for (const o of Object.values(run.ops ?? {}).filter(o => o.kind === 'mutate' && o.progress)) {
+      const p = o.progress
+      add('Running', `${p.done} of ${p.total} mutants · ${p.killed} killed · ${p.survived} survived${p.other ? ` · ${p.other} other` : ''}${p.carried ? ` · ${p.carried} carried over` : ''} (${(p.files ?? []).join(', ')})`)
+      add('Now', list((p.running ?? []).map(r => `slot ${r.slot}: ${r.mutant}  →  ${r.to}`)))
+      if (p.last) add('Last', `${p.last.mutant} ${p.last.outcome}${p.last.tail ? `: ${p.last.tail}` : ''}`)
+    }
+  }
   if (id === 'test_review' && ev.mutants) {
     const m = ev.mutants
     add('Mutants', `${m.killed} of ${m.valid} killed · ${m.survived} survived · ${m.invalid} invalid · ${m.timeout} timed out`)
