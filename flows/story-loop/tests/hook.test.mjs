@@ -320,3 +320,22 @@ test('a front-end brief in build waits for modern-web-guidance; running the skil
   assert.equal(load(root).web_guidance, 'used')
   assert.equal(fire(root, agent).status, 0)
 })
+
+test('another session on another branch, or any session after the run is over, works without the run\'s guards', async () => {
+  const { repo } = await import('./helpers.mjs')
+  const { dir, git } = repo()
+  mkdirSync(join(dir, '.start-story'), { recursive: true })
+  save(dir, { ...newRun('sc-1'), branch: B, ...owned('conductor') })
+  const push = session => fire(dir, { session_id: session, ...bash('git push origin HEAD') })
+  // on the story branch the push guard holds for everyone
+  assert.equal(push('other').status, 2)
+  git('checkout', '-qb', 'feat/something-else')
+  assert.equal(push('other').status, 0)
+  assert.equal(push('conductor').status, 2, 'the conductor stays guarded wherever it is')
+  // a finished run guards nothing
+  git('checkout', '-q', B)
+  const run = load(dir)
+  for (const s of Object.values(run.stages)) s.status = 'passed'
+  save(dir, run)
+  assert.equal(push('other').status, 0)
+})

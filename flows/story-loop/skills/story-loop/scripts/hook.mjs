@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, LEASE_MS, findRoot, load, update, emit, stopReason, liveWorkers, liveHelpers, deliver, current, ownerState } from './loop.mjs'
+import { GRAPH, LEASE_MS, findRoot, load, update, emit, stopReason, liveWorkers, liveHelpers, deliver, current, ownerState, gitIn } from './loop.mjs'
 import { bind, record } from './diag.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -194,8 +194,14 @@ function main() {
       deny(`story-loop: ${error.message}. Pushes, merges and PR changes wait until it is recovered.`)
     return
   }
+  // A finished run guards nothing: it is archived at the retro, and until then it must not hold up other work.
+  if (!current(run)) return
   const state = ownerState(run, input.session_id)
   const ours = state === 'ours'
+  // Another session in this checkout working on another branch is not part of the run: no guards for it.
+  let branch = null
+  try { branch = gitIn(root)('rev-parse', '--abbrev-ref', 'HEAD') } catch {}
+  const bystander = !ours && Boolean(run.branch) && Boolean(branch) && branch !== run.branch
   // Recording is the run's own switch (loop.mjs diagnostics on); with it off this binds to nothing.
   bind(root, run, { session: input.session_id ?? null, agent: input.agent_id ? `${input.agent_type ?? 'agent'}:${input.agent_id}` : 'conductor', stage: current(run) })
   diagnose(root, input, knownModel(input.session_id))
@@ -231,6 +237,7 @@ function main() {
     case 'PreToolUse': {
       const tool = input.tool_name
       const ti = input.tool_input ?? {}
+      if (bystander) return
       if (tool === 'Bash') {
         const refused = checkCommand(command)
         if (refused) deny(refused)

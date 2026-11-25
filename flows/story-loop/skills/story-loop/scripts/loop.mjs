@@ -206,7 +206,8 @@ export function ownerState(run, session, now = Date.now()) {
 export function findRoot(from = process.cwd()) {
   for (let dir = resolve(from); ; dir = dirname(dir)) {
     if (existsSync(join(dir, '.start-story', 'active.json'))) return dir
-    if (dir === dirname(dir)) return null
+    // A checkout's own root ends the search: a worktree nested inside the run's checkout is other work.
+    if (dir === dirname(dir) || existsSync(join(dir, '.git'))) return null
   }
 }
 export const paths = root => ({
@@ -1123,10 +1124,10 @@ function init(input, diagnostics = false) {
 
 // An ended run is kept next to its evidence, never deleted. Helpers still working
 // for it are asked to stop; a result that arrives anyway is refused as stale.
-function archive(root, run) {
+function archive(root, run, { ledger = true } = {}) {
   const cancelled = cancelOps(run)
   // Every run leaves its line in the ledger, also one that was dropped half way. A ledger that cannot be written never keeps a run from ending.
-  try { appendLedger(root, run, { ended: true }) } catch { /* the run's own record is still kept below */ }
+  if (ledger) try { appendLedger(root, run, { ended: true }) } catch { /* the run's own record is still kept below */ }
   record(root, 'run.end', { cancelled, stage: current(run) })
   mkdirSync(runDir(root, run), { recursive: true })
   renameSync(paths(root).active, join(runDir(root, run), `run-${Date.now()}.json`))
@@ -1512,6 +1513,11 @@ function command(root, run, verb, args) {
   // The retro is the run's last word on itself: its ledger line carries the lessons.
   if (verb === 'pass' && stage === 'retro') { try { appendLedger(root, next) } catch (error) { console.error(`loop: the ledger line could not be written (${error.message}); the run is unaffected`) } }
   console.log(status(next))
+  // A run whose retro passed is over: archived now, so its guards never hold up the next piece of work.
+  if (verb === 'pass' && stage === 'retro') {
+    withLock(root, () => { const now = load(root); if (runKey(now) === runKey(next)) archive(root, now, { ledger: false }) })
+    return console.log(`run ${next.story} ended; its record is kept in ${runDir(root, next)}`)
+  }
   if (verb === 'start' && stage === 'verify') {
     const { id, environment } = next.stages.verify.request
     console.log(`verify request: ${id}  (results.json must carry it as "request")`)

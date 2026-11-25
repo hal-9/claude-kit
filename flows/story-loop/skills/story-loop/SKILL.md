@@ -155,6 +155,13 @@ LOOP recover           # the state file or the notes file is unreadable: restore
 LOOP worktree SC-12346 # another run is active here: set up a worktree beside this checkout for the new story
 ```
 
+**Other work while a run is active.** The guards (the push guard, the
+delegation rules, the stop gate) hold for the session that owns the run and for
+any session on the story branch in this checkout. A session on another branch,
+or in another worktree, works as if no run existed, and a finished run guards
+nothing. One checkout still has one branch at a time: work on another PR in a
+worktree, never by switching this checkout's branch while the run uses it.
+
 **A second story while a run is active:** one checkout holds one run, and
 `init` refuses a second. Run `LOOP worktree <story>` instead: it creates
 `<repo>-story-loop/<story>` beside the checkout, sets up the untracked files
@@ -1135,8 +1142,10 @@ correction has no lesson — writes the run's line to the ledger. Then run
 in two or more runs with its proposal (that check is worth building now; offer
 it as its own story), and the tiers that keep being returned.
 
-Run `LOOP end` when the human says the story is done or dropped; it writes the
-ledger line too, so a run that never reached the retro still counts.
+Passing the retro ends the run: `active.json` is archived into
+`.start-story/<story>/run-<time>.json`, and the hooks stop guarding the
+checkout. Run `LOOP end` for a run dropped before its retro; it writes the
+ledger line too, so that run still counts.
 
 ## The ledger
 

@@ -868,14 +868,18 @@ test('the retro names a lesson for every correction, and each run leaves one lin
   assert.match(refused([lesson({ from: ['r1'] })]), /1 corrections have no lesson: back:1/)
   // a judgement call no machine can check becomes a rule for the reviewer
   cli(dir, 'put', 'lessons', JSON.stringify([lesson({ check: 'review', proposal: 'review aspect: a removal takes the same lock as publish' })]))
-  assert.equal(cli(dir, 'pass', 'retro').status, 0)
+  const passed = cli(dir, 'pass', 'retro')
+  assert.equal(passed.status, 0, passed.stderr)
+  // the retro ends the run: archived, so its guards hold up nothing after it
+  assert.match(passed.stdout, /run sc-1 ended/)
+  assert.ok(!existsSync(join(dir, '.start-story', 'active.json')))
+  assert.ok(readdirSync(join(dir, '.start-story', 'sc-1')).some(n => /^run-\d+\.json$/.test(n)))
   const [entry] = readLedger(dir)
   assert.deepEqual([entry.story, entry.lane, entry.ended, entry.stage, entry.lessons[0].pattern, entry.backs[0].from, entry.findings['codex:fixed'], entry.tasks['sonnet:returned'], entry.usage],
     ['sc-1', 'standard', false, null, 'missing-empty-state', 'second_review', 1, 1, null])
   assert.match(entry.factory, /^\d+\.\d+\.\d+$/)
-  // ending the run writes its line again; the ledger reads one line per run, and outlives the run
-  assert.equal(cli(dir, 'end').status, 0)
-  assert.deepEqual(readLedger(dir).map(e => e.ended), [true])
+  // one line per run, and the ledger outlives the run
+  assert.deepEqual(readLedger(dir).map(e => e.ended), [false])
   const text = cli(dir, 'ledger').stdout
   assert.match(text, /1 run · factory versions/)
   assert.match(text, /1×  missing-empty-state  \[review\]  → review aspect: a removal takes the same lock as publish/)
@@ -1105,4 +1109,14 @@ test('a fix round reruns the browser checks of the steps its own tasks name, not
   assert.deepEqual(plan(2).rerun, ['b'])
   // a round whose tasks do not name the file falls back to every step it served
   assert.deepEqual(plan(3).rerun, ['a', 'b', 'c'])
+})
+
+test('a checkout nested inside the run\'s checkout is not part of the run', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sl-nest-'))
+  mkdirSync(join(root, '.start-story'))
+  writeFileSync(join(root, '.start-story', 'active.json'), '{}')
+  mkdirSync(join(root, 'wt', 'app'), { recursive: true })
+  writeFileSync(join(root, 'wt', '.git'), 'gitdir: elsewhere\n')
+  assert.equal(findRoot(join(root, 'wt', 'app')), null)
+  assert.equal(findRoot(join(root, 'lib')), root)
 })
