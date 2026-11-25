@@ -26,7 +26,8 @@ const SKIP = {
   fix_comments: 'never',
   // With nothing flagged the quality gate passes on its own, and a retro with nothing to learn records an empty list.
   quality: 'never', retro: 'never',
-  verify: 'human', copilot_review: 'human', human_review: 'human',
+  // Copilot not answering is noted in the report, not a stop for the human.
+  verify: 'human', copilot_review: 'reason', human_review: 'human',
 }
 // Stages whose evidence covers one exact code tree; a later change makes it stale.
 export const FRESH = ['quality', 'test_review', 'verify', 'second_review']
@@ -133,6 +134,10 @@ export function move(run, verb, stage, arg, reason, now = new Date().toISOString
       mustBeCurrent(); needReason()
       // background: a command the conductor started in the background (a Codex review) and is idle for; its end wakes it.
       ;['human', 'copilot', 'background'].includes(arg) || fail('wait needs who: human | copilot | background')
+      // Between the contract and the human review the loop runs on: the advisor decides, open questions go into the report.
+      arg === 'human' && !HUMAN_STAGES.includes(stage) && !/^critical:/i.test(reason) &&
+        fail(`${stage} does not wait on the human. Decide with the advisor and go on: park a finding or a size question for the human review (the report lists it). ` +
+          `Only what makes going on impossible or unsafe waits: wait ${stage} human "critical: <what>" (no browser reachable, the remote moved, a note that changes the contract)`)
       Object.assign(st, { status: 'waiting', waiting_on: arg, reason })
       break
     case 'back': {
@@ -144,7 +149,7 @@ export function move(run, verb, stage, arg, reason, now = new Date().toISOString
       // ponytail: "human:" is the agent's word that the human asked; no host primitive proves it.
       const byHuman = /^human:/i.test(reason)
       !byHuman && target.rounds >= GRAPH.maxRounds &&
-        fail(`"${arg}" already went back ${GRAPH.maxRounds} times; record "wait ${stage} human" and show the human`)
+        fail(`"${arg}" already went back ${GRAPH.maxRounds} times. Park what is still open for the human review and go on (a blocker: block ${stage} "<what>")`)
       const all = ids()
       for (const id of all.slice(all.indexOf(arg))) {
         const s = next.stages[id]
@@ -1350,8 +1355,7 @@ function command(root, run, verb, args) {
     update(root, r => {
       const q = r.evidence?.quality ?? fail('no quality results yet (run quality.mjs)')
       key in (q.flags ?? {}) || fail(`"${key}" is not a signal of these results`)
-      // The lane's size was the human's sign-off; only they widen it.
-      key === 'size' && !/^human:/i.test(why[0]) && fail('a diff over the lane\'s budget stands only on the human\'s word: loop.mjs quality accept size "human: <their reason>", or split the story')
+      // The lane's size was the human's sign-off: going over it is their decision at the human review, listed first in the report.
       return { ...r, evidence: { ...r.evidence, quality: { ...q, dispositions: { ...q.dispositions, [key]: why.join(' ') } } } }
     })
     emit(root, { kind: 'note', text: `quality signal ${key} accepted: ${why.join(' ')}` })

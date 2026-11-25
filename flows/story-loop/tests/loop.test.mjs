@@ -65,7 +65,7 @@ test('back follows graph edges, resets later stages, keeps old evidence as histo
   assert.deepEqual(run.history.at(-1).evidence, { mutants: { killed: 3 } })
   run.stages.build.rounds = GRAPH.maxRounds
   run = move(done(run, 'build', 'quality'), 'start', 'test_review')
-  assert.throws(() => move(run, 'back', 'test_review', 'build', 'again'), /show the human/)
+  assert.throws(() => move(run, 'back', 'test_review', 'build', 'again'), /Park what is still open for the human review/)
 })
 
 test('a human can send a finished run back, and is not capped', () => {
@@ -814,7 +814,7 @@ test('tests added in test review are checked by the quality gate then, not found
   assert.deepEqual(staleStages(dir, load(dir)), ['quality'])
 })
 
-test('a diff larger than the signed-off lane is a signal the human has to accept', () => {
+test('a diff larger than the signed-off lane is a signal that stands with a reason and goes to the human review', () => {
   const { dir, commit } = repo()
   withRun(dir, { lane: { ...LANE, lane: 'light' } })
   commit('big.rb', Array.from({ length: 200 }, (_, i) => `puts ${i}`).join('\n') + '\n')
@@ -823,8 +823,8 @@ test('a diff larger than the signed-off lane is a signal the human has to accept
   const out = quality(dir, '--no-lint', 'no linter here')
   assert.match(out.stdout, /SIGNAL\s+size\s+200 changed lines of code \(\+300 in tests\); the light lane was signed off for 150/)
   assert.match(qualityProblem(load(dir).evidence.quality), /size \(size\)/)
-  assert.match(cli(dir, 'quality', 'accept', 'size', 'it is fine').stderr, /only on the human's word/)
-  assert.equal(cli(dir, 'quality', 'accept', 'size', 'human: generated fixtures, keep it in one PR').status, 0)
+  assert.match(cli(dir, 'quality', 'accept', 'size').stderr, /usage/)
+  assert.equal(cli(dir, 'quality', 'accept', 'size', 'over by 50 lines from the drag handles; for the human at review').status, 0)
   assert.equal(qualityProblem(load(dir).evidence.quality), null)
 })
 
@@ -1051,4 +1051,13 @@ test('test review, verify and the second review run side by side; push waits for
   run = done(newRun('sc-1'), 'contract', 'build', 'quality')
   run = move(move(run, 'start', 'test_review'), 'wait', 'test_review', 'background', 'mutants')
   assert.match(stopReason(run), /stage "verify" is pending/)
+})
+
+test('between the contract and the human review the loop waits on the human only for what is critical', () => {
+  let run = move(newRun('sc-1'), 'start', 'contract')
+  assert.equal(move(run, 'wait', 'contract', 'human', 'sign-off').stages.contract.waiting_on, 'human')
+  run = move(done(run, 'contract', 'build'), 'start', 'quality')
+  assert.throws(() => move(run, 'wait', 'quality', 'human', 'accept the size?'), /does not wait on the human.*park/)
+  assert.equal(move(run, 'wait', 'quality', 'human', 'critical: the remote moved').stages.quality.status, 'waiting')
+  assert.equal(move(run, 'wait', 'quality', 'background', 'lint').stages.quality.waiting_on, 'background')
 })

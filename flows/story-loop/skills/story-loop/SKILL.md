@@ -17,8 +17,14 @@ model: opus
 
 You are the **conductor**. One story, twelve stages, in the order the graph
 allows. You plan, delegate, check and record; workers and reviewers do the
-rest. The human signs the contract at the start and merges near the end; the
-run closes with what it learned.
+rest. The human signs the contract at the start and reviews the PR at the
+end; nothing in between waits on them. The run closes with what it learned and
+ends itself.
+
+**Speed comes from not redoing work.** Test review, verify and the second
+review run side by side on the same code. A round back to build reruns only
+what the fix can have changed: mutants on the lines it touched, browser checks
+of the steps its tasks name, a review of the fix alone.
 
 `QUALITY` below means `node ${CLAUDE_SKILL_DIR}/scripts/quality.mjs`.
 
@@ -53,6 +59,17 @@ when this skill loaded). `LOOP status` prints every stage and which one is next.
    answer. Phrase the reason as the question it is ("accept the new size of
    1058 lines?"), so a yes means one thing. An answer typed in the chat counts
    the same; the waiter then hands over whatever the board sends later.
+
+   **Only two gates wait on the human: the contract sign-off and the human
+   review** (and the report's question about required CI, when GitHub hides
+   it). Everywhere else the script refuses `wait … human` unless the reason
+   starts with `critical:`, for what makes going on impossible or unsafe: no
+   browser reachable, the remote moved under the run, a note that changes the
+   contract, a blocker still open after the round cap. Everything else is
+   decided and recorded, and what the human should weigh in on goes to the top
+   of the report: which findings to fix is the advisor's triage, a size over
+   the lane's budget is accepted with its reason, a design or scope question
+   is a `parked` finding. Never approve or merge anything on GitHub.
 3. **Publish only through `PUBLISH`. Never merge.** A hook refuses every raw
    `git push`, every merge and every raw `gh pr ready`; do not look for a way
    around it. `PUBLISH` pushes the current commit to the story branch on the
@@ -354,8 +371,10 @@ as complexity come from them. It records, for this exact code tree:
 Each signal has an id (`file:line:kind`, or `size`). Remove it (a worker fixes
 the root cause; then `LOOP back quality build "<what>"` if code changes, commit,
 run again), or, only when it is right as it stands:
-`LOOP quality accept <id> "<why>"`. `size` is accepted only on the human's
-word (`"human: …"`), or the story is split. Accepted signals are named in the
+`LOOP quality accept <id> "<why>"`. `size` is accepted with what made it grow
+(`"over by 120 lines: drag-and-drop order and the preview, added at sign-off"`);
+it never stops the run. It heads the report's *needs your decision* list, where
+the human accepts it or asks for a split. Accepted signals are named in the
 report. `LOOP pass quality "<lint clean · n signals accepted>"`: refused
 while lint fails, a signal is undecided, or the results cover older code. The
 stage is never skipped: with nothing flagged it passes as it is.
@@ -459,9 +478,8 @@ first time; the output says how many were carried over, and the report says so.
 a new test changes the code after the quality gate passed. Before passing test
 review, run `QUALITY` again with the same lint commands: a clean run brings the
 passed gate up to date, so the push does not find it stale and send the run
-back. Test files do not count against the budget, and the human's acceptance
-of the story's size carries over while its code has grown by at most a
-quarter; past that it is asked again.
+back. Test files do not count against the budget; a size signal is accepted
+with its reason as in the quality gate.
 
 Never delete a test because of a mutation result. A test goes only when it is
 wrong or truly redundant on its own merits, and then name the test that still
@@ -573,7 +591,7 @@ Two browsers are supported; either is fine, the human's choice wins.
      signed in, and that this session is connected to it;
    - **BrowserOS neo:** start the BrowserOS app (its MCP server refuses
      connections while the app is closed).
-   Then `LOOP wait verify human "no browser reachable: start BrowserOS or connect Chrome"`
+   Then `LOOP wait verify human "critical: no browser reachable: start BrowserOS or connect Chrome"`
    and end the turn. On their reply, run the preflight again.
 4. Playwright is used only when the human asks for it.
 
@@ -810,9 +828,13 @@ for comments one by one); its verdict and note point at the first one.
 **Who judges.** You triage minor findings, nits and questions yourself. When
 any finding claims to be a `blocker` or `major`, or you are about to reject
 or park one of those, start `story-loop:advisor-fable` with job `triage`, the
-findings and the diff, and decide with its answer in hand: whether a claimed
-defect is real is where one wrong call costs a build round or ships a bug.
-The same holds in fix comments and human review.
+findings and the diff, and follow its verdicts: whether a claimed defect is
+real is where one wrong call costs a build round or ships a bug. The human is
+not asked which findings to fix. The bar for another round: a `blocker` or
+`major` this change introduced goes back to build; a `minor` only when its fix
+is small and clear and a round is going back anyway; everything else is
+`rejected` with the reason or `parked` for the human review. The same holds in
+fix comments and human review.
 
 Triage every finding against the actual code, then record all of them with
 `LOOP put findings '[{"id":"r1","source":"<reviewer>","severity":"major","introduced":true,"file":"…","text":"…","verdict":"…","note":"…"}]'`.
@@ -823,7 +845,7 @@ says whether this change caused it.
 | --- | --- | --- |
 | `fix_requested` | a real defect with one clear fix | goes back to build; becomes `fixed` with `"commit":"<sha>"` once the fix is in |
 | `rejected` | wrong, a nit, or a pre-existing defect outside this change | `note` says why; a blocker is rejected only with the evidence that it is wrong |
-| `parked` | a design choice or a scope question for the human | the human decides; the run goes on; never for a blocker |
+| `parked` | a design choice or a scope question for the human | the run goes on without asking; the report lists it first and the human decides at review; never for a blocker |
 
 A regression this change introduced is never out of scope because the Test
 Steps did not mention it. A pre-existing defect is noted in the report as a
@@ -886,7 +908,8 @@ resumes from the recorded request.
 
 - Exit 0 → `LOOP start copilot_review`, `LOOP pass copilot_review "<n comments>"`
   (the script checks the recorded review is of the published commit).
-- Exit 3 → `LOOP wait copilot_review human "Copilot did not answer"`.
+- Exit 3 → `LOOP skip copilot_review "Copilot did not answer in 30 minutes"`;
+  the report says so. No stop.
 - Exit 4 → the wait belonged to an earlier attempt, an earlier request or
   another run; its result was kept under `stale/` and changed nothing. Look
   at `LOOP status` and carry on from the stage it shows.
@@ -970,8 +993,9 @@ this run still had open.
 The report is what the human reviewer reads instead of re-deriving the change:
 their time is the scarce part, so it costs them less to read than it cost you
 to write. Lead with what they should look at, in this order: what needs their
-decision (parked findings, accepted quality signals, hard decisions as
-built), the flow chart from `.start-story/<story>/flow.md` in a `mermaid`
+decision (a size over the lane's budget, parked findings, findings left open
+at the round cap, accepted quality signals, a skipped Copilot review, hard
+decisions as built), the flow chart from `.start-story/<story>/flow.md` in a `mermaid`
 block (GitHub renders it) with what changed in it marked, then the evidence.
 Say how large the diff is against the lane's budget (lines of code, and the
 lines in tests beside them), which files to read first, and for the tests
@@ -1136,7 +1160,7 @@ Handle each one, then record it: `LOOP note done <id> "<what you did>"`.
 | A finding's verdict is wrong (`this is wrong` / `fix it after all` on a finding) | Change that finding's verdict and note in `LOOP put findings`; if it now needs a fix, treat it as a change request |
 | An explanation was wrong, or a question | Check the code. If the code is right, answer in the `note done` result. If the note uncovers a defect, treat it as a change request |
 | A change request ("do this differently") | Add a finding with `"source":"human"`, `"severity":"major"`, `"verdict":"fix_requested"`, then `LOOP back <current stage> build "human: <the request>"`. During build, add it as a task instead. The stages after build run again, both reviews included |
-| It contradicts the PR description | Do not build it yet. `LOOP wait <current stage> human "note <id> changes the contract: <what differs>"` and ask whether the description changes; the human edits or approves the edit |
+| It contradicts the PR description | Do not build it yet. `LOOP wait <current stage> human "critical: note <id> changes the contract: <what differs>"` and ask whether the description changes; the human edits or approves the edit |
 
 A `back` whose reason starts with `human:` is allowed from any stage after
 build, also from a finished run, and does not count toward the two-round cap.
@@ -1146,9 +1170,10 @@ progress half-written.
 ## When a stage sends work back
 
 `LOOP back <from> <to> "<reason>"` resets `<to>` and every stage after it. A
-stage can be sent back to twice; the third time the script refuses — record
-`LOOP wait <stage> human "<what keeps failing>"` and show the human the
-evidence instead of trying again.
+stage can be sent back to twice; the third time the script refuses. Then park
+what is still open (`LOOP finding <id> parked "round cap: <what keeps
+failing>"`) and go on: the report lists it first. Only a blocker stops the run:
+`LOOP block <stage> "<the blocker and the evidence>"`.
 
 ## Diagnostics (only when the human asks for a recorded run)
 
