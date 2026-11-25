@@ -36,14 +36,45 @@ export const FRESH = ['quality', 'test_review', 'verify', 'second_review']
 // Accepts SC-123, 123, gh-123, #123, and the URL of either.
 export function storyId(input = '') {
   const text = String(input).trim().toLowerCase()
-  const issue = text.match(/^(?:gh-|#)(\d+)$/) ?? text.match(/github\.com\/[^/]+\/[^/]+\/issues\/(\d+)/)
-  if (issue) return `gh-${issue[1]}`
+  const issue = text.match(/^(?:gh-|#)(\d+)$/)?.[1] ?? (issueRepo(text) && text.match(/\/issues\/(\d+)\/?$/)[1])
+  if (issue) return `gh-${issue}`
   const story = text.match(/^(?:sc-)?(\d+)$/) ?? text.match(/shortcut\.com\/[^/]+\/story\/(\d+)/)
   return story ? `sc-${story[1]}` : null
 }
-// owner/name of a GitHub issue URL or a git remote URL, lowercased; null otherwise.
-export const issueRepo = input => String(input).match(/github\.com\/([^/\s]+\/[^/\s]+)\/issues\/\d+/i)?.[1].toLowerCase() ?? null
-export const remoteRepo = url => String(url).trim().match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i)?.[1].toLowerCase() ?? null
+// owner/name of a GitHub issue URL or a git remote URL, lowercased; null for anything
+// else. Parsed whole, never searched: the host must be github.com itself, the scheme,
+// port and user one git uses for it, and the path exactly one owner/name. A URL that
+// only contains "github.com/owner/name" somewhere (another host, a local path) is null.
+const GH_HOST = 'github.com'
+const OWNER = /^[a-z0-9](?:[a-z0-9-]{0,38})$/i
+const NAME = /^[a-z0-9._-]{1,100}$/i
+const repoPath = path => {
+  const parts = String(path).replace(/\/$/, '').split('/')
+  if (parts.length !== 2) return null
+  const [owner, name] = [parts[0], parts[1].replace(/\.git$/i, '')]
+  if (!OWNER.test(owner) || !NAME.test(name) || /^\.+$/.test(name)) return null
+  return `${owner}/${name}`.toLowerCase()
+}
+const parsedUrl = text => { try { return new URL(text) } catch { return null } }
+export function remoteRepo(url) {
+  const text = String(url).trim()
+  if (/[\s%\\]/.test(text)) return null
+  // scp-like: git@github.com:owner/name(.git)
+  const scp = text.match(/^git@github\.com:([^/].*)$/i)
+  if (scp) return repoPath(scp[1])
+  const u = parsedUrl(text)
+  if (!u || u.hostname.toLowerCase() !== GH_HOST || u.search || u.hash || text.includes('#') || text.includes('?')) return null
+  if (u.protocol === 'https:') return !u.port ? repoPath(u.pathname.slice(1)) : null
+  if (u.protocol === 'ssh:') return u.username === 'git' && !u.password && !u.port ? repoPath(u.pathname.slice(1)) : null
+  return null
+}
+export function issueRepo(input) {
+  const text = String(input).trim()
+  const u = /[\s%\\]/.test(text) ? null : parsedUrl(text)
+  if (!u || u.protocol !== 'https:' || u.hostname.toLowerCase() !== GH_HOST || u.port || u.username || u.search || text.includes('?')) return null
+  const m = u.pathname.match(/^\/([^/]+\/[^/]+)\/issues\/\d+\/?$/)
+  return m ? repoPath(m[1]) : null
+}
 // A base is recorded as "main" or "origin/main"; both name the branch main.
 export const baseName = base => String(base ?? '').replace(/^origin\//, '')
 // The ref a diff is taken against: the remote branch when it exists. A local
