@@ -55,10 +55,11 @@ flowchart LR
 A later stage can send work back to Build, twice at most. Then it stops and
 shows you instead of trying a third time. Going back makes the earlier tests,
 browser checks and reviews stale: they run again on the new code, and the old
-results stay in the run's history. On a later attempt the browser re-runs only
-the checks whose Test Step a changed file serves (the others carry over, marked
-*carried*), and the second review looks only at the fix when it stays in the
-files of the findings sent back and is at most a quarter of the branch.
+results stay in the run's history. On a later attempt the browser re-runs every
+approved check unless only tests changed (then earlier passes carry over, marked
+*carried*), every mutant runs again, and the second review looks only at the fix
+when it stays in the files of the findings sent back and is at most a quarter of
+the branch. Tests committed after a review get a delta review of their own.
 
 ## What stays yours
 

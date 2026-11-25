@@ -30,7 +30,7 @@
   "lanes": {
     "light": { "diff_lines": 150, "mutants": { "max": 10, "exts": [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"] } },
     "standard": { "diff_lines": 600, "mutants": { "max": 25, "exts": null } },
-    "heavy": { "diff_lines": 1500, "mutants": { "max": null, "exts": null } }
+    "heavy": { "diff_lines": 1500, "mutants": { "max": 60, "exts": null } }
   },
   "models": {
     "conductor": "opus",

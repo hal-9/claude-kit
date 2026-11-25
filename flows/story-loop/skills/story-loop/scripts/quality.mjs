@@ -53,9 +53,15 @@ function main(argv) {
   const base = opt.base ?? run.base ?? fail('record the base branch first (loop.mjs put base <branch>), or pass --base')
   dirty(root) && fail('the checkout has uncommitted changes; the gate covers committed code')
   const git = gitIn(root)
-  const ctx = opStart(root, 'quality', 'quality', { base, lint: opt.lint })
+  // The subject is frozen before anything is read: every line scanned and every result
+  // stamped is this commit's. A commit or edit that lands while lint runs is other code.
+  // ponytail: lint runs in the live checkout, compared before and after; an edit that is made
+  // and undone while lint runs goes unseen. Run lint in a detached worktree to close that.
+  const commit = headCommit(root) ?? fail('not a git checkout')
+  const tree = headTree(root)
+  const ctx = opStart(root, 'quality', 'quality', { base, lint: opt.lint, subject: { commit, tree } })
   try {
-    const range = `${diffBase(git, base)}...HEAD`
+    const range = `${diffBase(git, base)}...${commit}`
     const files = git('diff', '--name-only', '--diff-filter=AMR', range).split('\n').filter(Boolean)
     let flags = {}
     for (const file of files) {
@@ -63,7 +69,7 @@ function main(argv) {
       const wanted = new Set(changedLines(git('diff', '-U0', range, '--', file)))
       if (!wanted.size) continue
       let source = ''
-      try { source = git('show', `HEAD:${file}`) } catch { continue }
+      try { source = git('show', `${commit}:${file}`) } catch { continue }
       if (source.includes('\0')) continue // a binary file has no lines to read
       const lines = source.split('\n').map((text, i) => [i + 1, text]).filter(([n]) => wanted.has(n))
       flags = { ...flags, ...signalsFor(file, lines) }
@@ -86,7 +92,8 @@ function main(argv) {
       const r = spawnSync('sh', ['-c', command], { cwd: root, encoding: 'utf8', timeout: 10 * 60_000, maxBuffer: 32 << 20 })
       return { command, exit: r.status ?? (r.signal ? `signal ${r.signal}` : 'did not run'), output: `${r.stdout ?? ''}${r.stderr ?? ''}`.slice(-2000) }
     })
-    const tree = headTree(root)
+    const moved = () => headTree(root) !== tree || dirty(root)
+      ? `the code moved while lint ran (${commit.slice(0, 7)} was checked, the checkout is now ${headCommit(root)?.slice(0, 7)}${dirty(root) ? ' with uncommitted changes' : ''}); run quality.mjs again on it` : null
     const next = opUpdate(root, ctx, r => {
       const earlier = r.evidence?.quality
       // A reason was given for one line of one tree; on other code it has to be given again.
@@ -96,9 +103,9 @@ function main(argv) {
       const was = code(earlier?.size)
       if (flags.size && !kept.size && /^human:/i.test(accepted ?? '') && code(size) <= was * SIZE_CARRY)
         kept.size = `${accepted.replace(/ \(carried from \d+ lines\)$/, '')} (carried from ${was} lines)`
-      const quality = { tree, commit: headCommit(root), base: baseName(base), lint, no_lint: opt.noLint ?? null, flags, dispositions: kept, size: { ...size, lane, budget }, at: new Date().toISOString() }
+      const quality = { tree, commit, base: baseName(base), lint, no_lint: opt.noLint ?? null, flags, dispositions: kept, size: { ...size, lane, budget }, at: new Date().toISOString() }
       return { ...r, evidence: { ...r.evidence, quality } }
-    }, { flags, lint, size })
+    }, { flags, lint, size, subject: { commit, tree } }, moved)
     const q = next.evidence.quality
     for (const l of lint) console.log(`lint ${l.exit === 0 ? 'clean ' : 'FAILED'}  ${l.command}${l.exit === 0 ? '' : `\n${l.output}`}`)
     if (opt.noLint) console.log(`no lint: ${opt.noLint}`)
@@ -109,7 +116,7 @@ function main(argv) {
     // result stamps the passed gate with that code, so it is current without a round back.
     if (!problem && next.stages.quality?.status === 'passed' && next.stages.quality.tree !== tree)
       update(root, r => r.stages.quality?.status === 'passed' && r.evidence?.quality?.tree === tree
-        ? { ...r, stages: { ...r.stages, quality: { ...r.stages.quality, tree, commit: headCommit(root), refreshed_at: new Date().toISOString() } } } : undefined)
+        ? { ...r, stages: { ...r.stages, quality: { ...r.stages.quality, tree, commit, refreshed_at: new Date().toISOString() } } } : undefined)
     console.log(problem ? `quality gate: ${problem}` : 'quality gate: clean')
     emit(root, { kind: 'note', text: `quality gate: ${Object.keys(flags).length} signal${Object.keys(flags).length === 1 ? '' : 's'}, lint ${lint.every(l => l.exit === 0) ? 'clean' : 'failed'}` })
     opEnd(root, ctx, 'ok', problem ?? 'clean')

@@ -22,9 +22,13 @@ end; nothing in between waits on them. The run closes with what it learned and
 ends itself.
 
 **Speed comes from not redoing work.** Test review, verify and the second
-review run side by side on the same code. A round back to build reruns only
-what the fix can have changed: mutants on the lines it touched, browser checks
-of the steps its tasks name, a review of the fix alone.
+review run side by side on the same code. Evidence is reused only when its
+inputs are unchanged: a commit of tests only keeps browser passes; any change
+to application code reruns every approved check and every mutant; a small fix
+gets a review of the fix alone. When a finished sibling's evidence goes stale
+while its group still runs (tests committed by test review, a changed check
+list or environment), `LOOP reopen <stage> "<why>"` runs it again without a
+round back to build.
 
 `QUALITY` below means `node ${CLAUDE_SKILL_DIR}/scripts/quality.mjs`.
 
@@ -355,13 +359,12 @@ against its brief. Publish the task list for the board with
 `LOOP put tasks '[{"id":"t1","title":"…","tier":"sonnet","status":"pending"}]'` and
 update it as tasks are accepted (`running`, `accepted`, `returned`). On
 accepting a task, add the files its diff changed and the Test Steps it serves
-(`"files":["app/…"],"steps":[1,3]`), read from the diff you reviewed. A later
-attempt's browser run keeps a check's pass only when no changed file maps to
-its step; a file no task maps re-runs every check. In a round back from a later
-stage, list the earlier tasks again with the new ones, so the map stays whole.
-Each task is stamped with the build round it was recorded in; a fix task names
-only the Test Steps **its fix** changes (the finding's step), not every step
-its file serves. Verify then reruns those checks and carries the rest over.
+(`"files":["app/…"],"steps":[1,3]`), read from the diff you reviewed. The map
+says what a task meant to touch; it is not proof of what a change can break,
+so it scopes the brief and the report, never which browser checks are skipped.
+In a round back from a later stage, list the earlier tasks again with the new
+ones, so the map stays whole. Each task is stamped with the build round it was
+recorded in.
 Change a task or finding without restating the list: `LOOP put tasks` and
 `LOOP put findings` refuse a list that leaves out a recorded id (unless
 `--replace`), and `LOOP finding <id> <verdict> "<note>" [--commit <sha>]`
@@ -499,20 +502,18 @@ read from the run, so you pass no `--max` unless you mean to change it:
 | --- | --- | --- |
 | `light` | 10 | front-end only (JS, TS); Ruby files are listed as not mutated in this lane and do not block |
 | `standard` | 25 | all |
-| `heavy` | no cap | all |
+| `heavy` | 60 | all |
 
 Results under one lane do not count after the story is re-signed into
 another: run the mutants again. Name the lane's left-out files in the report.
 
-**A second attempt runs only what can have changed.** After a round back to
-build (or new commits in this stage), the script takes over every earlier kill
-on a line the change did not touch, on the same base: a mutant is matched by
-its file and what it changes the line to, so a line that only moved keeps its
-kill. It runs the rest: changed lines, and every earlier survivor, timeout or
-unclear result. Tests that only gained lines keep every kill; when a test file
-lost a line or was deleted, nothing is taken over and every mutant runs: a
-weakened test could let one through. Run the same calls as the first time;
-the output says how many were carried over, and the report says so.
+**Kills on other code are history.** After a round back to build (or new
+commits in this stage) every mutant runs again: a changed caller, fixture or
+dependency can turn an earlier kill into a survivor even when the mutated line
+and the test file are unchanged. Calls on the same tree, base and attempt still
+merge (one call per file group, or a retry). Mutation slots lease their
+`TEST_ENV_NUMBER` across every checkout of the repository, so two stories'
+mutants never share a test database number.
 
 **Tests you add here go through the quality gate now.** A survivor killed with
 a new test changes the code after the quality gate passed. Before passing test
@@ -741,12 +742,14 @@ set-up.
 - A `fail` → `LOOP back verify build "<goal and note>"`; after the fix a fresh
   verifier re-runs the affected checks.
 
-**A later attempt checks only what can have changed.** `LOOP start verify` on
-attempt 2 or later compares HEAD with the commit the last passes covered. A
-pass stands when the check list and environment are the same and no changed
-code file maps (through the tasks' `files` and `steps`) to its Test Step; it is
-written into `results.json` already, marked `carried`, its screenshot copied
-into the evidence folder. The output names the checks the browser still runs
+**A later attempt keeps passes only when nothing but tests changed.** `LOOP
+start verify` on attempt 2 or later compares HEAD with the commit the last
+passes covered. When the check list and environment are the same and only test
+files changed, each earlier pass is written into `results.json` already, marked
+`carried`, its screenshot copied into the evidence folder. Any change to
+application code reruns the whole approved list. Changing the check list or
+the environment reopens a verify that already ran; publication stays blocked
+until results cover the new list. The output names the checks the browser still runs
 and why. Brief the verifier with only those, then add its rows to the file and
 keep the carried ones. A row marked `carried` that the plan did not carry is
 refused. Name the carried checks in the report.

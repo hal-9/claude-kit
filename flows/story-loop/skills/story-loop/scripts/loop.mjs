@@ -194,8 +194,19 @@ export function move(run, verb, stage, arg, reason, now = new Date().toISOString
       next.stages[arg].reason = reason
       break
     }
+    case 'reopen':
+      // A finished sibling of the parallel group that is still running, whose evidence no
+      // longer covers its inputs (tests committed since, a changed check list), runs again
+      // without a round back to build. Not a round: nothing about the build changed.
+      needReason()
+      groupOf(stage).includes(cur) && stage !== cur || active(next).includes(stage) ||
+        fail(`"${stage}" is not in the running parallel group; a stage outside it goes back to build`)
+      DONE.has(st.status) || ['running', 'waiting', 'blocked'].includes(st.status) || fail(`"${stage}" is ${st.status}; nothing to reopen`)
+      next.history = [...(next.history ?? []), { at: now, reopened: stage, attempt: st.attempt ?? 1, reason }]
+      next.stages[stage] = { status: 'pending', rounds: st.rounds, attempt: (st.attempt ?? 1) + 1, reason }
+      break
     default:
-      fail(`unknown verb "${verb}" (start | pass | skip | block | wait | back)`)
+      fail(`unknown verb "${verb}" (start | pass | skip | block | wait | back | reopen)`)
   }
   next.stop_blocks = 0
   return next
@@ -445,14 +456,31 @@ export function headTree(root) { try { return gitIn(root)('rev-parse', 'HEAD^{tr
 export function headCommit(root) { try { return gitIn(root)('rev-parse', 'HEAD') } catch { return null } }
 export function dirty(root) { try { return gitIn(root)('status', '--porcelain') } catch { return 'not a git checkout' } }
 
-// Stages whose evidence covers a different tree than the code now has. A passed
-// stage that names no tree (a run from before 0.7) proves nothing about this code.
-export function staleStages(root, run, tree = headTree(root)) {
-  return FRESH.filter(id => run.stages[id]?.status === 'passed' && run.stages[id].tree !== tree &&
-    !(CODE_ONLY.includes(id) && run.stages[id].commit && testsOnlySince(root, run.stages[id].commit)))
+// Why a passed stage's evidence no longer covers its inputs, or null. One answer for the
+// stage gates, publication, the board and the report. Each kind of evidence names what
+// it depends on:
+//   quality, test_review  the exact code tree (tests, config and lockfiles are in it), and for mutants the lane
+//   verify                the application code (a commit of tests only leaves it standing), the approved
+//                         check list revision and the environment the browser tested
+//   second_review         the exact code tree: tests are executable code and are reviewed too
+// A passed stage that names no tree (a run from before 0.7) proves nothing about this code.
+// Stale evidence stays on record with its reason; it never satisfies a current gate.
+export function evidenceStale(root, run, id, tree = headTree(root)) {
+  const s = run.stages[id]
+  if (s?.status !== 'passed' || !FRESH.includes(id)) return null
+  if (id === 'verify') {
+    const request = s.request
+    if (request && (request.checks_revision ?? 0) !== (run.checks_revision ?? 0)) return 'the approved check list changed since the browser ran'
+    if (request && run.environment && request.env_tag !== undefined && request.env_tag !== envTag(run.environment)) return 'the environment changed since the browser ran'
+    if (s.tree !== tree && !(s.commit && testsOnlySince(root, s.commit))) return 'the application code changed since the browser ran'
+    return null
+  }
+  if (id === 'test_review' && s.lane && s.lane !== (run.lane?.lane ?? 'standard')) return `the mutants ran under the ${s.lane} lane`
+  return s.tree === tree ? null : 'the code changed since it passed'
 }
-// Evidence about the code, not the tests: a commit that adds or changes tests only leaves it standing.
-const CODE_ONLY = ['verify', 'second_review']
+export function staleStages(root, run, tree = headTree(root)) {
+  return FRESH.filter(id => evidenceStale(root, run, id, tree))
+}
 
 // ---- notes from the board ----------------------------------------------------
 // A note is the human's instruction, typed on the board, kept per run.
@@ -587,10 +615,11 @@ export function verifyRequest(run, tree, commit = null) {
   const attempt = run.stages.verify.attempt ?? 1
   const checks_revision = run.checks_revision ?? 0
   const environment = run.environment ? requestEnvironment(run.environment, tree, commit) : null
-  const env = environment ? `-e${createHash('sha1').update(JSON.stringify(run.environment)).digest('hex').slice(0, 6)}` : ''
+  const env = environment ? envTag(run.environment) : ''
   return { id: `${runKey(run)}-a${attempt}-c${checks_revision}-${String(tree).slice(0, 12)}${env}`, tree, commit, attempt, checks_revision, environment, env_tag: env }
 }
 
+const envTag = env => `-e${createHash('sha1').update(JSON.stringify(env)).digest('hex').slice(0, 6)}`
 // Where the browser will test, and what ties that place to the code under review.
 //   {"url":"http://127.0.0.1:3000","kind":"local","server":"bin/dev, started from this checkout"}
 //   {"url":"https://pr-12.preview.example","kind":"remote","revision":"<commit the deployment reports>"}
@@ -730,20 +759,15 @@ export function verifyCarry({ checks = [], checksRevision = 0, environment = nul
   if (!Array.isArray(delta)) return none('the code the earlier passes covered cannot be compared with HEAD')
   if (prior.checks_revision !== checksRevision) return none('the check list changed')
   if (!sameEnvironment(prior.environment, environment)) return none('the browser tests another environment')
-  // A file this round's tasks changed serves the steps those tasks name (a fix names the steps it changes);
-  // a file no task of this round names falls back to every step any task mapped it to.
-  const ownersOf = list => { const m = new Map(); for (const t of list) for (const f of t.files ?? []) m.set(f, [...(m.get(f) ?? []), ...(t.steps ?? [])]); return m }
-  const all_ = ownersOf(tasks)
-  const round = ownersOf(tasks.filter(t => attempt != null && t.attempt === attempt))
-  const owners = new Map([...all_].map(([f, s]) => [f, round.get(f)?.length ? round.get(f) : s]))
+  // Task-to-step mappings say what a change was meant to touch, not what it can break: a
+  // shared file reaches every journey that renders it. Any change to application code
+  // reruns the whole approved list; only a delta of test files keeps earlier passes.
+  // ponytail: no dependency analysis; add a validated per-repo rule before carrying across code changes.
   const code = delta.filter(f => !isTestFile(f))
-  const unowned = code.filter(f => !owners.get(f)?.length)
-  if (unowned.length) return none(`changed code no task maps to a Test Step: ${unowned.join(', ')}`)
-  const steps = new Set(code.flatMap(f => owners.get(f)))
+  if (code.length) return none(`application code changed (${code.slice(0, 3).join(', ')}${code.length > 3 ? ', …' : ''}); every approved check runs again`)
   const passed = new Set(prior.results.map(r => r.id))
-  const carry = checks.filter(c => passed.has(c.id) && !steps.has(c.step)).map(c => c.id)
-  return { carry, rerun: all.filter(id => !carry.includes(id)),
-    why: code.length ? `the changed code serves step ${[...steps].sort((a, b) => a - b).join(', ')}` : 'only tests changed' }
+  const carry = checks.filter(c => passed.has(c.id)).map(c => c.id)
+  return { carry, rerun: all.filter(id => !carry.includes(id)), why: 'only tests changed' }
 }
 
 // prior: the last attempt's recorded review ({ commit }). delta: { files, lines, commits } since it;
@@ -752,6 +776,8 @@ export function reviewScope({ prior = null, delta = null, branchLines = 0, findi
   const full = why => ({ scope: 'full', why })
   if (!prior?.commit) return full('first review of this story')
   if (!delta) return full('the reviewed commit cannot be compared with HEAD')
+  if (delta.files.length && delta.files.every(isTestFile))
+    return { scope: 'delta', since: prior.commit, confirm: [], why: 'only tests changed since the last review; review the new tests as code' }
   const sent = findings.filter(f => f.verdict === 'fix_requested' ||
     (f.verdict === 'fixed' && delta.commits.some(c => f.commit && c.startsWith(String(f.commit)))))
   if (!sent.length) return full('no finding was sent back to build since the last review')
@@ -935,7 +961,7 @@ export function passProblem(root, run, stage) {
   const head = headCommit(root)
   const stale = () => {
     const list = staleStages(root, run, tree)
-    return list.length ? `${list.join(', ')} covered older code than HEAD; go back to build so they run on this code` : null
+    return list.length ? `${list.join(', ')} covered older code or other inputs than now (${list.map(id => `${id}: ${evidenceStale(root, run, id, tree)}`).join('; ')}); go back to build so they run on this code` : null
   }
   switch (stage) {
     case 'contract': {
@@ -969,6 +995,8 @@ export function passProblem(root, run, stage) {
       // Tests added for surviving mutants are code the quality gate has not seen: check them now, not at the push.
       if (run.stages.quality?.status === 'passed' && run.stages.quality.tree !== tree)
         return 'test review changed the code after the quality gate; run quality.mjs again on it (a clean run brings the gate up to date)'
+      const sibling = groupOf('test_review').find(id => id !== 'test_review' && evidenceStale(root, run, id, tree))
+      if (sibling) return `${sibling} passed on code test review changed since (${evidenceStale(root, run, sibling, tree)}); run it again on this code: loop.mjs reopen ${sibling} "<why>"`
       return mutantsProblem(m) ?? (dirty(root) ? 'commit the test changes first' : null)
     }
     case 'verify': {
@@ -987,7 +1015,7 @@ export function passProblem(root, run, stage) {
       const request = run.stages.second_review.request
       const usage = 'loop.mjs review codex|claude|<name> <file with the reviewer\'s output> --request <id>'
       if (!request) return 'second_review was not started on this attempt; loop.mjs start second_review prints the request id the review is recorded under'
-      if (request.tree !== tree && !testsOnlySince(root, request.commit)) return 'the code changed since this review was requested; run loop.mjs start second_review again and review this code'
+      if (request.tree !== tree) return 'the code changed since this review was requested (tests are code too); run loop.mjs start second_review again and review this code'
       if (!review) return `record the review of this code (${usage})`
       if (review.request !== request.id || review.attempt !== (run.stages.second_review.attempt ?? 1) || review.tree !== request.tree)
         return `the recorded review covered older code or an earlier attempt; review this code and record it (${usage})`
@@ -1025,7 +1053,8 @@ export function passProblem(root, run, stage) {
 export function passStamp(root, stage, run) {
   if (!FRESH.includes(stage)) return {}
   const provenance = stage === 'verify' ? { provenance: run?.stages.verify.request?.environment?.provenance ?? null } : {}
-  return { tree: headTree(root), commit: headCommit(root), ...provenance }
+  const lane = stage === 'test_review' ? { lane: run?.evidence?.mutants?.lane ?? run?.lane?.lane ?? null } : {}
+  return { tree: headTree(root), commit: headCommit(root), ...provenance, ...lane }
 }
 
 // ---- CLI ---------------------------------------------------------------------
@@ -1309,7 +1338,16 @@ function main(argv) {
     throw error
   }
 }
-const MOVES = new Set(['start', 'pass', 'skip', 'block', 'wait', 'back'])
+const MOVES = new Set(['start', 'pass', 'skip', 'block', 'wait', 'back', 'reopen'])
+
+// Verify that already ran or runs on inputs that just changed (check list, environment)
+// runs again: reopened while its parallel group is still going, otherwise left for the
+// staleness rules to stop publication. Never stays passed on the old inputs.
+function reopenVerify(run, reason) {
+  const st = run.stages.verify.status
+  if (st === 'pending') return run
+  return active(run).includes('verify') || groupOf('verify').includes(current(run)) ? move(run, 'reopen', 'verify', null, reason) : run
+}
 
 function command(root, run, verb, args) {
   if (verb === 'inbox') {
@@ -1362,7 +1400,7 @@ function command(root, run, verb, args) {
       id || fail(`name the request this answer is for (it is ${request.id} now): ${usage}`)
       id === request.id || fail(`that answer is for request "${id}"; the review requested now is "${request.id}". An answer to an earlier request is history, not this review: run the reviewer again on this code`)
       dirtyCode(root) && fail('commit first; a review is recorded for committed code')
-      request.tree === headTree(root) || testsOnlySince(root, request.commit) || fail(`the code changed since request ${request.id} was made (${request.commit?.slice(0, 7)} then, ${headCommit(root)?.slice(0, 7)} now); that answer reviewed the older code. Run loop.mjs start second_review again and review this code`)
+      request.tree === headTree(root) || fail(`the code changed since request ${request.id} was made (${request.commit?.slice(0, 7)} then, ${headCommit(root)?.slice(0, 7)} now); that answer reviewed the older code. Run loop.mjs start second_review again and review this code`)
       const earlier = (r.reviews ?? []).find(v => v.sha256 === sha256)
       earlier && fail(`this exact answer is already recorded for request ${earlier.request}; reading an old answer again is not a new review`)
       const kept = join(runDir(root, r), 'reviews', `${request.id}.txt`)
@@ -1411,7 +1449,8 @@ function command(root, run, verb, args) {
     const next = update(root, r => {
       const at = ids().indexOf(current(r) ?? ids().at(-1))
       at > ids().indexOf('verify') && fail('verify already passed on the old list; go back to build first')
-      return { ...r, checks, checks_revision: (r.checks_revision ?? 0) + 1 }
+      const out = { ...r, checks, checks_revision: (r.checks_revision ?? 0) + 1 }
+      return reopenVerify(out, 'the approved check list changed')
     })
     emit(root, { kind: 'note', text: `check list set: ${checks.length} check${checks.length === 1 ? '' : 's'} (revision ${next.checks_revision})` })
     return console.log(`${checks.length} checks set`)
@@ -1459,7 +1498,8 @@ function command(root, run, verb, args) {
         const had = new Map((r.tasks ?? []).map(t => [t.id, t]))
         value = value.map(t => ({ ...t, attempt: t.attempt ?? had.get(t.id)?.attempt ?? r.stages.build.attempt ?? 1 }))
       }
-      const next = { ...r, [key]: value }
+      let next = { ...r, [key]: value }
+      if (key === 'environment' && JSON.stringify(r.environment) !== JSON.stringify(value)) next = reopenVerify(next, 'the environment changed')
       // The human approved a list for one repository and one base branch; it says nothing about another.
       if (key === 'required_checks') {
         r.repo && r.base || fail('record the repository and the base branch first (loop.mjs put base <branch>); the list is approved for that base')
@@ -1479,7 +1519,7 @@ function command(root, run, verb, args) {
   const [stage, ...rest] = args
   const arg = verb === 'wait' || verb === 'back' ? rest.shift() : undefined
   const reason = rest.join(' ') || undefined
-  MOVES.has(verb) || fail(`unknown verb "${verb}" (start | pass | skip | block | wait | back)`)
+  MOVES.has(verb) || fail(`unknown verb "${verb}" (start | pass | skip | block | wait | back | reopen)`)
   let before
   const next = update(root, r => {
     before = r.stages[stage]
@@ -1520,10 +1560,11 @@ function command(root, run, verb, args) {
       const open = r.stages.second_review.request
       // Starting again on the same code keeps the request, and with it an answer already on record
       // (a resume after a wait reviews nothing new). Changed code gets a new one; added tests do not.
-      const keep = open && open.attempt === attempt && (open.tree === tree || testsOnlySince(root, open.commit))
+      const keep = open && open.attempt === attempt && open.tree === tree
       if (keep) moved.stages.second_review.request = open
       else {
-        const prior = (r.reviews ?? []).filter(v => v.attempt < attempt).at(-1) ?? null
+        // The last recorded review, also of this attempt (tests committed after it get a delta review).
+        const prior = (r.reviews ?? []).filter(v => v.attempt <= attempt).at(-1) ?? null
         const git = gitIn(root)
         let branchLines = 0
         try { branchLines = changedSince(root, git('merge-base', diffBase(git, r.base), 'HEAD'))?.lines ?? 0 } catch {}

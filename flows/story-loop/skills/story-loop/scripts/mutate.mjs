@@ -72,39 +72,16 @@ export function laneBudget(name) {
   return { name: GRAPH.lanes[name] ? name : 'standard', max: m.max ?? Infinity, exts: m.exts ?? null }
 }
 const laneAllows = (lane, file) => !lane.exts || lane.exts.includes(extname(file))
-// The kills an earlier attempt established that still hold for this code: same base,
-// the mutated line unchanged since, and no test file lost a line (tests that only gained
-// lines can catch more, never less). A mutant is matched by file and what it changes the
-// line to, so a line that only moved keeps its kill. Survivors, timeouts and anything
-// unclear run again. changedSince(tree) lists [{ status, file, deleted }] between that tree
-// and this code; linesSince(tree, file) the line numbers of this code changed since.
-// ponytail: an edit elsewhere in a file can, rarely, make an untouched line's mutant
-// unobservable; the carry trusts the line. Rerun with no earlier results to be strict.
-const fileOfId = id => id.split(':').slice(0, -2).join(':')
-const keyOfId = id => `${fileOfId(id)}:${id.split(':').at(-1)}`
-export function carriedKills(run, { tree, base, changedSince, linesSince = () => null }) {
-  const none = why => ({ from: null, ids: new Set(), holds: () => false, why })
-  const earlier = [run?.evidence?.mutants, ...[...(run?.history ?? [])].reverse().map(h => h.evidence?.mutants)]
-    .find(m => m?.tree && m.tree !== tree && m.outcomes)
-  if (!earlier) return none(null)
-  if (earlier.base !== base) return none('the base moved since the earlier results')
-  let changed
-  try { changed = changedSince(earlier.tree) } catch { return none('the earlier code is not in this repository') }
-  const touched = changed.filter(c => IS_TEST.test(c.file) && (c.status === 'D' || (c.status !== 'A' && c.deleted !== 0))).map(c => c.file)
-  if (touched.length) return none(`tests lost lines since (${touched.join(', ')}); every mutant runs again`)
-  const files = new Map(changed.map(c => [c.file, c]))
-  const killed = Object.entries(earlier.outcomes).filter(([, o]) => o === 'killed').map(([id]) => id)
-  const ids = new Set(killed.filter(id => !files.has(fileOfId(id))))
-  const keys = new Set(killed.map(keyOfId))
-  const touchedLines = new Map()
-  const lines = file => {
-    if (!touchedLines.has(file)) { let l = null; try { l = linesSince(earlier.tree, file) } catch {} touchedLines.set(file, l ? new Set(l) : null) }
-    return touchedLines.get(file)
-  }
-  // An unchanged file keeps its kills by id; a changed one keeps those on lines the change did not touch.
-  const holds = (id, file, line) => ids.has(id) ||
-    (files.get(file)?.status === 'M' && keys.has(keyOfId(id)) && lines(file) !== null && !lines(file).has(line))
-  return { from: earlier.tree, ids, holds, why: null }
+// Kills from earlier code are history, never evidence for this tree. Whether a test still
+// kills a mutant depends on more than the mutated line and the test file: a caller that no
+// longer reaches the function, a fixture, a dependency or the test command can turn a kill
+// into a survivor (seen: unchanged function and test, changed caller, two kills became two
+// survivors). Results of the same tree, base, run and attempt still merge (see the end of main).
+// ponytail: no cross-tree reuse at all; add it back only keyed on a full execution identity
+// (sources and their dependencies, tests and support files, command, config, lockfile, runtime, operator version).
+export function carriedKills(run, { tree } = {}) {
+  const earlier = [run?.evidence?.mutants, ...(run?.history ?? []).map(h => h.evidence?.mutants)].some(m => m?.tree && m.tree !== tree && m.outcomes)
+  return { from: null, ids: new Set(), holds: () => false, why: earlier ? 'kills on earlier code are history, not evidence for this code; every mutant runs' : null }
 }
 // What a mutant is in the results: where, what was changed, and nothing of the work copy.
 const row = ({ id, file, line, from, to }) => ({ id, file, line, from, to })
@@ -229,20 +206,13 @@ async function main(argv) {
   // Whose evidence this will be is settled now, before any test runs, and never again.
   const runRoot = findRoot(root)
   // The lane the human signed off sets how much mutation the story gets: how many
-  // mutants per call (no cap on heavy) and which kinds of files. --max overrides the
+  // mutants per call and which kinds of files. --max overrides the
   // count; every mutant it leaves out still needs a recorded reason before the gate passes.
   const runNow = runRoot ? load(runRoot) : null
   const laneName = runNow?.lane?.lane ?? null
   const lane = laneBudget(laneName)
-  // A second attempt re-runs only what can have changed; earlier kills that still hold carry over.
-  const carry = carriedKills(runNow, { tree, base,
-    changedSince: from => {
-      const deleted = new Map(git('diff', '--numstat', '-z', '--no-renames', from, tree).split('\0').filter(Boolean)
-        .map(row => row.split('\t')).map(([, d, file]) => [file, d === '-' ? 1 : Number(d)]))
-      return git('diff', '--name-status', '-z', '--no-renames', from, tree).split('\0').filter(Boolean)
-        .reduce((out, part, i, all) => i % 2 ? out : [...out, { status: part, file: all[i + 1], deleted: deleted.get(all[i + 1]) ?? 0 }], [])
-    },
-    linesSince: (from, file) => changedLines(git('diff', '-U0', '--no-renames', from, tree, '--', file)) })
+  // Earlier attempts' kills are history: every mutant of this tree runs (carriedKills says why).
+  const carry = carriedKills(runNow, { tree })
   opt.max = opt.max !== undefined ? Number(opt.max) : lane.max
   const results = []
   if (runRoot) {

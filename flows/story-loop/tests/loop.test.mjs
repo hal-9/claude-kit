@@ -385,7 +385,8 @@ test('H01: browser results pass only for the request made before the browser ran
   git('checkout', '-q', '--', 'a.txt')
   // a changed check list that keeps the old ids
   assert.equal(cli(dir, 'checks', 'set', '[{"id":"a","step":2}]').status, 0)
-  assert.match(cli(dir, 'pass', 'verify').stderr, /check list changed since verify started/)
+  // verify was running on the old list: it is reopened, and the old request is gone
+  assert.match(cli(dir, 'pass', 'verify').stderr, /not started on this attempt/)
   const third = requestId(cli(dir, 'start', 'verify').stdout)
   report(third)
   assert.equal(cli(dir, 'pass', 'verify').status, 0)
@@ -950,13 +951,13 @@ test('await-human: a waiter in the background ends with the board\'s answer, and
   assert.match(cli(dir, 'await-human', '--minutes', '0').stderr, /--minutes needs a positive number/)
 })
 
-test('a later attempt keeps a browser pass when no changed code serves its step', () => {
+test('a later attempt keeps its browser passes only when nothing but tests changed', () => {
   const checks = [{ id: 'a', step: 1 }, { id: 'b', step: 2 }, { id: 'c', step: 3 }]
   const prior = { checks_revision: 1, environment: ENV.url, results: [{ id: 'a' }, { id: 'b' }] }
   const tasks = [{ files: ['app/x.js'], steps: [1] }, { files: ['app/y.js'], steps: [2] }, { files: ['config/z.yml'] }]
   const plan = delta => verifyCarry({ checks, checksRevision: 1, environment: ENV.url, prior, delta, tasks })
-  // y.js serves step 2 only: a keeps its pass, b runs again, c never passed so it runs
-  assert.deepEqual([plan(['app/y.js']).carry, plan(['app/y.js']).rerun], [['a'], ['b', 'c']])
+  // y.js is mapped to step 2 only, but a mapping is intent, not proof: every check runs again
+  assert.deepEqual([plan(['app/y.js']).carry, plan(['app/y.js']).rerun], [[], ['a', 'b', 'c']])
   // only tests changed: every earlier pass stands
   assert.deepEqual(plan(['spec/y_spec.rb', 'app/frontends/y.test.ts']).carry, ['a', 'b'])
   // code no task maps to a step, a task without steps, or no comparable diff: everything runs
@@ -980,7 +981,7 @@ test('a second review of a small fix in the named files reviews the delta; anyth
   assert.equal(reviewScope({ delta: delta(['app/x.rb']), branchLines: 100, findings }).scope, 'full')
 })
 
-test('verify carries over the passes of checks whose step the fix did not touch, and refuses a forged carry', () => {
+test('verify carries over earlier passes when the fix changed only tests, and refuses a forged carry', () => {
   const r = repo()
   const { dir, commit } = r
   commit('x.js', 'one'); commit('y.js', 'one')
@@ -994,12 +995,12 @@ test('verify carries over the passes of checks whose step the fix did not touch,
   shot('a.png'); shot('b.png')
   writeFileSync(resultsFile(dir, load(dir)), written(first, [row('a', 1), row('b', 2, { verdict: 'fail' })]))
   assert.equal(cli(dir, 'back', 'verify', 'build', 'b fails').status, 0)
-  // the fix touches y.js, which serves step 2 only
-  commit('y.js', 'two')
+  // the fix only adds a test
+  commit('y.test.js', 'two')
   toVerify()
   const out = cli(dir, 'start', 'verify').stdout
   assert.match(out, /carried over from the last attempt: a/)
-  assert.match(out, /the browser checks: b {2}\(the changed code serves step 2\)/)
+  assert.match(out, /the browser checks: b {2}\(only tests changed\)/)
   const second = out.match(/verify request: (\S+)/)[1]
   const kept = JSON.parse(readFileSync(resultsFile(dir, load(dir)), 'utf8'))
   assert.deepEqual([kept.request, kept.results.map(x => x.id), existsSync(join(evidenceDir(dir, load(dir)), 'a.png'))], [second, ['a'], true])
@@ -1080,7 +1081,7 @@ test('one finding changes without restating the list, and a partial list never d
   assert.equal(load(dir).tasks[0].attempt, 1)
 })
 
-test('a browser pass and a review stand when only tests were committed since, and a resumed review keeps its answer', () => {
+test('a browser pass stands when only tests were committed since, a review does not, and a resumed review keeps its answer', () => {
   const { dir, commit, report, requestId } = atVerify()
   const req = requestId(cli(dir, 'start', 'verify').stdout)
   report(req)
@@ -1090,9 +1091,18 @@ test('a browser pass and a review stand when only tests were committed since, an
   const reviewId = cli(dir, 'start', 'second_review').stdout.match(/review request: (\S+)/)[1]
   writeFileSync(join(dir, '..', 'review.txt'), 'no findings')
   assert.equal(cli(dir, 'review', 'codex', join(dir, '..', 'review.txt'), '--request', reviewId).status, 0)
-  commit('b_spec.rb', 'it { }\n')
+  // a resume on the same code keeps the request and the answer on record
   assert.equal(cli(dir, 'wait', 'second_review', 'background', 'advisor triage').status, 0)
   assert.equal(cli(dir, 'start', 'second_review').stdout.match(/review request: (\S+)/)[1], reviewId)
+  // tests are code: committed tests need their own (delta) review
+  commit('b_spec.rb', 'it { }\n')
+  assert.match(cli(dir, 'pass', 'second_review', 'nothing found').stderr, /code changed since this review was requested/)
+  const again = cli(dir, 'start', 'second_review').stdout
+  const deltaId = again.match(/review request: (\S+)/)[1]
+  assert.notEqual(deltaId, reviewId)
+  assert.match(again, /review scope: delta .*only tests changed/)
+  writeFileSync(join(dir, '..', 'review.txt'), 'the new spec is fine')
+  assert.equal(cli(dir, 'review', 'codex', join(dir, '..', 'review.txt'), '--request', deltaId).status, 0)
   assert.equal(cli(dir, 'pass', 'second_review', 'nothing found').status, 0)
   // a code change is new code: a new request
   const codeStale = () => staleStages(dir, load(dir)).filter(s => ['verify', 'second_review'].includes(s))
@@ -1101,13 +1111,13 @@ test('a browser pass and a review stand when only tests were committed since, an
   assert.deepEqual(codeStale(), ['verify', 'second_review'])
 })
 
-test('a fix round reruns the browser checks of the steps its own tasks name, not every step the file ever served', () => {
+test('a fix round reruns every browser check, whatever steps its tasks name', () => {
   const checks = [{ id: 'a', step: 1 }, { id: 'b', step: 2 }, { id: 'c', step: 3 }]
   const prior = { checks_revision: 1, environment: ENV.url, results: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] }
   const tasks = [{ id: 't1', files: ['app/x.tsx'], steps: [1, 2, 3], attempt: 1 }, { id: 't9', files: ['app/x.tsx'], steps: [2], attempt: 2 }]
   const plan = attempt => verifyCarry({ checks, checksRevision: 1, environment: ENV.url, prior, delta: ['app/x.tsx'], tasks, attempt })
-  assert.deepEqual(plan(2).rerun, ['b'])
-  // a round whose tasks do not name the file falls back to every step it served
+  // a shared file the fix task maps to step 2 still serves steps 1 and 3
+  assert.deepEqual(plan(2).rerun, ['a', 'b', 'c'])
   assert.deepEqual(plan(3).rerun, ['a', 'b', 'c'])
 })
 

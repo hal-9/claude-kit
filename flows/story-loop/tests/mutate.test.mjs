@@ -442,54 +442,25 @@ test('R10: a baseline that fails is kept with its output, and leaves no evidence
     assert.match(mutate(dir, '--test', 'node check.mjs', ...bad, 'calc.mjs').stderr, /needs a positive number/, bad.join(' '))
 })
 
-test('a second attempt takes over kills that still hold and runs only what can have changed; an edited test runs everything', () => {
+test('a second attempt on other code runs every mutant again: earlier kills are history', () => {
   const source = 'export const big = n => n > 10 && n < 100\n'
   const r = fixture(source, "import { big } from './calc.mjs'\nimport { small } from './other.mjs'\nif (!big(11) || big(5) || big(500) || !small(1)) process.exit(1)\n")
   writeFileSync(join(r.dir, 'other.mjs'), 'export const small = n => n < 3\n')
-  writeFileSync(join(r.dir, 'helper.test.mjs'), '// a test file the rule watches\n')
-  r.git('add', '.'); r.git('commit', '-qm', 'other and a test')
+  r.git('add', '.'); r.git('commit', '-qm', 'other')
   const { dir } = r
   withRun(dir)
   const first = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'other.mjs')
   assert.equal(first.status, 0, first.stderr)
-  const killedFirst = Object.entries(load(dir).evidence.mutants.outcomes).filter(([id, o]) => o === 'killed' && id.startsWith('calc.mjs:')).length
+  const killedFirst = result(first.stdout).killed
   assert.ok(killedFirst > 0)
-
   // The run goes back to build: the evidence becomes history, as `back` does.
-  const sendBack = () => update(dir, run => ({ ...run, history: [...(run.history ?? []), { at: 'x', from: 'second_review', to: 'build', evidence: run.evidence }], evidence: {} }))
-  sendBack()
-  // Round 2 changes other.mjs and only adds a test.
+  update(dir, run => ({ ...run, history: [...(run.history ?? []), { at: 'x', from: 'second_review', to: 'build', evidence: run.evidence }], evidence: {} }))
   writeFileSync(join(dir, 'other.mjs'), 'export const small = n => n < 4\n')
-  writeFileSync(join(dir, 'more.test.mjs'), '// added\n')
-  r.git('add', '.'); r.git('commit', '-qm', 'round 2')
+  r.git('commit', '-qam', 'round 2')
   const second = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'other.mjs')
   assert.equal(second.status, 0, second.stderr)
-  assert.match(second.stdout, new RegExp(`${killedFirst} mutants? killed on \\w{7} on lines unchanged since: taken over`))
-  assert.match(second.stdout, /^carried {2}calc\.mjs:1/m)
-  assert.doesNotMatch(second.stdout, /^carried {2}other\.mjs/m, 'the changed file runs again')
-  const m = load(dir).evidence.mutants
-  assert.equal(m.carried.length, killedFirst)
-  assert.ok(m.carried.every(id => id.startsWith('calc.mjs:') && m.outcomes[id] === 'killed'))
-  assert.equal(result(second.stdout).carried, killedFirst)
-
-  // Round 3 adds lines to an existing test and a line to calc.mjs: the kills on calc.mjs's
-  // untouched first line hold, and nothing on the new line is carried.
-  sendBack()
-  writeFileSync(join(dir, 'helper.test.mjs'), '// a test file the rule watches\n// one more case\n')
-  writeFileSync(join(dir, 'calc.mjs'), source + 'export const huge = n => n > 1000\n')
-  r.git('commit', '-qam', 'round 3')
-  const third = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'other.mjs')
-  assert.equal(third.status, 0, third.stderr)
-  assert.match(third.stdout, /^carried {2}calc\.mjs:1 /m)
-  assert.doesNotMatch(third.stdout, /^carried {2}calc\.mjs:2 /m, 'a new line runs')
-  assert.equal(result(third.stdout).carried, killedFirst)
-
-  // Round 4 takes a line out of an existing test: a weaker test could let a mutant through, so nothing carries.
-  sendBack()
-  writeFileSync(join(dir, 'helper.test.mjs'), '// edited\n')
-  r.git('commit', '-qam', 'round 4')
-  const fourth = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'other.mjs')
-  assert.equal(fourth.status, 0, fourth.stderr)
-  assert.match(fourth.stdout, /nothing taken over from the earlier results: tests lost lines since \(helper\.test\.mjs\)/)
-  assert.equal(result(fourth.stdout).carried, 0)
+  assert.match(second.stdout, /nothing taken over from the earlier results: kills on earlier code are history/)
+  assert.doesNotMatch(second.stdout, /^carried /m)
+  assert.equal(result(second.stdout).carried, 0)
+  assert.deepEqual(load(dir).evidence.mutants.carried, [])
 })
