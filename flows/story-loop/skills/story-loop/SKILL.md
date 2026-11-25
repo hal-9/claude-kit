@@ -235,7 +235,17 @@ At the sign-off, ask everything the run needs from the human in one go:
   (`LOOP json`, field `repo`), the story branch and the base branch;
 - the browser for the verify stage: Chrome (the Claude in Chrome extension) or
   BrowserOS neo — run the browser preflight from that stage now, so a missing
-  browser is fixed while the human is here and not hours later;
+  browser is fixed while the human is here and not hours later. Then start the
+  server verify will use, on the port it will use, record it
+  (`LOOP put environment …`), and open its URL in that browser: when it lands
+  on a login page, the human signs in (or saves the credential) for that exact
+  host and port now. A login saved for `:3000` does not open `:3002`;
+- how each check gets its data: the commands you run before the verifier
+  starts (a `bin/rails runner` script, a seed task, a test-data endpoint
+  called with `curl`). The verifier changes the page only by clicking and
+  typing, never by writing data with JavaScript in the page: a subagent's page
+  writes are refused by the permission check, with nobody there to approve
+  them;
 - where verify will test (see *Where the browser tests* there): a local
   server started from this checkout is the supported path; any deployment
   needs the commit it serves, or the human's word that testing other code is
@@ -441,6 +451,18 @@ pick `--jobs` by what the tests share outside the checkout:
 If a slot's baseline fails, the call stops before any mutant counts; run it
 again with `--jobs 1`, never with fewer tests.
 
+**One call per source file, with its own covering spec.** A file's mutants
+need only the spec that covers it, not every spec the story touched: five
+spec files per mutant is five times the work. Run those calls side by side
+where the tests share nothing. For Rails, `--jobs 4` needs a test database per
+slot: the repo's `config/database.yml` names the test database with
+`<%= ENV['TEST_ENV_NUMBER'] %>`, and each slot's database exists
+(`TEST_ENV_NUMBER=2 bin/rails db:create db:schema:load RAILS_ENV=test`, for 2
+to 4). `/story-loop setup` warns when it is missing.
+
+The board's test-review card shows a running call live: mutant n of m, killed
+and survived so far, what each slot runs now and the tail of the last run.
+
 The scope is every changed file the script can mutate (Ruby, JS, TS; not test
 files), taken from the diff against `--base`, not from the files you name. The
 stage passes only when all of it is accounted for:
@@ -614,6 +636,11 @@ Two browsers are supported; either is fine, the human's choice wins.
 4. Playwright is used only when the human asks for it.
 
 Record the one that works: `LOOP put browser chrome|browseros|playwright`.
+
+**Before every `LOOP start verify`, in this session:** open the environment URL
+in that browser and confirm it is signed in (it did not land on a login page),
+and run the data set-up commands from the contract. A login wall found here is
+fixed here, never handed to the verifier.
 
 ### The checks
 

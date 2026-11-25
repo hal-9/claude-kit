@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { sharedTestDatabase } from './loop.mjs'
 
 const CODEX = join(homedir(), '.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs')
 
@@ -71,6 +72,13 @@ export const CHECKS = [
       'Needed only for stories that link a Figma frame; a claude.ai Figma connector also works but this check cannot see it.'
     if (!line) return warning('no Figma MCP server configured', fix)
     return /connected/i.test(line) ? ok(line.trim()) : warning(`Figma MCP is not connected: ${line.trim()}`, fix)
+  }],
+  ['A test database per mutant slot', 'test review runs Rails mutants four at a time only when each slot has its own test database; otherwise one at a time', s => {
+    if (!s.exists(join(s.cwd, 'config', 'database.yml'))) return ok('no Rails database config here')
+    const why = sharedTestDatabase(s.cwd)
+    return why ? warning('config/database.yml names one test database for every slot',
+      "Name the test database after <%= ENV['TEST_ENV_NUMBER'] %> (for example sofatutor_test<%= ENV['TEST_ENV_NUMBER'] %>), then create the slots: " +
+      'for n in 2 3 4; do TEST_ENV_NUMBER=$n bin/rails db:create db:schema:load RAILS_ENV=test; done') : ok('named after TEST_ENV_NUMBER')
   }],
   ['A second model for the review', 'second review: a reviewer from another vendor catches what Claude misses in its own work', s => {
     const fallback = 'Without it the second review still runs, by a fresh Claude on another model, which is weaker. '
