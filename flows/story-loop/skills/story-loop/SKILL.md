@@ -340,6 +340,13 @@ accepting a task, add the files its diff changed and the Test Steps it serves
 attempt's browser run keeps a check's pass only when no changed file maps to
 its step; a file no task maps re-runs every check. In a round back from a later
 stage, list the earlier tasks again with the new ones, so the map stays whole.
+Each task is stamped with the build round it was recorded in; a fix task names
+only the Test Steps **its fix** changes (the finding's step), not every step
+its file serves. Verify then reruns those checks and carries the rest over.
+Change a task or finding without restating the list: `LOOP put tasks` and
+`LOOP put findings` refuse a list that leaves out a recorded id (unless
+`--replace`), and `LOOP finding <id> <verdict> "<note>" [--commit <sha>]`
+changes one finding.
 
 Pass when every task is accepted, the affected suites are green and the work
 is committed: the script refuses while a task is not `accepted` or the

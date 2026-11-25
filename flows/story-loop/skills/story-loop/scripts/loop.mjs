@@ -1376,8 +1376,23 @@ function command(root, run, verb, args) {
     emit(root, { kind: 'note', text: `check list set: ${checks.length} check${checks.length === 1 ? '' : 's'} (revision ${next.checks_revision})` })
     return console.log(`${checks.length} checks set`)
   }
+  // One finding changed without restating the list: loop.mjs finding <id> <verdict> "<note>" [--commit <sha>] [--severity <s>]
+  if (verb === 'finding') {
+    const opt = name => { const i = args.indexOf(`--${name}`); return i < 0 ? undefined : args[i + 1] }
+    const [id, verdict, ...rest] = args.filter((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--'))
+    id && verdict || fail('usage: loop.mjs finding <id> <open|fix_requested|fixed|rejected|parked> "<note>" [--commit <sha>] [--severity <s>]')
+    VERDICTS.includes(verdict) || fail(`verdict is one of: ${VERDICTS.join(', ')}`)
+    update(root, r => {
+      const f = (r.findings ?? []).find(x => x.id === id) ?? fail(`no finding "${id}"; add new ones with loop.mjs put findings`)
+      const next = { ...f, verdict, ...(rest.length ? { note: rest.join(' ') } : {}), ...(opt('commit') ? { commit: opt('commit') } : {}), ...(opt('severity') ? { severity: opt('severity') } : {}) }
+      return { ...r, findings: r.findings.map(x => x.id === id ? next : x) }
+    })
+    emit(root, { kind: 'note', text: `finding ${id}: ${verdict}` })
+    return console.log(`finding ${id} ${verdict}`)
+  }
   if (verb === 'put') {
-    const [key, raw] = args
+    const replace = args.includes('--replace')
+    const [key, raw] = args.filter(a => a !== '--replace')
     key === 'reviewer' && fail('a review is recorded with its output: loop.mjs review <reviewer> <file>')
     PUT_KEYS.has(key) || fail(`put takes one of: ${[...PUT_KEYS].join(', ')}`)
     let value = raw
@@ -1393,6 +1408,17 @@ function command(root, run, verb, args) {
       key === 'branch' && r.branch && r.branch !== value && r.pushed &&
         fail(`the story branch is "${r.branch}" and was published; it does not change mid-run`)
       key === 'repo' && r.repo && r.repo !== value && fail(`this run belongs to ${r.repo}; the repository does not change mid-run`)
+      if (key === 'tasks' || key === 'findings') {
+        Array.isArray(value) || fail(`${key} is a JSON list`)
+        const ids = new Set(value.map(x => x?.id))
+        const lost = (r[key] ?? []).map(x => x.id).filter(id => !ids.has(id))
+        lost.length && !replace && fail(`this list leaves out recorded ${key} (${lost.join(', ')}); give the whole list, change one finding with loop.mjs finding <id> …, or drop them on purpose with --replace`)
+      }
+      if (key === 'tasks') {
+        // The build round a task belongs to: verify reruns only the steps this round's tasks name for the files they changed.
+        const had = new Map((r.tasks ?? []).map(t => [t.id, t]))
+        value = value.map(t => ({ ...t, attempt: t.attempt ?? had.get(t.id)?.attempt ?? r.stages.build.attempt ?? 1 }))
+      }
       const next = { ...r, [key]: value }
       // The human approved a list for one repository and one base branch; it says nothing about another.
       if (key === 'required_checks') {

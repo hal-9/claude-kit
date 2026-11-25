@@ -1061,3 +1061,17 @@ test('between the contract and the human review the loop waits on the human only
   assert.equal(move(run, 'wait', 'quality', 'human', 'critical: the remote moved').stages.quality.status, 'waiting')
   assert.equal(move(run, 'wait', 'quality', 'background', 'lint').stages.quality.waiting_on, 'background')
 })
+
+test('one finding changes without restating the list, and a partial list never drops recorded ones', () => {
+  const { dir } = repo()
+  withRun(dir, { findings: [{ id: 'r1', severity: 'major', verdict: 'open' }, { id: 'r2', severity: 'minor', verdict: 'open' }] })
+  assert.match(cli(dir, 'put', 'findings', '[{"id":"r1","severity":"major","verdict":"fixed","commit":"abc"}]').stderr, /leaves out recorded findings \(r2\)/)
+  assert.equal(cli(dir, 'finding', 'r2', 'parked', 'a scope question for the human').status, 0)
+  assert.equal(cli(dir, 'finding', 'r1', 'fixed', '--commit', 'abc1234').status, 0)
+  assert.deepEqual(load(dir).findings.map(f => [f.id, f.verdict, f.note ?? f.commit]), [['r1', 'fixed', 'abc1234'], ['r2', 'parked', 'a scope question for the human']])
+  assert.match(cli(dir, 'finding', 'r9', 'fixed').stderr, /no finding "r9"/)
+  assert.equal(cli(dir, 'put', 'findings', '[]', '--replace').status, 0)
+  // tasks carry the build round they were recorded in
+  assert.equal(cli(dir, 'put', 'tasks', '[{"id":"t1","status":"accepted"}]').status, 0)
+  assert.equal(load(dir).tasks[0].attempt, 1)
+})

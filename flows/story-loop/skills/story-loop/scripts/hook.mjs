@@ -23,7 +23,7 @@ export const PROFILES = { 'worker-haiku': 'haiku', 'worker-sonnet': 'sonnet', 'w
 // Commands with an effect outside this machine. With an unreadable state they are refused.
 const OUTWARD = /\bgit\b[^\n;&|]*\spush\b|\bgh\b[^\n;&|]*\b(pr|api|issue|release)\b/
 // Running a script that writes the run, not reading or grepping one (`grep x github.mjs` is no write).
-const LOOP_WRITE = /loop\.mjs["']?\s+(start|pass|skip|block|wait|back|put|checks|note|end|review|mutant|quality)\b|\bnode\b[^\n;&|]*\b(publish|github|mutate|quality)\.mjs/
+const LOOP_WRITE = /\bnode\b[^\n;&|]*loop\.mjs["']?\s+(start|pass|skip|block|wait|back|put|checks|note|end|review|mutant|quality|finding)\b|\bnode\b[^\n;&|]*\b(publish|github|mutate|quality)\.mjs/
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
 // Returns the reason a shell command is refused during a run, or null.
