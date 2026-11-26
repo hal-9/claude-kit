@@ -301,17 +301,23 @@ lets the run start.
 | --- | --- | --- |
 | Publish only the story branch: no force, no tags, no other refs | Raw `git push` is refused by a hook; `publish.mjs` pushes `<checked commit>:refs/heads/<branch>` to a remote with exactly one push URL, then reads it back | A disguised command (`sh -c "$(…)"`) or another tool can get past a hook that reads command text; branch protection on GitHub is the firm boundary |
 | Publish only to the run's repository, never to the base or default branch | Before the first write the push URL is parsed whole as `owner/name` (scp-style `git@github.com:`, `ssh://git@github.com/` or `https://github.com/`, no port, query, fragment or encoded characters; a URL that merely contains `github.com/owner/name` is refused) and compared with the run's repository; the story branch is compared with the recorded base and with the default branch the remote reports | Only github.com URLs are recognised; an SSH host alias or GitHub Enterprise host is refused, not supported. Forks are refused |
-| Never merge, never mark the PR ready | The hook refuses `gh pr merge`, `gh pr ready` and the GraphQL/REST spellings, with or without `--repo` | Same as above |
+| Never merge; the PR leaves draft only through the guarded step | The hook refuses `gh pr merge`, `gh pr ready` and the GraphQL/REST spellings, with or without `--repo`. `github.mjs ready` decides from local state before any GitHub call: a publication from the push stage (never the contract's draft push), HEAD equal to it, every gate holding | Same as above for raw commands |
 | A stage looks done only when it is | Every pass is checked against its evidence (`loop.mjs passProblem`); browser checks against the approved matrix, screenshots as complete image files in the evidence folder; the last stage checks everything again | The agent writes the evidence files; the checks catch omissions, stale and fake files, not a deliberate forgery. Screenshots are checked to be whole files, not to show what they claim |
+| One gate decision, everywhere | `gateProblem` decides whether each gate holds for the code now: its accepted result exists and reads as what it claims, its outcome meets the policy, its identity (code tree, the diff's merge base, lane, check list, environment, review request) is the current one, no newer replacement of it is running, failed or was interrupted, and every waiver is recorded for these results. Stage passes, the publisher, `github.mjs ready`, the report, `loop.mjs status` and the board all ask it | A stage stays `passed` in the history; whether it still holds is this decision. Evidence recorded before 0.21 (no merge base, free-text reviews) is not kept green: run it again |
+| A failed or pending rerun is not hidden by an earlier pass | Each helper run claims its units (quality: one; mutate: each file) under a number that only grows; the newest claim decides, a result of an older one changes nothing, and a newest claim that is running or failed leaves the gate unsatisfied | A rerun is a replacement only when recorded; `--explore` runs change nothing by design |
+| A retargeted base re-decides the diff | Quality, mutants, the review request and the walkthrough record the merge base of their diff; `loop.mjs put base` lists what no longer holds, and helpers refuse a `--base` other than the run's | A base tip that moves without changing the merge base changes nothing |
 | Old evidence never passes new code | Browser results carry a request id made before the browser ran (run, attempt, check list, environment, code tree); a review is recorded under a request made before the reviewer ran, for the code tree that request named; a later commit makes all of it stale, and the publisher refuses to push such a commit | Equivalent code reached by a different tree counts as new; the same tree under another commit counts as the same code. Code changed while the browser ran and put back before the pass is not seen. An old review answer that was never recorded could still be handed in under a new request |
 | Work that finishes late changes nothing | Mutants, the Copilot wait, CI, comments, the report and the publisher note the run and attempt they started in and are checked against it, under the lock, before their result is recorded; a late result is kept under `stale/`; `end` asks running helpers to stop | A push or a comment that already reached GitHub stays there: it is recorded for the run that made it and has to be reconciled by hand |
 | A browser pass means the reviewed code | The environment is recorded before the browser runs: a local server from the checkout, or a deployment with the commit it reports (refused when that is another commit). Every result names its final URL, its environment, its step and case | A local server is the agent's word that it runs this checkout. A deployment nothing ties to the code passes only on your word and is marked "not exact code" on the board and in the report |
-| Mutation results mean something | The scope is the diff, not the files the agent names; a kill needs a mutant that was checked to parse; survivors, timeouts and mutants not run each need a recorded reason | Mutants are textual, one operator per line, at most `--max` per call; ts/tsx/jsx are checked only with the project's `typescript`; templates and styles are named, not mutated |
+| Mutation results mean something | The scope is the diff, not the files the agent names; a kill needs a mutant that was checked to parse and a failure the runner's report attributes to it (an assertion, or an error in a test body that the unmutated code, run again, does not have); a dependency outage, a failed hook on clean code, a file that no longer loads or no tests selected is never a kill; survivors, timeouts and mutants not run each need a recorded reason | Adapters for node:test, Jest, Vitest and RSpec; anything else runs only with an explicit `--adapter exit`, whose failures are each rechecked against clean code. A recheck narrows doubt, it does not rule out every flake. Mutants are textual, one operator per line, at most `--max` per call; ts/tsx/jsx are checked only with the project's `typescript` 5.x (7.x has no API for it: unverified); templates and styles are named, not mutated |
+| Mutation runs share the machine | Slots are opened for runnable mutants only, from one budget shared by every mutate call in every checkout of the repository (`STORY_LOOP_MUTATION_CAPACITY`, default 4; `--weight` for runners with their own workers); a lease is removed only by the owner that holds its token | The budget counts slots, not CPU; a test command that forks its own workers needs `--weight` or a single-worker flag |
 | Slop is decided, not waved through | `quality.mjs` reads only the lines this change added, for the code tree it ran on; lint must exit 0; each signal needs a recorded reason, and a diff over the lane's budget stands only with a `human:` reason | Signals are textual, one pattern per kind: they catch a linter switched off, a skipped test and an excusing comment, not a bad design. The lint command is the agent's choice; a linter the repo does not have is not run |
 | A reviewer's comment is not lost | `github.mjs human-comments` fetches every top-level thread and review body by a human; the round passes only when each has a settled finding and that fetch saw the PR merged or closed | A comment written after that fetch is not seen. Issue-level comments on the PR are not fetched |
+| A second-review finding is not lost | Reviewers and angles answer in one JSON schema (`story-loop.review/1`); `loop.mjs review` refuses malformed answers and turns every finding into a finding to triage with its source id; the stage holds until every requested angle completed or said no_op and every source finding is triaged or marked a duplicate; a list that drops one is refused | Accounting proves completeness, not that a finding is right. Free text (Codex's prose) is recorded but counts only with a structured transcription, which is the conductor's reading of it |
+| Diagnostics do not leak what they record | Command output is redacted whole before it is cut; JSON artifacts and the run state are decoded and sanitized field by field, then written as valid JSON; a JSON artifact that does not parse is left out with the reason | Redaction catches the common shapes of secrets, not every one: review a bundle before sharing it |
 | Every correction leaves a lesson | The retro is refused while a fixed finding or a round sent back is named by no lesson; each lesson names a check kind and what the check would be | Whether the lesson is the right one, and whether the check ever gets built, is not checked. The ledger shows when the same pattern comes back |
 | GitHub steps act on this PR only | Every `gh` call names the run's repository; the PR's branch, base and head are checked against the run before CI is read and before the report is posted | PRs from forks are refused, not supported |
-| Green CI means the required checks | Checks are recorded only for the published commit, with where the required set came from. A 404 or 403 on the policy is `unknown`, never "nothing required"; the list you name is kept for that repository and base, added to what the policy shows, and looked up among all checks. A required check GitHub has not created yet is pending | The list you name is your word. Rulesets that cannot be read (also on a GitHub without rulesets) leave the policy unknown until you name the list |
+| Green CI means the required checks | Check runs and statuses are read for exactly the published commit, with where the required set came from. A requirement keeps the GitHub App the policy names: a same-name check from another producer, or a commit status, never stands in for it. The latest result per producer decides; skipped and neutral satisfy a requirement as on GitHub; an unknown state is never green. A 404 or 403 on the policy is `unknown`, never "nothing required"; the list you name is kept for that repository and base and matches any producer. A required check GitHub has not created yet is pending | The list you name is your word. Rulesets that cannot be read leave the policy unknown until you name the list. Merge-queue and merge-commit runs are not read; GitHub's own branch protection stays the merge boundary |
 | No lost or crossed state | One lock around every write and around `init`, `end` and `recover`; atomic file replace for state and notes, last good copy kept (`loop.mjs recover`); a file that parses but is not a run or a list of notes is as unreadable as a cut-off one, and only a valid backup is restored | Local processes only; not a database |
 | The board shows what the gate decided | The board asks the same function the gate uses, row by row: only checks accepted for the current request are counted, and "all passed" needs the gate's yes | The page is checked by hand in a browser, not by an automated UI test |
 | Notes survive a change of session | A note handed to a session that never finished it is handed to the next owner once, under the same id; `loop.mjs inbox` lists everything not done | A note is "handed over" when a hook put it into the session's context; whether the agent acted on it is the `note done` record |
@@ -332,6 +338,8 @@ lets the run start.
 | Quality gate | `scripts/quality.mjs` | runs the lint commands it is given and reads the diff's added lines for slop signals; lane budgets are in `graph.json` |
 | Ledger | `scripts/ledger.mjs`, `.git/story-loop/ledger.jsonl` | one line per run (a follow-up after the retro writes a newer one, which replaces it), written at the retro, at the human review and at `end`; `loop.mjs ledger` reads it |
 | Mutants | `scripts/mutate.mjs` | breaks changed lines one at a time in a throwaway worktree; nothing to install (uses the project's `typescript` when it has one) |
+| Test-result adapters | `scripts/adapters.mjs`, `scripts/reporters/node-json.mjs` | read node:test, Jest, Vitest and RSpec reports so a failure is attributed to the mutant or to the harness |
+| Evals | `evals/run.mjs` | Layer A controller invariants, Layer B evaluator evals, Layer C live trials |
 | Notes | `.start-story/<story>/inbox.json`, `scripts/hook.mjs` | carries what you write on the board to the agent |
 | Setup check | `scripts/doctor.mjs` | prerequisites and their fixes |
 | Diagnostics | `scripts/diag.mjs` | opt-in record of a run and its export; decides nothing |
@@ -356,6 +364,9 @@ from [savvy-flow](https://github.com/johnnyvizz/claude-kit) (MIT).
 | `the notes file ... is unreadable` | `loop.mjs recover` restores the last good copy and keeps the broken file next to it; a note typed after that copy is only in the broken file |
 | `required CI ... unknown` | The base branch's required checks could not be read (no permission, or GitHub answered 404); tell the agent which checks are required. Ask again after changing the base |
 | A run started on 0.8 | End it and start again on 0.9: verify now needs a recorded environment and results with their URL, the review needs `start second_review` and `--request`, and the publisher needs the base recorded first |
+| A run started before 0.21 | It migrates on first use (schema 4) and keeps its history, but nothing is invented for it: quality results, mutants, review requests and walkthroughs without a merge base, and free-text reviews without a transcription, show as not current. Run those again (`quality.mjs`, `mutate.mjs` with an `--adapter`, `loop.mjs start second_review`, `loop.mjs walkthrough`) |
+| `NOT CURRENT: <gate>: <why>` | A gate that passed earlier no longer holds for the code now; the reason says which check to run again. Publication and `github.mjs ready` refuse until it holds |
+| `say how to read this test command's results: --adapter` | Make the test command write its JSON report to `$STORY_LOOP_REPORT` (see SKILL.md, test_review), or pass `--adapter exit` knowingly |
 | A run started on 0.9 | It migrates on first use: the three new stages are pending, so it stops at the quality gate before going on, and the contract needs a lane before it can pass again (`loop.mjs put lane …`) |
 | `N slop signals need a decision` | Remove each one at its cause and run `quality.mjs` again, or record why it stands: `loop.mjs quality accept <id> "<reason>"` |
 | `PR ... was open when the comments were last fetched` | The human review round ends at merge or close; merge it (or tell the agent you take the review from here), then run `/story-loop review <story>` again |
@@ -367,21 +378,49 @@ from [savvy-flow](https://github.com/johnnyvizz/claude-kit) (MIT).
 | Worker cards show only the conductor | Your Claude Code version does not pass worker ids to hooks; the run is unaffected |
 | You want to stop a run for good | `node <plugin>/skills/story-loop/scripts/loop.mjs end` in the repo; the run's record stays in `.start-story/<story>/` |
 
-## Tests
+## Tests and evals
 
 ```bash
-node --test tests/*.test.mjs
+node --test tests/*.test.mjs                 # regression suite
+node evals/run.mjs controller                # Layer A: seeded controller invariants (fixtures)
+node evals/run.mjs graders                   # Layer B: the evaluators against known-good and faulty variants
+node evals/run.mjs live --trials 3           # Layer C: real story-loop runs (see below); NOT RUN without its prerequisites
 ```
 
-These are fixture tests: real git, bare repositories on disk standing in for
-GitHub, a fake `gh`, a fake `claude`. They do not start Claude Code, a browser
-or anything on github.com.
+The suite and layers A and B are fixture runs: real git, bare repositories on
+disk standing in for GitHub, a fake `gh`, a fake `claude`, real `node --test`
+projects for the mutation runner. They do not start Claude Code, a browser or
+anything on github.com, and none of their passes says how reliably an agent
+completes a story.
 
-Three tests need a `typescript` package (the compiler-present branch of the
-mutation runner). story-loop has no dependencies, so without one they are
-reported as **skipped**, not passed. To run them, point at any `node_modules`
-that has typescript:
+- **Layer A** generates lifecycle sequences from seeds (replacement runs
+  started, finished out of order or crashed; commits, message-only amends and
+  base retargets; a torn state file; publications and their retries) and checks
+  the gate decision, the publisher and the remote against a small reference
+  model that uses plain git and no story-loop code. A failing seed is written to
+  `evals/out/` with a minimized trace and the command that replays it.
+- **Layer B** runs every evaluator on variants whose truth is known: app cases
+  (authorization, persistence after "saved", a feature flag, empty/loading/error
+  states, a login wall mistaken for the target page) graded by hidden graders on
+  the resulting state, and story-loop's own evaluators (mutation attribution,
+  CI producer identity, review accounting, diagnostic canaries). A case gates
+  only after its known-good variants pass; it reports false acceptance, false
+  rejection and detection per category.
+- **Layer C** runs `/story-loop` itself, three to five times per case, on six
+  representative stories (`evals/live/cases.json`) in a disposable GitHub
+  repository, and grades the story branch with the Layer B graders. It needs
+  `STORY_LOOP_LIVE=1`, `STORY_LOOP_LIVE_REPO` and the same name again in
+  `STORY_LOOP_LIVE_REPO_CONFIRM`, `STORY_LOOP_LIVE_BUDGET_USD`, and the `claude`
+  and `gh` CLIs signed in; without them it prints what is missing and runs
+  nothing. Every trial is kept, failures included.
+
+Three tests need a `typescript` 5.x package (the compiler-present branch of the
+mutation runner; TypeScript 7 has no `transpileModule`). story-loop has no
+dependencies, so without one they are reported as **skipped**, not passed. To
+run them, point at any `node_modules` that has it; with
+`STORY_LOOP_REQUIRE_TYPESCRIPT=1` (the release workflow,
+`.github/workflows/story-loop.yml`) a missing compiler fails them instead:
 
 ```bash
-STORY_LOOP_TEST_NODE_MODULES=/path/to/some/project/node_modules node --test tests/*.test.mjs
+STORY_LOOP_TEST_NODE_MODULES=/path/to/some/project/node_modules STORY_LOOP_REQUIRE_TYPESCRIPT=1 node --test tests/*.test.mjs
 ```

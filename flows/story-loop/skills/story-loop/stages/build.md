@@ -150,6 +150,9 @@ Treat a worker report as a claim to check.
 Every task accepted (`LOOP put tasks` with `"status":"accepted"`, the
 `"files"` its diff changed and the `"steps"` it serves) → run the
 affected spec and Jest suites once; failures go back to the tier that owns the
-code. Commit (atomic, signed, lint clean). Then
-`LOOP pass build "<n tasks, suites run>"` — refused while a task is not
-accepted or anything is uncommitted.
+code. Commit (atomic, signed, lint clean). When the contract recorded a
+verification plan, run each required check through the trusted runner on the
+committed code (`LOOP verification run <id>`): a worker's "suite passed" is
+not a record. Then `LOOP pass build "<n tasks, suites run>"` — refused while a
+task is not accepted, anything is uncommitted, or a required check has no
+passing record for this code.
