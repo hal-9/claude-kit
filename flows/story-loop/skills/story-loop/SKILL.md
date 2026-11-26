@@ -121,9 +121,13 @@ When the argument is `setup`, or before `LOOP init`, run the check from the
 repo root:
 
 ```bash
+node ${CLAUDE_SKILL_DIR}/board/server.mjs --root "$PWD"   # in the background: the board shows this check as a checklist and opens itself
 node ${CLAUDE_SKILL_DIR}/scripts/doctor.mjs            # stories come from Shortcut
 node ${CLAUDE_SKILL_DIR}/scripts/doctor.mjs github     # stories are GitHub issues
 ```
+
+The board is the same one the run uses later: leave it running, and do not
+start a second one at `LOOP init`.
 
 It prints `✔` done, `✘` blocker, `!` warning, each with what it is for and
 the fix, then four points no script can see. Onboard the human through it:
@@ -140,6 +144,10 @@ the fix, then four points no script can see. Onboard the human through it:
    Copilot review enabled on the repo, does the app boot in the test
    environment.
 3. **Warnings** are named once with when they matter; they do not stop a run.
+
+The board shows the same check as a checklist while no run is active: open
+items first with their fix, a progress bar, a "Check again" button, and
+tick boxes for the four points. Point the human at it.
 
 Never ask the human to paste a password or token into the chat, and never
 print one: credentials go into their own files, CLIs and browser by their hand.
@@ -195,7 +203,8 @@ The id decides the source: `sc-…` is a Shortcut story, `gh-…` a GitHub issue
 A bare number is a Shortcut story; when the human gives only a number and the
 repo has no `start-story` skill, ask which they mean.
 
-Then start the board in the background and open it for the human (browser
+Then, unless setup already started it this session, start the board in the
+background and open it for the human (browser
 pane or preview tool when the host has one, otherwise `open <url>`). If no page
 has connected 10 seconds after start, the server opens the default browser
 itself and says so in its output; `--no-open` turns that off:

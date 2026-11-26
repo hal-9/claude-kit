@@ -366,6 +366,15 @@ createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': shot.type, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'" })
       return res.end(shot.data)
     }
+    // Before a run: the setup check (doctor.mjs) as data, for the board's checklist. POST so
+    // the origin guard above applies; the check signs a test commit and calls gh.
+    if (url.pathname === '/api/setup' && req.method === 'POST') {
+      const args = [join(HERE, '..', 'scripts', 'doctor.mjs'), '--json', ...(url.searchParams.get('source') === 'github' ? ['github'] : [])]
+      const out = await new Promise(done => execFile(process.execPath, args, { cwd: ROOT, timeout: 120_000, maxBuffer: 1 << 20 }, (_, stdout) => done(stdout)))
+      try { JSON.parse(out) } catch { return text(res, 500, 'the setup check did not finish; run doctor.mjs by hand') }
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+      return res.end(out)
+    }
     if (url.pathname === '/api/explain' && req.method === 'POST') return await explain(req, res)
     if (url.pathname === '/api/steer' && req.method === 'POST') return await steer(req, res)
     if (url.pathname === '/api/answer' && req.method === 'POST') return await answer(req, res)

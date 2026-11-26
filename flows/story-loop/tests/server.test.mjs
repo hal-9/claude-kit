@@ -403,3 +403,18 @@ test('the board opens itself in the browser when no page connects, and not when 
   await res.body.cancel()
   assert.equal(existsSync(OPENED), false)
 })
+
+test('before a run the board serves the setup check as data, to its own page only', async t => {
+  const { dir } = repo()
+  const { base } = await board(t, dir, 70)
+  const foreign = await fetch(`${base}/api/setup`, { method: 'POST', headers: { origin: 'https://evil.example' } })
+  assert.equal(foreign.status, 403)
+  assert.equal((await fetch(`${base}/api/setup`)).status, 404)
+  const res = await fetch(`${base}/api/setup?source=github`, { method: 'POST' })
+  assert.equal(res.status, 200)
+  const { results, confirm } = await res.json()
+  assert.ok(results.some(r => r.name === 'Inside a git repository' && r.status === 'ok'))
+  assert.equal(results.find(r => r.name === 'Shortcut CLI 5 or newer').detail, 'not needed for GitHub issues')
+  assert.ok(results.every(r => ['ok', 'blocker', 'warning'].includes(r.status)))
+  assert.ok(confirm.length > 0)
+})

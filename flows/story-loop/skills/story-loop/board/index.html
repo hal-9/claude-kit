@@ -523,6 +523,38 @@ dialog.lightbox::backdrop { background: oklch(12% 0.01 265 / 0.62); }
 .idle p { color: var(--ink-2); }
 body.no-run .stage .dot { border-style: dashed; }
 
+/* ---------- setup checklist (before a run) ---------- */
+.setup { margin-top: 28px; display: grid; gap: 14px; max-width: 72ch; }
+.setup-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.setup-head h2 { font-size: 1.1rem; }
+.setup-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; font-size: 13.5px; color: var(--ink-2); }
+.setup-bar label { display: inline-flex; align-items: center; gap: 6px; }
+.setup-bar button { margin-left: auto; }
+.setup-meter { height: 6px; border-radius: 3px; background: var(--sunk); overflow: hidden; }
+.setup-meter span { display: block; height: 100%; width: 0; background: var(--ok); transition: width 300ms; }
+.setup-list, .setup-confirm { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.setup-row { display: grid; grid-template-columns: 22px 1fr; gap: 4px 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.setup-row[data-status="blocker"] { border-color: var(--bad); background: var(--bad-soft); }
+.setup-row[data-status="warning"] { border-color: var(--warn); background: var(--warn-soft); }
+.setup-row[data-status="ok"] { padding-block: 6px; }
+.setup-mark { font-weight: 700; text-align: center; }
+.setup-row[data-status="ok"] .setup-mark { color: var(--ok); }
+.setup-row[data-status="blocker"] .setup-mark { color: var(--bad); }
+.setup-row[data-status="warning"] .setup-mark { color: var(--warn-ink); }
+.setup-name { font-weight: 600; }
+.setup-detail { color: var(--ink-3); font-weight: 400; }
+.setup-why, .setup-fix { grid-column: 2; font-size: 13px; color: var(--ink-2); }
+.setup-fix { font-family: var(--mono); font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
+.setup-done summary { cursor: pointer; font-size: 13.5px; color: var(--ink-2); }
+.setup-done .setup-list { margin-top: 8px; }
+.setup-confirm label { display: grid; grid-template-columns: 22px 1fr; gap: 2px 10px; padding: 8px 12px; border: 1px dashed var(--line-2); border-radius: 8px; }
+.setup-confirm input { margin: 3px 0 0; }
+.setup-confirm .setup-why { grid-column: 2; }
+.setup-confirm label:has(input:checked) { border-style: solid; border-color: var(--ok); }
+.setup-confirm label:has(input:checked) .setup-why { display: none; }
+.setup h3 { font-size: 14px; margin-top: 6px; }
+.setup-state { font-size: 13.5px; color: var(--ink-2); }
+
 
 /* ---------- icons ---------- */
 .ico { width: 1em; height: 1em; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; overflow: visible; }
@@ -866,6 +898,21 @@ details.history .h-ev { display: block; font-size: 12px; color: var(--ink-3); }
   <section class="idle" id="idle">
     <h2>Waiting for a run</h2>
     <p>This board fills in the moment story-loop starts a story. Keep the tab open; the stages, the workers and the change appear here as they happen.</p>
+    <section class="setup" id="setup" aria-labelledby="h-setup">
+      <div class="setup-head"><h2 id="h-setup">Setup on this machine</h2><span class="col-note" id="setup-count"></span></div>
+      <div class="setup-meter" aria-hidden="true"><span id="setup-meter"></span></div>
+      <div class="setup-bar">
+        <span>Stories come from</span>
+        <label><input type="radio" name="setup-source" value="shortcut" checked> Shortcut</label>
+        <label><input type="radio" name="setup-source" value="github"> GitHub issues</label>
+        <button type="button" id="setup-run">Check again</button>
+      </div>
+      <p class="setup-state" id="setup-state" aria-live="polite"></p>
+      <ol class="setup-list" id="setup-open"></ol>
+      <details class="setup-done" id="setup-done" hidden><summary id="setup-done-sum"></summary><ol class="setup-list" id="setup-ok"></ol></details>
+      <h3>Confirm yourself</h3>
+      <ul class="setup-confirm" id="setup-confirm"></ul>
+    </section>
   </section>
 
   <main class="cols" id="cols" hidden>
@@ -1470,6 +1517,64 @@ function drawEdges(animate) {
   }
 }
 
+// ---------- setup checklist ----------
+// Before a run the board shows doctor.mjs as a list: what is missing first, with its fix,
+// then what is done, then the points no script can see, which the human ticks off here.
+let setupChecked = false
+const setupKey = 'story-loop.setup.confirmed'
+const confirmed = () => { try { return new Set(JSON.parse(localStorage.getItem(setupKey) || '[]')) } catch { return new Set() } }
+function setupRow(r) {
+  return el('li', { class: 'setup-row', dataset: { status: r.status } },
+    el('span', { class: 'setup-mark', role: 'img', 'aria-label': { ok: 'done', blocker: 'blocker', warning: 'warning' }[r.status], text: { ok: '✔', blocker: '✘', warning: '!' }[r.status] }),
+    el('span', { class: 'setup-name' }, r.name, r.detail ? el('span', { class: 'setup-detail', text: ` — ${r.detail}` }) : null),
+    r.status === 'ok' ? null : el('span', { class: 'setup-why', text: `For: ${r.why}` }),
+    r.status === 'ok' ? null : el('span', { class: 'setup-fix', text: r.fix }))
+}
+function renderSetup({ results, confirm }) {
+  const order = { blocker: 0, warning: 1 }
+  const open = results.filter(r => r.status !== 'ok').sort((a, b) => order[a.status] - order[b.status])
+  const done = results.filter(r => r.status === 'ok')
+  const blockers = open.filter(r => r.status === 'blocker').length
+  const ticked = confirmed()
+  const sure = confirm.filter(([name]) => ticked.has(name)).length
+  const total = results.length + confirm.length
+  $('setup-meter').style.width = `${Math.round((done.length + sure) / total * 100)}%`
+  $('setup-count').textContent = `${done.length + sure} of ${total} done`
+  $('setup-state').textContent = blockers
+    ? `${blockers} blocker${blockers > 1 ? 's' : ''} left. Fix from the top, then check again.`
+    : sure < confirm.length ? 'No blockers. Confirm the points below, then start /story-loop SC-<id>.'
+    : 'Ready. Start /story-loop SC-<id> in the session.'
+  $('setup-open').replaceChildren(...open.map(setupRow))
+  $('setup-done').hidden = !done.length
+  $('setup-done-sum').textContent = `${done.length} check${done.length === 1 ? '' : 's'} pass`
+  $('setup-ok').replaceChildren(...done.map(setupRow))
+  $('setup-confirm').replaceChildren(...confirm.map(([name, how]) => el('li', {},
+    el('label', {},
+      el('input', { type: 'checkbox', checked: ticked.has(name), onchange: e => {
+        const set = confirmed(); e.target.checked ? set.add(name) : set.delete(name)
+        try { localStorage.setItem(setupKey, JSON.stringify([...set])) } catch {}
+        renderSetup({ results, confirm })
+      } }),
+      el('span', { class: 'setup-name', text: name }),
+      el('span', { class: 'setup-why', text: how })))))
+}
+async function checkSetup() {
+  setupChecked = true
+  if (S.demo) { $('setup').hidden = true; return }
+  const source = document.querySelector('input[name="setup-source"]:checked').value
+  $('setup-run').disabled = true
+  $('setup-state').textContent = 'Checking this machine…'
+  try {
+    const res = await fetch(`/api/setup?source=${source}`, { method: 'POST' })
+    if (!res.ok) throw new Error(await res.text())
+    renderSetup(await res.json())
+  } catch (error) {
+    $('setup-state').textContent = `The setup check failed: ${error.message}`
+  } finally { $('setup-run').disabled = false }
+}
+$('setup-run').addEventListener('click', checkSetup)
+for (const input of document.querySelectorAll('input[name="setup-source"]')) input.addEventListener('change', checkSetup)
+
 // ---------- header ----------
 function renderHead() {
   const run = S.run
@@ -1477,6 +1582,7 @@ function renderHead() {
   $('head').hidden = !run
   $('cols').hidden = !run
   $('idle').hidden = !!run
+  if (!run && !setupChecked) checkSetup()
   $('demo').hidden = !S.demo
   if (!run) { document.title = 'story-loop'; return }
   $('title').textContent = run.title || run.story || 'Untitled story'
