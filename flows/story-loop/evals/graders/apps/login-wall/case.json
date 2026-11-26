@@ -1,0 +1,10 @@
+{
+  "category": "verifier identity",
+  "file": "page.html",
+  "variants": {
+    "good": "accept",
+    "alt-good": "accept",
+    "bad-login-wall": "reject",
+    "bad-not-found": "reject"
+  }
+}

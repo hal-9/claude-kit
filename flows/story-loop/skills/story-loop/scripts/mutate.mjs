@@ -76,6 +76,8 @@ function parses(root, file, path) {
   }
   if (!TS_CHECKED.includes(ext)) return null
   if (typescript === undefined) try { typescript = createRequire(join(root, file))('typescript') } catch { typescript = null }
+  // TypeScript 7 (the native compiler) has no transpileModule API: then nothing here can check, and the mutant says so.
+  if (typeof typescript?.transpileModule !== 'function') typescript = null
   if (!typescript) return null
   const out = typescript.transpileModule(readFileSync(path, 'utf8'), { fileName: file, reportDiagnostics: true, compilerOptions: { jsx: 'preserve', allowJs: true } })
   return !out.diagnostics.some(d => d.category === typescript.DiagnosticCategory.Error)

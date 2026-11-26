@@ -1,0 +1,10 @@
+{
+  "category": "empty/loading/error",
+  "file": "view.mjs",
+  "variants": {
+    "good": "accept",
+    "alt-good": "accept",
+    "bad-no-error-state": "reject",
+    "bad-loading-as-empty": "reject"
+  }
+}

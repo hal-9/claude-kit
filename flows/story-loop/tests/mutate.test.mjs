@@ -234,9 +234,16 @@ function unparsable(ext) {
 }
 // The compiler-present branch needs a typescript package. story-loop has no dependencies, so it
 // comes from wherever these tests run, or from STORY_LOOP_TEST_NODE_MODULES=<a node_modules with typescript>.
+// A TypeScript without transpileModule (7.x, the native compiler) is not one this checker can use.
 let typescript = null
-for (const from of [import.meta.url, process.env.STORY_LOOP_TEST_NODE_MODULES && join(process.env.STORY_LOOP_TEST_NODE_MODULES, 'x.js')].filter(Boolean))
-  try { typescript ??= createRequire(from).resolve('typescript/package.json') } catch {}
+let unusable = null
+for (const from of [import.meta.url, process.env.STORY_LOOP_TEST_NODE_MODULES && join(process.env.STORY_LOOP_TEST_NODE_MODULES, 'x.js')].filter(Boolean)) {
+  try {
+    const found = createRequire(from).resolve('typescript/package.json')
+    if (typeof createRequire(from)('typescript').transpileModule === 'function') typescript ??= found
+    else unusable = createRequire(from)('typescript/package.json').version
+  } catch {}
+}
 
 for (const ext of ['.ts', '.tsx', '.jsx']) {
   test(`H07: without a compiler, an unparsable ${ext} mutant that fails the tests is unverified, not a kill`, () => {
@@ -249,7 +256,9 @@ for (const ext of ['.ts', '.tsx', '.jsx']) {
   })
   // Its own test, so a machine without typescript reports a skip instead of a pass that checked nothing.
   test(`H07: with the project's typescript, an unparsable ${ext} mutant is recognised as invalid code`, t => {
-    if (!typescript) return t.skip('typescript is not installed here; set STORY_LOOP_TEST_NODE_MODULES=<a node_modules that has typescript> to run this branch')
+    // The release environment sets STORY_LOOP_REQUIRE_TYPESCRIPT=1: there a missing compiler is a failure, not a skip.
+    if (!typescript && process.env.STORY_LOOP_REQUIRE_TYPESCRIPT === '1') assert.fail(`STORY_LOOP_REQUIRE_TYPESCRIPT=1, but no usable typescript was found${unusable ? ` (${unusable} has no transpileModule)` : ''}`)
+    if (!typescript) return t.skip(`${unusable ? `typescript ${unusable} has no transpileModule` : 'typescript is not installed here'}; set STORY_LOOP_TEST_NODE_MODULES=<a node_modules with typescript 5.x> to run this branch`)
     const { dir, file } = unparsable(ext)
     mkdirSync(join(dir, 'node_modules'))
     symlinkSync(join(typescript, '..'), join(dir, 'node_modules', 'typescript'))
@@ -258,6 +267,16 @@ for (const ext of ['.ts', '.tsx', '.jsx']) {
     assert.deepEqual([result(run.stdout).killed, result(run.stdout).invalid, result(run.stdout).unverified], [0, 1, 0])
   })
 }
+
+test('a TypeScript without transpileModule (7.x) is no checker: the mutant is unverified, the run does not crash', () => {
+  const { dir, file } = unparsable('.ts')
+  mkdirSync(join(dir, 'node_modules', 'typescript'), { recursive: true })
+  writeFileSync(join(dir, 'node_modules', 'typescript', 'package.json'), '{"name":"typescript","version":"7.0.0","main":"index.js"}')
+  writeFileSync(join(dir, 'node_modules', 'typescript', 'index.js'), 'module.exports = { version: "7.0.0" }\n')
+  const run = mutate(dir, '--test', 'node load.cjs', file)
+  assert.equal(run.status, 0, run.stderr)
+  assert.deepEqual([result(run.stdout).killed, result(run.stdout).unverified], [0, 1])
+})
 
 test('H08: a test run that dies of a signal behind a shell is inconclusive, not a kill', () => {
   // The runner is the shell's child here, so the signal reaches us as exit code 143.

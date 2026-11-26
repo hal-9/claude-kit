@@ -1,0 +1,32 @@
+# story-loop's release check: the regression suite with a real TypeScript compiler (the
+# compiler-present tests fail instead of skipping without one), then the deterministic evals.
+name: story-loop
+on:
+  push:
+    paths: ['flows/story-loop/**', '.github/workflows/story-loop.yml']
+  pull_request:
+    paths: ['flows/story-loop/**', '.github/workflows/story-loop.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flows/story-loop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: TypeScript 5 for the compiler-present mutation tests
+        run: npm install --no-save --prefix "$RUNNER_TEMP/ts" typescript@5.9.2
+      - name: Regression suite
+        run: node --test tests/*.test.mjs
+        env:
+          STORY_LOOP_TEST_NODE_MODULES: ${{ runner.temp }}/ts/node_modules
+          STORY_LOOP_REQUIRE_TYPESCRIPT: '1'
+      - name: Layer A, controller invariants
+        run: node evals/run.mjs controller
+      - name: Layer B, evaluator evals
+        run: node evals/run.mjs graders

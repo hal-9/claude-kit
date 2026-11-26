@@ -193,3 +193,24 @@ test('a verification plan is enforced by the trusted runner, on this tree', () =
   assert.equal(cli(dir, 'verification', 'run', 'unit').status, 1)
   assert.match(gateProblems(dir, load(dir)).build, /failed on this code/)
 })
+
+test('the board shows the same gate decision as the publisher and the CLI', async t => {
+  const { dir } = atQuality({ remote: false })
+  ok(quality(dir, '--lint', 'true'))
+  ok(cli(dir, 'pass', 'quality'))
+  assert.equal(quality(dir, '--lint', 'exit 1').status, 1)
+  const port = 45000 + (process.pid % 1000)
+  const server = spawn('node', [fileURLToPath(new URL('../skills/story-loop/board/server.mjs', import.meta.url)), '--root', dir, '--port', String(port), '--no-open'], { stdio: 'ignore' })
+  t.after(() => server.kill())
+  await new Promise(r => setTimeout(r, 700))
+  const res = await fetch(`http://127.0.0.1:${port}/events`)
+  const reader = res.body.getReader()
+  let text = ''
+  for (let i = 0; i < 40 && !/"type":"snapshot".*\n\n/s.test(text); i++) { const { value, done } = await reader.read(); if (done) break; text += Buffer.from(value).toString() }
+  reader.cancel().catch(() => {})
+  const snap = JSON.parse(text.match(/data: (.*)/)[1])
+  const run = snap.run ?? snap.state ?? snap
+  assert.deepEqual(run.stale, ['quality'])
+  assert.equal(run.gates.quality, gateProblems(dir, load(dir)).quality)
+  assert.match(run.gates.quality, /lint failed/)
+})

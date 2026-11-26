@@ -1,0 +1,10 @@
+{
+  "category": "feature flag",
+  "file": "banner.mjs",
+  "variants": {
+    "good": "accept",
+    "alt-good": "accept",
+    "bad-ignores-flag": "reject",
+    "bad-inverted": "reject"
+  }
+}

@@ -11,7 +11,7 @@ import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, paths, newRun, move, save, emit, readInbox, addNote, deliver, readResults, resultsFile, evidenceDir, runDir, staleStages, headCommit, headTree, verifyReport, diffBase, imageProblem, runKey } from '../scripts/loop.mjs'
+import { GRAPH, paths, newRun, move, save, emit, readInbox, addNote, deliver, readResults, resultsFile, evidenceDir, runDir, staleStages, gateProblems, headCommit, headTree, verifyReport, diffBase, imageProblem, runKey } from '../scripts/loop.mjs'
 import { record, diagDir, readEvents as readDiag } from '../scripts/diag.mjs'
 import { usage, readLedger, readHandled } from '../scripts/ledger.mjs'
 
@@ -152,11 +152,13 @@ function pauses(events) {
 // Which question a stage waiting on the human asks: an answer must name it back.
 const questionId = st => createHash('sha256').update(String(st?.reason ?? '')).digest('hex')
 const waitsOnHuman = st => st?.status === 'waiting' && st.waiting_on === 'human'
-// The run as the page sees it: the state file plus which evidence is stale for the code now.
+// The run as the page sees it: the state file plus which gates do not hold for the code now.
 function view(run) {
   if (!run) return run
   const stages = Object.fromEntries(Object.entries(run.stages ?? {}).map(([id, st]) => [id, waitsOnHuman(st) ? { ...st, question_id: questionId(st) } : st]))
-  return { ...run, stages, run_key: runKey(run), ended: !DEMO && !existsSync(P.active), ...pauses(readEvents()), stale: DEMO ? (run.stale ?? []) : staleStages(ROOT, run), head: DEMO ? 'demo' : headCommit(ROOT) }
+  // The gate decision publication and the CLI use: which done stages do not hold for the code now, and why.
+  const gates = DEMO ? Object.fromEntries((run.stale ?? []).map(id => [id, 'covered older code'])) : gateProblems(ROOT, run)
+  return { ...run, stages, run_key: runKey(run), ended: !DEMO && !existsSync(P.active), ...pauses(readEvents()), stale: Object.keys(gates), gates, head: DEMO ? 'demo' : headCommit(ROOT) }
 }
 // Evidence is served over loopback only; the boundary matters only to a writer able to
 // put a symlink (or a swapped file) into the evidence folder. Only a regular image file

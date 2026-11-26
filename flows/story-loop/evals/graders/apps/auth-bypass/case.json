@@ -1,0 +1,10 @@
+{
+  "category": "authorization",
+  "file": "orders.mjs",
+  "variants": {
+    "good": "accept",
+    "alt-good": "accept",
+    "bad-no-check": "reject",
+    "bad-client-field": "reject"
+  }
+}

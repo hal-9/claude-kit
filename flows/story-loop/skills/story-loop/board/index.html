@@ -1462,7 +1462,7 @@ function renderStages() {
     // A stage being redone is not stale any more; every other stale stage stops reading as done.
     const stale = staleSet.has(s.id) && st.status !== 'running'
     e.li.toggleAttribute('data-stale', stale)
-    e.li.title = stale ? `${s.hint}. Stale: its evidence covered older code than the current commit.` : s.hint
+    e.li.title = stale ? `${s.hint}. Not current: ${run.gates?.[s.id] ?? 'its evidence covered older code than the current commit'}.` : s.hint
     const ext = stageExt(s.id, run)
     e.ext.textContent = ext?.[0] ?? ''
     if (ext?.[1]) e.ext.dataset.tone = ext[1]; else delete e.ext.dataset.tone
@@ -1480,9 +1480,9 @@ function renderStages() {
       : st.status === 'blocked' ? blockedResult(st.reason) : ['passed', 'skipped'].includes(st.status) ? cap(st.reason ?? '') : ''
     e.result.textContent = result
     e.result.title = result
-    e.sub.textContent = stale ? 'stale \u00b7 covered older code' : ['passed', 'running'].includes(st.status) || st.attempt > 1 ? stageSub(st) : ''
+    e.sub.textContent = stale ? 'not current \u00b7 runs again' : ['passed', 'running'].includes(st.status) || st.attempt > 1 ? stageSub(st) : ''
     e.round.textContent = st.rounds > 0 ? `round ${st.rounds + 1}` : ''
-    e.state.textContent = `: ${st.status}${stale ? ', stale: covered older code' : ''}${st.rounds ? `, round ${st.rounds + 1}` : ''}${result ? `. ${result}` : ''}${ext?.[0] ? `. ${ext[0]}` : ''}`
+    e.state.textContent = `: ${st.status}${stale ? `, not current: ${run.gates?.[s.id] ?? 'covered older code'}` : ''}${st.rounds ? `, round ${st.rounds + 1}` : ''}${result ? `. ${result}` : ''}${ext?.[0] ? `. ${ext[0]}` : ''}`
     e.hit.disabled = st.status === 'pending'
   })
   renderStageDetail()
@@ -1540,7 +1540,7 @@ function renderState() {
   const s = stateOf(run)
   setLine(s)
   const staleNow = (run.stale ?? []).filter(id => run.stages?.[id]?.status !== 'running')
-  $('reason').replaceChildren(s.reason ?? '', ...(staleNow.length ? [el('span', { class: 'stale-note', text: `Stale: ${staleNow.map(label).join(', ')} covered older code` })] : []))
+  $('reason').replaceChildren(s.reason ?? '', ...(staleNow.length ? [el('span', { class: 'stale-note', text: `Not current: ${staleNow.map(id => `${label(id)} (${run.gates?.[id] ?? 'covered older code'})`).join('; ')}` })] : []))
   document.body.dataset.mood = s.tone === 'warn' || s.tone === 'bad' || needsYou().some(i => i.stage) ? 'warn' : ''
   tickStage()
 }
@@ -1737,7 +1737,7 @@ function renderStageDetail() {
   const st = openStage && run?.stages?.[openStage]
   if (!st || st.status === 'pending') { box.hidden = true; box.replaceChildren(); openStage = null; return }
   const when = [st.started_at && `started ${clock(st.started_at)}`, st.ended_at && `ended ${clock(st.ended_at)}`, stageTime(st)].filter(Boolean).join(' · ')
-  const meta = [st.status, st.attempt > 1 && `attempt ${st.attempt}`, st.rounds && `round ${st.rounds + 1}`, (run.stale ?? []).includes(openStage) && 'stale: covered older code', st.commit && `at ${shortSha(st.commit)}`].filter(Boolean).join(' · ')
+  const meta = [st.status, st.attempt > 1 && `attempt ${st.attempt}`, st.rounds && `round ${st.rounds + 1}`, (run.stale ?? []).includes(openStage) && `not current: ${run.gates?.[openStage] ?? 'covered older code'}`, st.commit && `at ${shortSha(st.commit)}`].filter(Boolean).join(' · ')
   box.hidden = false
   box.replaceChildren(
     el('div', { class: 'sd-head' }, el('h3', { id: 'sd-title', text: label(openStage) }), el('span', { class: 'sd-meta', text: meta }),

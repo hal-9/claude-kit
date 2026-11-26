@@ -1,0 +1,10 @@
+{
+  "category": "persistence",
+  "file": "notes.mjs",
+  "variants": {
+    "good": "accept",
+    "alt-good": "accept",
+    "bad-claims-saved": "reject",
+    "bad-memory-only": "reject"
+  }
+}
