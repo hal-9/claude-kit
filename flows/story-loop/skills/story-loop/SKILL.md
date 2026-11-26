@@ -196,7 +196,9 @@ A bare number is a Shortcut story; when the human gives only a number and the
 repo has no `start-story` skill, ask which they mean.
 
 Then start the board in the background and open it for the human (browser
-pane or preview tool when the host has one, otherwise `open <url>`):
+pane or preview tool when the host has one, otherwise `open <url>`). If no page
+has connected 10 seconds after start, the server opens the default browser
+itself and says so in its output; `--no-open` turns that off:
 
 ```bash
 node ${CLAUDE_SKILL_DIR}/board/server.mjs --root "$PWD"     # 4317, or ports.json's board port, or the next free one; --port to fix it

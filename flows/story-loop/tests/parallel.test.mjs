@@ -67,7 +67,7 @@ test('the board takes the port ports.json gives it, and the next free one when a
   t.after(() => held.close())
   mkdirSync(join(dir, '.start-story'), { recursive: true })
   writeFileSync(join(dir, '.start-story', 'ports.json'), JSON.stringify({ board: port, app: 3001 }))
-  const board = spawn('node', [SERVER, '--root', dir], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const board = spawn('node', [SERVER, '--root', dir, '--no-open'], { stdio: ['ignore', 'pipe', 'pipe'] })
   t.after(() => board.kill())
   const line = await new Promise((ok, fail) => {
     board.stdout.on('data', d => ok(String(d)))

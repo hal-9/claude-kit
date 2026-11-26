@@ -32,7 +32,7 @@ test('the explainer has only read tools, no MCP servers, and stops when the page
   withRun(dir)
   commit('a.txt', 'changed')
   const port = 43000 + (process.pid % 1000)
-  const server = spawn('node', [SERVER, '--root', dir, '--port', String(port)], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: 'ignore' })
+  const server = spawn('node', [SERVER, '--root', dir, '--port', String(port), '--no-open'], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: 'ignore' })
   t.after(() => server.kill())
   await wait(600)
   const base = `http://127.0.0.1:${port}`
@@ -80,7 +80,7 @@ async function stream(base) {
 }
 async function board(t, dir, offset, env = process.env) {
   const port = 44000 + offset + (process.pid % 1000)
-  const server = spawn('node', [SERVER, '--root', dir, '--port', String(port)], { env, stdio: 'ignore' })
+  const server = spawn('node', [SERVER, '--root', dir, '--port', String(port), '--no-open'], { env, stdio: 'ignore' })
   t.after(() => server.kill())
   await wait(600)
   return { server, base: `http://127.0.0.1:${port}` }
@@ -378,4 +378,28 @@ test('an explanation cancelled while the auth check runs starts nothing and hand
   assert.deepEqual(await Promise.all(both.map(async r => (await r.res).status)), [200, 200])
   for (const r of both) r.abort()
   for (let i = 0; i < 30 && fake.startPids().some(alive); i++) await wait(100)
+})
+
+test('the board opens itself in the browser when no page connects, and not when one does', async t => {
+  const fakes = mkdtempSync(join(tmpdir(), 'sl-fakeopen-'))
+  const OPENED = join(fakes, 'opened')
+  for (const name of ['open', 'xdg-open']) {
+    writeFileSync(join(fakes, name), `#!/bin/sh\necho "$1" >> ${JSON.stringify(OPENED)}\n`)
+    chmodSync(join(fakes, name), 0o755)
+  }
+  const env = { ...process.env, PATH: `${fakes}:${process.env.PATH}` }
+  const start = (port, ...extra) => { const s = spawn('node', [SERVER, '--root', repo().dir, '--port', String(port), ...extra], { env, stdio: 'ignore' }); t.after(() => s.kill()); return s }
+  const port = 45500 + (process.pid % 1000)
+
+  start(port, '--open-after', '0.5')
+  await wait(1500)
+  assert.equal(readFileSync(OPENED, 'utf8').trim(), `http://127.0.0.1:${port}`)
+
+  rmSync(OPENED)
+  start(port + 1, '--open-after', '1')
+  await wait(400)
+  const res = await fetch(`http://127.0.0.1:${port + 1}/events`)
+  await wait(1200)
+  await res.body.cancel()
+  assert.equal(existsSync(OPENED), false)
 })

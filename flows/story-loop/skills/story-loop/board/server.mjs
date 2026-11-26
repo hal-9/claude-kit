@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // story-loop board: serves one page and streams the run to it.
-//   node server.mjs [--root <repo>] [--port 4317] [--demo]
+//   node server.mjs [--root <repo>] [--port 4317] [--demo] [--open-after 10 | --no-open]
 // It only reads: .start-story/active.json, .start-story/events.jsonl and git.
 // The one thing it starts is `claude -p` for an "explain" request: only the
 // Read, Grep and Glob tools exist in it, no MCP servers, bounded in time and count.
@@ -25,6 +25,10 @@ const ASKED_PORT = flag('port')
 let PORT = Number(ASKED_PORT ?? (() => { try { return JSON.parse(readFileSync(join(ROOT, '.start-story', 'ports.json'), 'utf8')).board } catch { return undefined } })() ?? 4317)
 let tries = 0
 const P = paths(ROOT)
+// The skill tells the agent to open the board, and an agent can forget. When no page has
+// connected --open-after seconds after start, the server opens the default browser itself.
+const OPEN_AFTER = argv.includes('--no-open') ? null : Number(flag('open-after') ?? 10)
+let connected = false
 
 const QUESTIONS = {
   explain: 'Explain what this change does and how the code in this file is structured. Plain language, no line-by-line walkthrough.',
@@ -344,6 +348,7 @@ createServer(async (req, res) => {
       const events = readEvents()
       send(res, { type: 'snapshot', seq: events.length, run: view(run), graph: GRAPH, events: events.slice(-300), changes: changes(run), inbox: inbox(run), ...testedView(run), demo: DEMO })
       if (!clients.size) seen.events = events.length
+      connected = true
       clients.add(res)
       return req.on('close', () => clients.delete(res))
     }
@@ -384,6 +389,14 @@ createServer(async (req, res) => {
   record(ROOT, 'board.start', { port: PORT })
   console.log(`story-loop board: http://127.0.0.1:${PORT}${DEMO ? ' (demo)' : ` · ${ROOT}`}`)
   if (!DEMO && !existsSync(P.active)) console.log('no active run yet; the board fills in once loop.mjs init has run')
+  if (OPEN_AFTER !== null) setTimeout(() => {
+    if (connected) return
+    const url = `http://127.0.0.1:${PORT}`
+    execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], error => {
+      record(ROOT, 'board.open', { outcome: error ? 'failed' : 'opened', reason: error?.message ?? 'no page connected', url })
+      console.log(error ? `story-loop board: could not open ${url} (${error.message}); open it by hand` : `story-loop board: no page connected, opened ${url}`)
+    })
+  }, OPEN_AFTER * 1000)
 }).listen(PORT, '127.0.0.1')
 
 // ---- demo: a scripted run, so the page can be seen and designed without a story
