@@ -32,7 +32,7 @@
     {
       "name": "story-loop",
       "source": "./flows/story-loop",
-      "description": "One Shortcut story or GitHub issue, ticket to merged PR: signed contract, tiered workers, quality gate, mutants, browser verify, second-model and Copilot reviews, human review and a retro, behind a stage graph, a push guard, a live board and a ledger."
+      "description": "One Shortcut story or GitHub issue, ticket to merged PR: signed contract, tiered workers, quality gate, mutants, browser verify, second-model and Copilot reviews, a retro, then human review as a follow-up, behind a stage graph, a push guard, a live board and a ledger."
     }
   ],
   "description": "Claude Code mods and flows by hal-9."
