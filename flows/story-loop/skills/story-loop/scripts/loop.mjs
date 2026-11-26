@@ -19,7 +19,7 @@ export const GRAPH = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.m
 export const SCHEMA = 3
 export const LEASE_MS = 15 * 60_000
 const DONE = new Set(['passed', 'skipped'])
-const PUT_KEYS = new Set(['title', 'branch', 'pr', 'base', 'repo', 'tasks', 'findings', 'browser', 'environment', 'required_checks', 'lane', 'lessons', 'evidence_sharing', 'web_guidance'])
+const PUT_KEYS = new Set(['title', 'branch', 'pr', 'base', 'repo', 'tasks', 'findings', 'browser', 'environment', 'required_checks', 'lane', 'lessons', 'evidence_sharing', 'web_guidance', 'story_url'])
 // Which stages may be skipped, and on whose word. Everything else needs only a reason.
 const SKIP = {
   contract: 'never', build: 'never', second_review: 'never', push: 'never', report: 'never',
@@ -895,6 +895,81 @@ export function mutantsProblem(m) {
   return open.length ? `${open.length} mutants need a decision: ${open.slice(0, 5).join(', ')}${open.length > 5 ? ', …' : ''}. Kill each with a test and run mutate.mjs again, or record why it stands: loop.mjs mutant accept <id> "<reason>"` : null
 }
 
+// The lines each file changed, new side, from a zero-context diff against the base:
+// { "app/x.rb": [[12, 14], [40, 40]] }. A pure deletion is anchored at the line it follows.
+export function changedRanges(root, base) {
+  const git = gitIn(root)
+  const from = git('merge-base', diffBase(git, base || 'main'), 'HEAD')
+  const out = {}
+  let old = null, file = null
+  for (const line of git('-c', 'core.quotePath=false', 'diff', '-U0', '--no-renames', '--no-color', '--no-ext-diff', from).split('\n')) {
+    if (line.startsWith('--- ')) { old = line === '--- /dev/null' ? null : line.slice(6); continue }
+    if (line.startsWith('+++ ')) { file = line === '+++ /dev/null' ? old : line.slice(6); out[file] ??= []; continue }
+    const h = file && line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/)
+    if (h) { const start = Number(h[1]), count = h[2] === undefined ? 1 : Number(h[2]); out[file].push([Math.max(start, 1), Math.max(start + count - 1, start, 1)]) }
+  }
+  return out
+}
+
+// The walkthrough the human reads instead of the raw diff: chapters by Test Step,
+// notes anchored to line ranges, and every note says what it rests on. A note may
+// claim "proven" only with its evidence named (a test, a check id, a killed mutant):
+// a claim without a citation is shown as the agent's reading, never as fact.
+const BASIS = ['proven', 'claim', 'risk']
+const NEAR = 3
+export function walkthroughProblem(w, ranges) {
+  const str = v => typeof v === 'string' && v.trim().length > 0
+  if (!w || typeof w !== 'object' || Array.isArray(w)) return 'the walkthrough must be one JSON object'
+  const { summary, hypotheses, chapters, tests = [], gaps = [] } = w
+  if (!Array.isArray(summary) || !summary.length) return 'summary: list what users saw, the cause or goal, the fix, the guard left behind and the side effect to expect'
+  for (const [i, s] of summary.entries()) {
+    if (!str(s?.label) || !str(s?.text)) return `summary ${i + 1} needs a label and a text`
+    if (s.basis !== undefined && !BASIS.includes(s.basis)) return `summary ${i + 1}: basis is one of ${BASIS.join(', ')}`
+    if (s.basis === 'proven' && !str(s.evidence)) return `summary ${i + 1} says proven: name the evidence (a test, a check id, a mutant)`
+  }
+  if (hypotheses !== undefined) {
+    const { facts, rows } = hypotheses ?? {}
+    if (!Array.isArray(facts) || !facts.length || !facts.every(str)) return 'hypotheses.facts must be a list of facts'
+    if (!Array.isArray(rows) || !rows.length) return 'hypotheses.rows must list the explanations that were weighed'
+    for (const [i, r] of rows.entries()) {
+      if (!str(r?.text)) return `hypothesis ${i + 1} needs a text`
+      if (!Array.isArray(r.fits) || r.fits.length !== facts.length || !r.fits.every(f => typeof f === 'boolean')) return `hypothesis ${i + 1}: fits needs one true or false per fact (${facts.length})`
+      if (r.held && !r.fits.every(Boolean)) return `hypothesis ${i + 1} is marked held but contradicts a fact`
+    }
+  }
+  if (!Array.isArray(chapters) || !chapters.length) return 'chapters: group the changes by the Test Step they serve'
+  const explained = new Set()
+  for (const [ci, c] of chapters.entries()) {
+    const where = `chapter ${ci + 1}`
+    if (!str(c?.title)) return `${where} needs a title`
+    if (c.step !== undefined && c.step !== null && !(Number.isInteger(c.step) && c.step > 0)) return `${where}: step is the Test Step number, or null`
+    if (!Array.isArray(c.changes) || !c.changes.length) return `${where} has no changes`
+    for (const [xi, x] of c.changes.entries()) {
+      const at = `${where}, change ${xi + 1}`
+      if (!str(x?.file) || !(x.file in ranges)) return `${at}: ${x?.file ?? 'the file'} is not part of this change`
+      if (!str(x.what)) return `${at} (${x.file}) needs "what": one sentence on what it does`
+      const notes = x.notes ?? []
+      if (!Array.isArray(notes)) return `${at}: notes must be a list`
+      if (!notes.length && !str(x.fold)) return `${at} (${x.file}): add notes on its lines, or "fold" with one line when the change is trivial`
+      for (const [ni, n] of notes.entries()) {
+        const nat = `${at} (${x.file}), note ${ni + 1}`
+        const [a, b] = Array.isArray(n?.lines) ? n.lines : []
+        if (!Number.isInteger(a) || !Number.isInteger(b) || a < 1 || b < a) return `${nat}: lines is [first, last], new-file line numbers`
+        if (!ranges[x.file].some(([s, e]) => a <= e + NEAR && b >= s - NEAR)) return `${nat}: lines ${a}-${b} are not near any changed line of ${x.file} (changed: ${ranges[x.file].map(([s, e]) => s === e ? s : `${s}-${e}`).join(', ') || 'none'})`
+        if (!str(n.text)) return `${nat} needs a text`
+        if (!BASIS.includes(n.basis)) return `${nat}: basis is proven (with evidence), claim (your reading) or risk (the human should look)`
+        if (n.basis === 'proven' && !str(n.evidence)) return `${nat} says proven: name the evidence (a test, a check id, a mutant)`
+      }
+      explained.add(x.file)
+    }
+  }
+  if (!Array.isArray(tests) || !tests.every(t => str(t?.file) && str(t?.proves))) return 'tests: each entry names a file and what it proves'
+  for (const t of tests) { if (!(t.file in ranges)) return `tests: ${t.file} is not part of this change`; explained.add(t.file) }
+  if (!Array.isArray(gaps) || !gaps.every(g => str(g?.where) && str(g?.text))) return 'gaps: each entry names where and what is not covered'
+  const missing = Object.keys(ranges).filter(f => !explained.has(f))
+  return missing.length ? `not in the walkthrough: ${missing.join(', ')}. Every changed file is in a chapter (or, for a test file, under tests)` : null
+}
+
 // How much planning and how large a diff the story was signed off for.
 //   {"lane":"standard","why":"…","hard":["new column on users"],"flag":"reading_list_v2"}
 // `hard` names the decisions that are costly to change later (schema, public API,
@@ -1040,7 +1115,8 @@ export function passProblem(root, run, stage) {
       if (!['pass', 'none'].includes(run.ci.state)) return `required CI is ${run.ci.state} on HEAD`
       if (run.ci.state === 'none' && run.ci.required?.length !== 0) return 'no checks reported on HEAD yet and the required checks are unknown; run github.mjs ci again'
       if (run.report?.sha === head && run.report.state !== 'confirmed') return `the report was ${run.report.state}, not confirmed on the PR; run github.mjs report again to reconcile`
-      return run.report?.sha === head && run.report.comment_id ? null : 'the report for HEAD is not posted (github.mjs report)'
+      if (!(run.report?.sha === head && run.report.comment_id)) return 'the report for HEAD is not posted (github.mjs report)'
+      return run.walkthrough?.tree === tree ? null : 'no walkthrough for HEAD: write it and record it with loop.mjs walkthrough <file>'
     case 'human_review':
       return humanReviewProblem(run)
     case 'retro':
@@ -1186,6 +1262,42 @@ function init(input, diagnostics = false) {
   })))
 }
 
+// The human review waits on a colleague for hours or days, so it runs after the run
+// ended: the newest archived run of the story comes back with human_review current.
+function followup(input) {
+  const story = storyId(input) ?? fail('usage: loop.mjs followup SC-12345 | gh-123 | <story or issue URL>')
+  const root = repoRoot()
+  const p = paths(root)
+  console.log(status(withLock(root, () => {
+    if (existsSync(p.active)) {
+      const old = load(root)
+      // Run twice, or resumed in a later session: the follow-up is already here.
+      if (old.story === story && current(old) === 'human_review') return old
+      current(old) === null || fail(`another run is active here (${old.story}); finish that one first, or follow up beside it in its own worktree: loop.mjs worktree ${story}`)
+      archive(root, old)
+    }
+    // Any worktree of the repository: the run may have ended in the main checkout and be followed up beside another one.
+    let roots = [root]
+    try { roots = [...new Set([root, ...gitIn(root)('worktree', 'list', '--porcelain').split('\n').filter(l => l.startsWith('worktree ')).map(l => l.slice(9))])] } catch {}
+    const ended = roots.flatMap(r => { try { return readdirSync(join(r, '.start-story', story)).filter(n => /^run-\d+\.json$/.test(n)).map(n => [Number(n.slice(4, -5)), join(r, '.start-story', story, n)]) } catch { return [] } })
+    const file = ended.sort((a, b) => a[0] - b[0]).at(-1)?.[1] ?? fail(`no ended run of ${story} in this repository; start one: loop.mjs init ${story}`)
+    const old = readValid(file, data => runProblem(migrate(data)))
+    const at = current(migrate(old))
+    at === 'human_review' || fail(at === null ? `the human review of ${story} is already done; a new change is a new run: loop.mjs init ${story}`
+      : `the last run of ${story} ended at ${at}, before its human review; start a new run: loop.mjs init ${story}`)
+    // A new session conducts it: no owner until the hook gives it to the session that ran this, and no helpers of the old one.
+    const run = { ...migrate(old), owner: null, ops: {}, live_workers: {}, stop_blocks: 0, revision: (old.revision ?? 0) + 1, followups: (old.followups ?? 0) + 1 }
+    const feed = file.replace(/run-(\d+)\.json$/, 'events-$1.jsonl')
+    existsSync(feed) ? copyFileSync(feed, p.events) : writeFileSync(p.events, '')
+    save(root, run)
+    rmSync(file)
+    rmSync(feed, { force: true })
+    emit(root, { kind: 'stage', text: `follow-up started for ${story}: human review` })
+    record(root, 'run.followup', { from: file, followups: run.followups })
+    return run
+  })))
+}
+
 // An ended run is kept next to its evidence, never deleted. Helpers still working
 // for it are asked to stop; a result that arrives anyway is refused as stale.
 function archive(root, run, { ledger = true } = {}) {
@@ -1194,7 +1306,10 @@ function archive(root, run, { ledger = true } = {}) {
   if (ledger) try { appendLedger(root, run, { ended: true }) } catch { /* the run's own record is still kept below */ }
   record(root, 'run.end', { cancelled, stage: current(run) })
   mkdirSync(runDir(root, run), { recursive: true })
-  renameSync(paths(root).active, join(runDir(root, run), `run-${Date.now()}.json`))
+  const at = Date.now()
+  // The feed goes with it: a follow-up restores both, so its ledger line still sees the first session's stage moves.
+  try { copyFileSync(paths(root).events, join(runDir(root, run), `events-${at}.jsonl`)) } catch { /* no feed to keep */ }
+  renameSync(paths(root).active, join(runDir(root, run), `run-${at}.json`))
 }
 
 // Moves browser results aside so they never count again.
@@ -1300,6 +1415,7 @@ function diagnostics(root, run, [sub, ...rest]) {
 function main(argv) {
   const [verb, ...args] = argv
   if (verb === 'init') return init(args.filter(a => a !== '--diagnostics').join(' '), args.includes('--diagnostics'))
+  if (verb === 'followup') return followup(args.join(' '))
   if (verb === 'diagnostics' && args[0] === 'export') return exportDiagnostics(args.slice(1))
   // A second story beside the active run: its own worktree, files and ports.
   if (verb === 'worktree') {
@@ -1437,6 +1553,23 @@ function command(root, run, verb, args) {
     emit(root, { kind: 'note', text: `mutant ${key} accepted: ${why.join(' ')}` })
     return console.log(`${key} accepted`)
   }
+  // The walkthrough for the code that is HEAD now; the board shows it, the report gate asks for it.
+  if (verb === 'walkthrough') {
+    const [file] = args
+    file || fail('usage: loop.mjs walkthrough <walkthrough.json>')
+    let w
+    try { w = JSON.parse(readFileSync(resolve(file), 'utf8')) } catch (error) { fail(`cannot read the walkthrough at ${file} (${error.message})`) }
+    dirtyCode(root) && fail('commit first; a walkthrough explains committed code')
+    const problem = walkthroughProblem(w, changedRanges(root, run.base))
+    problem && fail(problem)
+    const stamp = { tree: headTree(root), commit: headCommit(root), at: new Date().toISOString() }
+    const kept = join(runDir(root, run), 'walkthrough.json')
+    mkdirSync(dirname(kept), { recursive: true })
+    writeFileSync(kept, JSON.stringify({ ...w, ...stamp }, null, 2) + '\n')
+    update(root, r => ({ ...r, walkthrough: stamp }))
+    emit(root, { kind: 'note', text: `walkthrough written for ${stamp.commit?.slice(0, 7)}` })
+    return console.log(`walkthrough recorded for ${stamp.commit?.slice(0, 7)}; the board shows it under Understand this change`)
+  }
   // A slop signal that stays in the diff stands only with a reason, like a surviving mutant.
   if (verb === 'quality') {
     const [sub, key, ...why] = args
@@ -1491,6 +1624,8 @@ function command(root, run, verb, args) {
     if (key === 'required_checks') Array.isArray(value) && value.every(n => typeof n === 'string' && n.trim()) || fail('required_checks is a JSON list of check names, e.g. \'["rspec","lint"]\', or \'[]\' for none')
     if (key === 'lane') { const problem = laneProblem(value); problem && fail(problem) }
     if (key === 'lessons') Array.isArray(value) || fail('lessons is a JSON list, \'[]\' when nothing was corrected')
+    // The board links the story title to it: a web page only.
+    if (key === 'story_url') urlOf(value) || fail('story_url is the story\'s web link (http or https): the Shortcut story\'s app_url or the GitHub issue URL')
     if (key === 'web_guidance') /^human:\s*\S/i.test(String(value)) || fail('web_guidance is set by the hook when the modern-web-guidance skill runs; put it only on the human\'s word: put web_guidance "human: <why it is not used>"')
     if (key === 'evidence_sharing') ['pr', 'artifact', 'none'].includes(value) || fail('evidence_sharing is pr (screenshots attached to the PR), artifact (a private page linked from the report) or none')
     let dropped = false
@@ -1601,9 +1736,13 @@ function command(root, run, verb, args) {
   if (verb === 'pass' && stage === 'retro') { try { appendLedger(root, next) } catch (error) { console.error(`loop: the ledger line could not be written (${error.message}); the run is unaffected`) } }
   console.log(status(next))
   // A run whose retro passed is over: archived now, so its guards never hold up the next piece of work.
-  if (verb === 'pass' && stage === 'retro') {
-    withLock(root, () => { const now = load(root); if (runKey(now) === runKey(next)) archive(root, now, { ledger: false }) })
-    return console.log(`run ${next.story} ended; its record is kept in ${runDir(root, next)}`)
+  // The human review left pending comes back later (followup); the one that settles it ends the run for good.
+  const ends = verb === 'pass' && stage === 'retro' || !current(next)
+  if (ends) {
+    withLock(root, () => { const now = load(root); if (runKey(now) === runKey(next)) archive(root, now, { ledger: stage !== 'retro' }) })
+    console.log(`run ${next.story} ended; its record is kept in ${runDir(root, next)}`)
+    if (current(next) === 'human_review') console.log(`the human review comes after: once the PR has reviewer comments or is merged, run /story-loop review ${next.story} (loop.mjs followup ${next.story}) in any session here`)
+    return
   }
   if (verb === 'start' && stage === 'verify') {
     const { id, environment } = next.stages.verify.request

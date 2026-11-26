@@ -203,7 +203,7 @@ function main() {
   const roots = new Set(dirs?.map(dir => findRoot(dir)))
   const root = dirs?.length && roots.size === 1 ? [...roots][0] : findRoot(cwd)
   if (root) DENIED = { root, tool: input.tool_name ?? null, tool_use_id: input.tool_use_id ?? null }
-  if (event === 'PreToolUse' && input.tool_name === 'Bash' && !input.agent_id && /loop\.mjs["']?\s+(init|start)\b/.test(command)) {
+  if (event === 'PreToolUse' && input.tool_name === 'Bash' && !input.agent_id && /loop\.mjs["']?\s+(init|followup|start)\b/.test(command)) {
     const model = knownModel(input.session_id)
     if (model && !isConductorModel(model))
       deny(`story-loop: the conductor runs on ${MODELS.conductor}, this session is on ${model}. Ask the human to switch with /model, then continue.`)
@@ -309,8 +309,8 @@ function main() {
       // Notes typed on the board reach the conductor between two of its tool
       // calls. Never a worker: it would act on them without the plan.
       if (input.agent_id) return
-      // `loop.mjs init` created the run after its PreToolUse ran: the session that ran it owns it.
-      if (state === 'unowned' && input.tool_name === 'Bash' && /loop\.mjs["']?\s+init\b/.test(command) && input.session_id) {
+      // `loop.mjs init` (or `followup`) created the run after its PreToolUse ran: the session that ran it owns it.
+      if (state === 'unowned' && input.tool_name === 'Bash' && /loop\.mjs["']?\s+(init|followup)\b/.test(command) && input.session_id) {
         update(root, r => ownerState(r, input.session_id) === 'unowned'
           ? { ...r, owner: { session: input.session_id, since: new Date().toISOString(), heartbeat: Date.now() } } : undefined)
         return

@@ -436,6 +436,8 @@ test('H14: a report that could not be posted stays "attempted" and does not pass
   update(root, r => ({ ...r, report: { state: 'confirmed', sha: head } })) // confirmed, yet no comment to point at
   assert.match(passProblem(root, load(root), 'report'), /not posted/)
   update(root, r => ({ ...r, report: { state: 'confirmed', sha: head, comment_id: 9 } }))
+  assert.match(passProblem(root, load(root), 'report'), /no walkthrough for HEAD/)
+  update(root, r => ({ ...r, walkthrough: { tree: git('rev-parse', 'HEAD^{tree}'), commit: head } }))
   assert.equal(passProblem(root, load(root), 'report'), null)
 })
 

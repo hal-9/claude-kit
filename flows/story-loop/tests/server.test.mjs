@@ -418,3 +418,41 @@ test('before a run the board serves the setup check as data, to its own page onl
   assert.ok(results.every(r => ['ok', 'blocker', 'warning'].includes(r.status)))
   assert.ok(confirm.length > 0)
 })
+
+test('after the retro the board keeps showing the ended run, with what it learned; usage and the log answer for it', async t => {
+  const { dir } = repo()
+  withRun(dir, { lessons: [{ id: 'l1', pattern: 'missing-empty-state', check: 'test', proposal: 'spec for an empty list' }] })
+  // an earlier run in the ledger hit the same pattern
+  const ledger = join(dir, '.start-story', 'ledger.jsonl')
+  writeFileSync(ledger, JSON.stringify({ run: 'old', story: 'sc-0', lessons: [{ pattern: 'missing-empty-state', check: 'test' }] }) + '\n')
+  // the run ends: active.json is archived, as the retro does
+  const run = load(dir)
+  mkdirSync(runDir(dir, run), { recursive: true })
+  writeFileSync(join(runDir(dir, run), `run-${Date.now()}.json`), readFileSync(join(dir, '.start-story', 'active.json')))
+  rmSync(join(dir, '.start-story', 'active.json'))
+  const { base } = await board(t, dir, 71)
+  const shown = (await snapshot(base)).run
+  assert.equal(shown.story, 'sc-1')
+  assert.equal(shown.ended, true, 'the page knows the run ended and shows the follow-up')
+  const learned = await (await fetch(`${base}/api/learned`)).json()
+  assert.deepEqual(learned.lessons.map(l => l.pattern), ['missing-empty-state'])
+  assert.equal(learned.patterns.find(p => p.pattern === 'missing-empty-state').runs, 1, 'the ledger counts runs, read from the file')
+  const usage = await (await fetch(`${base}/api/usage`)).json()
+  assert.deepEqual(usage, { usage: null, transcripts: 0 }, 'no transcript known: no numbers made up')
+  const log = await fetch(`${base}/api/log`)
+  assert.equal(log.status, 404, 'no log without --diagnostics')
+  assert.match(await log.text(), /--diagnostics/)
+})
+
+test('the clock counts working time: waits and blocks pause it, the retro stops it until a follow-up starts', async t => {
+  const { dir } = repo()
+  withRun(dir)
+  const at = s => new Date(Date.UTC(2026, 0, 1, 10, 0, s)).toISOString()
+  const ev = (s, verb, stage) => JSON.stringify({ ts: at(s), kind: 'stage', verb, stage })
+  const events = join(dir, '.start-story', 'events.jsonl')
+  writeFileSync(events, [ev(0, 'start', 'build'), ev(10, 'wait', 'build'), ev(40, 'start', 'build'), ev(50, 'block', 'quality'), ev(55, 'block', 'quality'), ev(70, 'start', 'quality'), ev(80, 'pass', 'retro')].join('\n') + '\n')
+  const { base } = await board(t, dir, 72)
+  const run = (await snapshot(base)).run
+  assert.equal(run.paused_ms, 30_000 + 20_000, 'the wait and the block, counted once each')
+  assert.equal(run.paused_since, at(80), 'stopped at the retro')
+})

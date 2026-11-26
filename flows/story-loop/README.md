@@ -8,6 +8,7 @@ https://github.com/user-attachments/assets/2b6288d5-f57a-4f69-ad09-538e4a70fcab
 ```
 /story-loop SC-12345        # a Shortcut story
 /story-loop gh-123          # a GitHub issue (or paste its URL)
+/story-loop review SC-12345 # later, in any session: pick up a colleague's review of that run's PR
 ```
 
 > Status: 0.14, experimental, in a supervised pilot. What has been checked, and
@@ -28,7 +29,7 @@ https://github.com/user-attachments/assets/2b6288d5-f57a-4f69-ad09-538e4a70fcab
 flowchart LR
   A[1 Contract] --> B[2 Build] --> Q[3 Quality gate] --> C[4 Test review] --> D[5 Browser verify]
   D --> E[6 Second review] --> F[7 Push] --> G[8 Copilot review] --> H[9 Fix comments] --> I[10 Report]
-  I --> J[11 Human review] --> K[12 Retro]
+  I --> K[11 Retro] -. run ends; later: /story-loop review .-> J[12 Human review]
   Q -. slop signal .-> B
   C -. missing test .-> B
   D -. a check fails .-> B
@@ -49,8 +50,8 @@ flowchart LR
 | 8 | Copilot review | Marks the PR ready for review (so CI that skips drafts runs), requests GitHub Copilot's review and waits for it in the background, with a deadline | A Copilot review of exactly that commit |
 | 9 | Fix comments | Triages every comment, answers every thread from one map (fixed, rejected, deferred) and resolves only the fixed ones; any code change goes back to Build | Every comment settled |
 | 10 | Report | Posts the results on the PR, what needs your decision first, with the user flow as a chart and the evidence where you chose to share it | Required CI green on the final commit; one report comment |
-| 11 | Human review | Fetches what human reviewers wrote, triages it like any review, sends real defects back to Build | Every reviewer comment settled, and the PR merged or closed **by a human** |
-| 12 | Retro | Names a lesson for every correction of the run and the check that would catch its kind next time: a lint rule, a type, a test, an API that makes the mistake impossible, a rule for the standards reviewer, and prose only as the last resort; a check the repo already has but never runs comes first | A lesson for every fixed finding and every round sent back; the run's line in the ledger |
+| 11 | Retro | Names a lesson for every correction of the run and the check that would catch its kind next time: a lint rule, a type, a test, an API that makes the mistake impossible, a rule for the standards reviewer, and prose only as the last resort; a check the repo already has but never runs comes first | A lesson for every fixed finding and every round sent back; the run's line in the ledger. The run ends here, so the checkout is free for the next story |
+| 12 | Human review | A follow-up of the ended run, started when you say so (`/story-loop review <story>`): fetches what human reviewers wrote, triages it like any review, sends real defects back to Build (then the stages after it and the retro run again) | Every reviewer comment settled, and the PR merged or closed **by a human** |
 
 A later stage can send work back to Build, twice at most. Then it stops and
 shows you instead of trying a third time. Going back makes the earlier tests,
@@ -113,15 +114,34 @@ instructions. Those need a ledger with real runs in it first.
 
 It opens in your browser when a story starts.
 
-- **Top:** the twelve stages as a graph, the current one alive, and an arrow
-  when work is sent back, with the reason.
-- **Left:** who is working on what right now, the tasks, the review findings
-  with their verdicts, and *Tested in the browser*: every check with its
-  screenshot.
-- **Right, *Understand this change*:** one card per changed file with
-  **Explain this**, **Why here?**, **How it connects** and **Show diff**, plus
-  a short quiz on the whole change. This is there so you still know your code.
-- **Tell the agent:** under any explanation, diff or finding you can write
+- **Top:** the story and the PR as links, then the twelve stages as a graph,
+  the current one alive, and an arrow when work is sent back, with the
+  reason. Right under it: who is working on what right now, and the tasks.
+- **Three cards**, each the gist at a glance; click one for the detail in a
+  popup:
+  - *Review findings:* how many are settled, a bar by verdict, and the one
+    that needs your call. The popup filters by verdict.
+  - *Tested in the browser:* how many checks pass, the latest screenshots and
+    each Test Step's verdict. The popup shows every check with its
+    screenshots.
+  - *The change:* files and lines by area and the mutants killed. From the
+    report stage on, **Walk through this change** opens the whole change full
+    screen: a summary, one chapter per Test Step, each change with a note
+    beside its lines. Every note says whether a test or check proves it or it
+    is the agent's reading, and a dot in the margin shows whether a test fails
+    when that line changes. Code wraps; nothing scrolls sideways. It ends with
+    a short quiz, so you still know your code.
+  - *The learning loop:* before the retro, the pitfalls earlier runs taught
+    (the plan was checked against them); after it, this run's lessons, each
+    with how many runs hit it. A lesson that keeps coming back is marked: it
+    is worth a check of its own. The popup lists every pattern in the ledger.
+- **After the retro** the board keeps showing the run, headed *Over to
+  review*, with the command to copy for when the PR has comments:
+  `/story-loop review <story>`.
+- **Usage** (top right): tokens by stage and model, and what they would cost
+  at Claude API list prices. **Log** appears only for a run started with
+  `--diagnostics`: every recorded event, filterable.
+- **Tell the agent:** under any change in the walkthrough, finding or check you can write
   "this is wrong" or "do it differently". A working agent picks the note up at
   its next step. If the agent is idle, **Copy handover note** gives you the
   text to paste into Claude. A copied note stays open until the agent has
@@ -310,7 +330,7 @@ lets the run start.
 | Publisher | `scripts/publish.mjs` | the only push of a run |
 | GitHub steps | `scripts/github.mjs` | Copilot request and bounded wait, comments, required CI, the report comment — each recorded so a retry reconciles |
 | Quality gate | `scripts/quality.mjs` | runs the lint commands it is given and reads the diff's added lines for slop signals; lane budgets are in `graph.json` |
-| Ledger | `scripts/ledger.mjs`, `.git/story-loop/ledger.jsonl` | one line per run, written at the retro and at `end`; `loop.mjs ledger` reads it |
+| Ledger | `scripts/ledger.mjs`, `.git/story-loop/ledger.jsonl` | one line per run (a follow-up after the retro writes a newer one, which replaces it), written at the retro, at the human review and at `end`; `loop.mjs ledger` reads it |
 | Mutants | `scripts/mutate.mjs` | breaks changed lines one at a time in a throwaway worktree; nothing to install (uses the project's `typescript` when it has one) |
 | Notes | `.start-story/<story>/inbox.json`, `scripts/hook.mjs` | carries what you write on the board to the agent |
 | Setup check | `scripts/doctor.mjs` | prerequisites and their fixes |
@@ -338,7 +358,7 @@ from [savvy-flow](https://github.com/johnnyvizz/claude-kit) (MIT).
 | A run started on 0.8 | End it and start again on 0.9: verify now needs a recorded environment and results with their URL, the review needs `start second_review` and `--request`, and the publisher needs the base recorded first |
 | A run started on 0.9 | It migrates on first use: the three new stages are pending, so it stops at the quality gate before going on, and the contract needs a lane before it can pass again (`loop.mjs put lane …`) |
 | `N slop signals need a decision` | Remove each one at its cause and run `quality.mjs` again, or record why it stands: `loop.mjs quality accept <id> "<reason>"` |
-| `PR ... was open when the comments were last fetched` | The human review round ends at merge or close; merge it (or tell the agent you take the review from here), then tell the agent to continue |
+| `PR ... was open when the comments were last fetched` | The human review round ends at merge or close; merge it (or tell the agent you take the review from here), then run `/story-loop review <story>` again |
 | `N corrections have no lesson` | The retro names a lesson for every fixed finding and every round sent back; `loop.mjs put lessons '[…]'` |
 | `the push URL ... is not a GitHub repository story-loop can identify` | The remote uses an SSH host alias, another host, or a fork; point `origin`'s push URL at `git@github.com:<owner>/<name>` of the run's repository |
 | `this ... finished for ... but ...; its result changes nothing here` (exit 4) | A helper outlived its run or its attempt; its result is in `.start-story/<story>/stale/`. Nothing to fix: run the step again for the current attempt |

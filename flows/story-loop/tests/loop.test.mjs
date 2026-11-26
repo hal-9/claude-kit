@@ -72,7 +72,7 @@ test('a human can send a finished run back, and is not capped', () => {
   let run = done(newRun('sc-1'), ...GRAPH.stages.map(s => s.id))
   assert.throws(() => move(run, 'back', 'verify', 'build', 'human: x'), /not the current stage/)
   run.stages.build.rounds = GRAPH.maxRounds
-  run = move(run, 'back', 'retro', 'build', 'human: use a scope')
+  run = move(run, 'back', 'human_review', 'build', 'human: use a scope')
   assert.equal(current(run), 'build')
   assert.equal(run.stages.build.rounds, GRAPH.maxRounds)
 })
@@ -841,12 +841,84 @@ test('the human review round ends at merge with every reviewer comment settled',
   assert.match(humanReviewProblem(run), /was open when the comments were last fetched/)
   run.human_review.comments.pr_state = 'MERGED'
   assert.equal(humanReviewProblem(run), null)
-  // the human may take the review from here; the retro is never skipped
-  const at = done(newRun('sc-1'), ...GRAPH.stages.slice(0, -2).map(s => s.id))
+  // the retro comes before the human review and is never skipped; the human may take the review from here
+  const ids = GRAPH.stages.map(s => s.id)
+  assert.deepEqual(ids.slice(-3), ['report', 'retro', 'human_review'])
+  const report = done(newRun('sc-1'), ...ids.slice(0, -2))
+  assert.equal(current(report), 'retro')
+  assert.throws(() => move(report, 'skip', 'retro', undefined, 'human: no time'), /never skipped/)
+  const at = done(report, 'retro')
   assert.equal(current(at), 'human_review')
   assert.throws(() => move(at, 'skip', 'human_review', undefined, 'nobody commented'), /human's say-so/)
-  const skipped = move(at, 'skip', 'human_review', undefined, 'human: I take the review from here')
-  assert.throws(() => move(skipped, 'skip', 'retro', undefined, 'human: no time'), /never skipped/)
+  assert.equal(current(move(at, 'skip', 'human_review', undefined, 'human: I take the review from here')), null)
+})
+
+test('the run ends at the retro; followup brings it back for the human review, and the ledger keeps one line per run', () => {
+  const { dir } = repo()
+  const at = id => GRAPH.stages.map(s => s.id).indexOf(id)
+  const upTo = (r, stage) => { for (const [id, s] of Object.entries(r.stages)) s.status = at(id) < at(stage) ? 'passed' : 'pending'; return r }
+  withRun(dir, { owner: { session: 'old', heartbeat: Date.now() }, lessons: [] })
+  update(dir, r => upTo(r, 'retro'))
+  assert.equal(cli(dir, 'start', 'retro').status, 0)
+  const passed = cli(dir, 'pass', 'retro')
+  assert.equal(passed.status, 0, passed.stderr)
+  assert.match(passed.stdout, /run sc-1 ended[\s\S]*\/story-loop review sc-1 \(loop\.mjs followup sc-1\)/)
+  assert.ok(!existsSync(join(dir, '.start-story', 'active.json')))
+  const id = readLedger(dir)[0].run
+  assert.equal(readLedger(dir)[0].stage, 'human_review')
+
+  // refused: no ended run of that story, and another run active here
+  assert.match(cli(dir, 'followup', 'sc-2').stderr, /no ended run of sc-2/)
+  assert.equal(cli(dir, 'init', 'sc-2').status, 0)
+  assert.match(cli(dir, 'followup', 'sc-1').stderr, /another run is active here \(sc-2\).*loop\.mjs worktree sc-1/)
+  assert.equal(cli(dir, 'end').status, 0)
+
+  // the same run comes back, human_review current, owned by nobody until a session drives it
+  writeFileSync(join(dir, '.start-story', 'events.jsonl'), '{"old":1}\n')
+  const back = cli(dir, 'followup', 'SC-1')
+  assert.equal(back.status, 0, back.stderr)
+  assert.match(back.stdout, /next: human_review/)
+  const run = load(dir)
+  assert.deepEqual([run.id, current(run), run.owner, run.followups], [id, 'human_review', null, 1])
+  assert.ok(!readdirSync(join(dir, '.start-story', 'sc-1')).some(n => /^run-\d+\.json$/.test(n)), 'the archived record became the active run')
+  // the first session's feed comes back with the run (the ledger reads its stage moves), the follow-up line last
+  const feed = readFileSync(join(dir, '.start-story', 'events.jsonl'), 'utf8')
+  assert.match(feed, /"stage":"retro","verb":"pass"/)
+  assert.match(feed, /follow-up started for sc-1[^\n]*\n$/)
+  // run again (a later session): the follow-up is already here
+  assert.equal(cli(dir, 'followup', 'sc-1').status, 0)
+
+  // a reviewer's fix goes back to build; the retro passes again and archives again
+  assert.equal(cli(dir, 'start', 'human_review').status, 0)
+  assert.equal(cli(dir, 'back', 'human_review', 'build', 'human: rename the scope').status, 0)
+  update(dir, r => upTo(r, 'retro'))
+  assert.equal(cli(dir, 'start', 'retro').status, 0)
+  assert.match(cli(dir, 'pass', 'retro').stderr, /1 corrections have no lesson: back:1/)
+  cli(dir, 'put', 'lessons', JSON.stringify([{ id: 'l1', pattern: 'scope-name', from: ['back:1'], check: 'review', proposal: 'review aspect: scope names' }]))
+  assert.equal(cli(dir, 'pass', 'retro').status, 0)
+  // two retro lines of one run read as one run, the newest
+  assert.equal(readFileSync(ledgerFile(dir), 'utf8').trim().split('\n').filter(l => JSON.parse(l).run === id).length, 2)
+  const entries = readLedger(dir).filter(e => e.story === 'sc-1')
+  assert.deepEqual(entries.map(e => [e.run, e.lessons.length]), [[id, 1]])
+  assert.match(summary(readLedger(dir)), /^2 runs/)
+
+  // the review settled: passing it ends the run for good, and followup refuses it after
+  assert.equal(cli(dir, 'followup', 'sc-1').status, 0)
+  assert.equal(cli(dir, 'start', 'human_review').status, 0)
+  update(dir, r => ({ ...r, human_review: { comments: { ids: [], pr_state: 'MERGED' } } }))
+  const merged = cli(dir, 'pass', 'human_review', 'merged')
+  assert.equal(merged.status, 0, merged.stderr)
+  assert.doesNotMatch(merged.stdout, /followup/)
+  assert.ok(!existsSync(join(dir, '.start-story', 'active.json')))
+  assert.deepEqual(readLedger(dir).filter(e => e.run === id).map(e => [e.ended, e.stage]), [[true, null]])
+  assert.match(cli(dir, 'followup', 'sc-1').stderr, /human review of sc-1 is already done/)
+})
+
+test('followup refuses a run that ended before its human review', () => {
+  const { dir } = repo()
+  withRun(dir)
+  assert.equal(cli(dir, 'end').status, 0)
+  assert.match(cli(dir, 'followup', 'sc-1').stderr, /ended at contract, before its human review/)
 })
 
 test('the retro names a lesson for every correction, and each run leaves one line in the ledger', () => {
@@ -1160,4 +1232,12 @@ test('a handled lesson says where its check landed, and a run after that date th
   writeFileSync(join(dirname(file), 'handled.json'), '{ cut off')
   assert.match(cli(dir, 'handled', 'empty-state', 'PR #10').stderr, /handled\.json cannot be read/)
   assert.equal(readFileSync(join(dirname(file), 'handled.json'), 'utf8'), '{ cut off')
+})
+
+test('story_url is a web link only: the board links the title to it', () => {
+  const { dir } = repo()
+  withRun(dir)
+  assert.match(cli(dir, 'put', 'story_url', 'javascript:alert(1)').stderr, /story_url is the story's web link/)
+  assert.equal(cli(dir, 'put', 'story_url', 'https://app.shortcut.com/acme/story/1').status, 0)
+  assert.equal(load(dir).story_url, 'https://app.shortcut.com/acme/story/1')
 })

@@ -10,8 +10,8 @@
     { "id": "copilot_review", "label": "Copilot review", "hint": "requested, then waited for" },
     { "id": "fix_comments", "label": "Fix comments", "hint": "clear defects fixed, the rest parked" },
     { "id": "report", "label": "Report", "hint": "evidence to the PR; a human merges" },
-    { "id": "human_review", "label": "Human review", "hint": "reviewer comments settled until a human merges or closes" },
-    { "id": "retro", "label": "Retro", "hint": "every correction becomes a lesson, and a check where one can catch it" }
+    { "id": "retro", "label": "Retro", "hint": "every correction so far becomes a lesson, and a check where one can catch it" },
+    { "id": "human_review", "label": "Human review", "hint": "after the run: a colleague's comments, picked up with /story-loop review <story>" }
   ],
   "back": [
     ["quality", "build"],

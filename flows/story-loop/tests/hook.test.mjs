@@ -208,6 +208,10 @@ test('the session that ran init owns the new run at once', () => {
   fire(root, { hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'node /x/loop.mjs init SC-1' } })
   assert.equal(load(root).owner.session, 's1')
   assert.match(fire(root, { hook_event_name: 'Stop' }).stdout, /"decision":"block"/)
+  // a follow-up restores a run with no owner; the session that ran it owns it the same way
+  const again = runDirWith()
+  fire(again, { hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'node /x/loop.mjs followup SC-1' } })
+  assert.equal(load(again).owner.session, 's1')
 })
 
 // ---- regressions from the 0.7.0 reliability review ------------------------------

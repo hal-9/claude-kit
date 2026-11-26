@@ -87,6 +87,7 @@ Check the PR is a draft, then record it and pass the stage:
 
 ```bash
 LOOP put title "<issue title>"; LOOP put pr <number>
+LOOP put story_url <issue URL>    # the board links the title to it
 LOOP checks set '<the agreed matrix as [{"id":…,"step":…,"case":…}]>'
 LOOP put lane '<{"lane":…,"why":…,"hard":[…],"flag":"<name>"|false}>'
 LOOP put evidence_sharing pr|artifact|none

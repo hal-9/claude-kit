@@ -5,14 +5,15 @@
 // The one thing it starts is `claude -p` for an "explain" request: only the
 // Read, Grep and Glob tools exist in it, no MCP servers, bounded in time and count.
 import { createServer } from 'node:http'
-import { readFileSync, writeFileSync, statSync, existsSync, mkdtempSync, mkdirSync, realpathSync, openSync, fstatSync, closeSync, constants } from 'node:fs'
+import { readFileSync, readdirSync, writeFileSync, statSync, existsSync, mkdtempSync, mkdirSync, realpathSync, openSync, fstatSync, closeSync, constants } from 'node:fs'
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, paths, newRun, move, save, emit, readInbox, addNote, deliver, readResults, resultsFile, evidenceDir, runDir, staleStages, headCommit, verifyReport, diffBase, imageProblem, runKey } from '../scripts/loop.mjs'
-import { record } from '../scripts/diag.mjs'
+import { GRAPH, paths, newRun, move, save, emit, readInbox, addNote, deliver, readResults, resultsFile, evidenceDir, runDir, staleStages, headCommit, headTree, verifyReport, diffBase, imageProblem, runKey } from '../scripts/loop.mjs'
+import { record, diagDir, readEvents as readDiag } from '../scripts/diag.mjs'
+import { usage, readLedger, readHandled } from '../scripts/ledger.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const argv = process.argv.slice(2)
@@ -59,6 +60,21 @@ function takeSlot() {
   let held = true
   return () => { if (held) { held = false; explaining-- } }
 }
+// With no active run, the board keeps showing the run that ended last (its retro done,
+// its human review a follow-up), so the end of a run is never a blank page.
+function lastEnded() {
+  if (DEMO) return null
+  let best = null, dirs = []
+  try { dirs = readdirSync(P.dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name) } catch { return null }
+  for (const d of dirs) {
+    let names = []
+    try { names = readdirSync(join(P.dir, d)) } catch { continue }
+    for (const n of names) { const m = /^run-(\d+)\.json$/.exec(n); if (m && (!best || Number(m[1]) > best.at)) best = { at: Number(m[1]), file: join(P.dir, d, n) } }
+  }
+  return best
+}
+const shownFile = () => existsSync(P.active) ? P.active : lastEnded()?.file ?? P.active
+const shown = () => readJson(shownFile())
 const stamp = file => { try { const s = statSync(file); return `${s.mtimeMs}:${s.size}` } catch { return '' } }
 
 function mergeBase(run) {
@@ -121,6 +137,18 @@ function tested(run, report = gate(run), rows = results(run, report)) {
     all_accepted: all && !stale, provenance: report?.provenance ?? run.stages?.verify?.provenance ?? null,
   }
 }
+// Working time, not wall time: a wait, a block, or the end of the retro pauses the run
+// until the next move picks the work up again (a follow-up's start resumes it).
+function pauses(events) {
+  let paused_ms = 0, since = null
+  for (const e of events) {
+    if (e.kind !== 'stage' || !e.verb || !e.ts) continue
+    const at = Date.parse(e.ts)
+    if (e.verb === 'wait' || e.verb === 'block' || (['pass', 'skip'].includes(e.verb) && ['retro', 'human_review'].includes(e.stage))) { since ??= at; continue }
+    if (since !== null) { paused_ms += at - since; since = null }
+  }
+  return { paused_ms, paused_since: since === null ? null : new Date(since).toISOString() }
+}
 // Which question a stage waiting on the human asks: an answer must name it back.
 const questionId = st => createHash('sha256').update(String(st?.reason ?? '')).digest('hex')
 const waitsOnHuman = st => st?.status === 'waiting' && st.waiting_on === 'human'
@@ -128,7 +156,7 @@ const waitsOnHuman = st => st?.status === 'waiting' && st.waiting_on === 'human'
 function view(run) {
   if (!run) return run
   const stages = Object.fromEntries(Object.entries(run.stages ?? {}).map(([id, st]) => [id, waitsOnHuman(st) ? { ...st, question_id: questionId(st) } : st]))
-  return { ...run, stages, run_key: runKey(run), stale: DEMO ? (run.stale ?? []) : staleStages(ROOT, run), head: DEMO ? 'demo' : headCommit(ROOT) }
+  return { ...run, stages, run_key: runKey(run), ended: !DEMO && !existsSync(P.active), ...pauses(readEvents()), stale: DEMO ? (run.stale ?? []) : staleStages(ROOT, run), head: DEMO ? 'demo' : headCommit(ROOT) }
 }
 // Evidence is served over loopback only; the boundary matters only to a writer able to
 // put a symlink (or a swapped file) into the evidence folder. Only a regular image file
@@ -158,7 +186,48 @@ function testedView(run) {
   return { results: rows, tested: tested(run, report, rows) }
 }
 const inboxPath = run => run ? join(runDir(ROOT, run), 'inbox.json') : ''
-const diffOf = (run, file) => DEMO ? DEMO_DIFF : git('diff', '--no-renames', mergeBase(run), '--', file)
+const diffOf = (run, file) => DEMO ? DEMO_DIFFS[file] ?? DEMO_DIFF : git('diff', '--no-renames', mergeBase(run), '--', file)
+
+// The walkthrough as written for some commit, with the code it explains taken from git
+// now (never from the walkthrough itself) and the mutant outcomes per line: what a test
+// catches when that line changes. `current` is false once HEAD moved on.
+function walkthrough(run) {
+  if (!run) return null
+  const w = DEMO ? DEMO_WALKTHROUGH : readJson(join(runDir(ROOT, run), 'walkthrough.json'))
+  if (!w) return null
+  const known = new Set(changes(run).map(c => c.file))
+  const files = [...new Set([...(w.chapters ?? []).flatMap(c => (c.changes ?? []).map(x => x.file)), ...(w.tests ?? []).map(t => t.file)])].filter(f => known.has(f))
+  const m = DEMO ? DEMO_MUTANTS : run.evidence?.mutants ?? {}
+  const mutants = Object.entries(m.outcomes ?? {}).map(([id, outcome]) => {
+    const parts = id.split(':')
+    return { file: parts.slice(0, -2).join(':'), line: Number(parts.at(-2)), outcome, accepted: m.dispositions?.[id] ?? null }
+  }).filter(x => known.has(x.file) && Number.isInteger(x.line))
+  return {
+    walkthrough: w, mutants,
+    diffs: Object.fromEntries(files.map(f => [f, diffOf(run, f)])),
+    current: DEMO || w.tree === headTree(ROOT),
+  }
+}
+
+// The learning loop, both ways: what earlier runs taught (the contract was checked
+// against it) and what this run's retro recorded, with how often each pattern recurs.
+function learned(run) {
+  // The demo's ledger gets this run's line at its retro, as the real one does.
+  const entries = DEMO ? [...DEMO_LEDGER, ...(run.lessons ? [{ run: runKey(run), story: run.story, lessons: run.lessons }] : [])] : readLedger(ROOT)
+  let handled = {}
+  try { handled = DEMO ? {} : readHandled(ROOT) } catch {}
+  const patterns = new Map()
+  for (const e of entries) for (const l of e.lessons ?? []) {
+    const p = patterns.get(l.pattern) ?? { pattern: l.pattern, runs: new Set(), checks: new Set(), proposal: l.proposal ?? null, stories: new Set() }
+    p.runs.add(e.run); p.checks.add(l.check); if (e.story) p.stories.add(e.story)
+    patterns.set(l.pattern, p)
+  }
+  return {
+    lessons: run.lessons ?? null, runs: entries.length,
+    patterns: [...patterns.values()].map(p => ({ pattern: p.pattern, runs: p.runs.size, checks: [...p.checks], proposal: p.proposal, stories: [...p.stories], handled: handled[p.pattern] ?? null }))
+      .sort((a, b) => b.runs - a.runs),
+  }
+}
 
 // ---- http ------------------------------------------------------------------
 
@@ -171,14 +240,14 @@ const tick = (fn, ms) => setInterval(() => { try { fn() } catch (error) { consol
 let seen = { run: '', events: 0, changes: '' }
 tick(() => {
   if (!clients.size) return
-  const runStamp = stamp(P.active)
-  if (runStamp !== seen.run) { seen.run = runStamp; broadcast({ type: 'run', run: view(readJson(P.active)) }) }
+  const runStamp = stamp(shownFile())
+  if (runStamp !== seen.run) { seen.run = runStamp; broadcast({ type: 'run', run: view(shown()) }) }
   const events = readEvents()
   // A new run starts a new events file: the pages reload their snapshot instead of mixing runs.
   if (events.length < seen.events) { seen.events = 0; broadcast({ type: 'reload' }) }
   events.slice(seen.events).forEach((event, i) => broadcast({ type: 'event', event, seq: seen.events + i + 1 }))
   seen.events = events.length
-  const run = readJson(P.active)
+  const run = shown()
   const inboxStamp = stamp(inboxPath(run))
   // Whether a result counts depends on the run too (a new request, a changed check list), not on the file alone.
   const resultsStamp = run ? `${stamp(resultsFile(ROOT, run))}|${runStamp}` : ''
@@ -187,7 +256,7 @@ tick(() => {
 }, 700)
 tick(() => {
   if (!clients.size) return
-  const run = readJson(P.active)
+  const run = shown()
   const list = changes(run)
   const key = JSON.stringify(list)
   if (key !== seen.changes) { seen.changes = key; broadcast({ type: 'changes', changes: list }) }
@@ -329,6 +398,7 @@ async function answer(req, res) {
   res.end(JSON.stringify({ id }))
 }
 
+const json = (res, data) => { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(data)) }
 const text = (res, code, message) => { res.writeHead(code, { 'content-type': 'text/plain; charset=utf-8' }); res.end(message) }
 
 createServer(async (req, res) => {
@@ -344,7 +414,7 @@ createServer(async (req, res) => {
     }
     if (url.pathname === '/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' })
-      const run = readJson(P.active)
+      const run = shown()
       const events = readEvents()
       send(res, { type: 'snapshot', seq: events.length, run: view(run), graph: GRAPH, events: events.slice(-300), changes: changes(run), inbox: inbox(run), ...testedView(run), demo: DEMO })
       if (!clients.size) seen.events = events.length
@@ -358,10 +428,33 @@ createServer(async (req, res) => {
       if (!changes(run).some(c => c.file === file)) return text(res, 400, 'that file is not part of this change')
       return text(res, 200, diffOf(run, file))
     }
+    if (url.pathname === '/api/walkthrough') {
+      const data = walkthrough(shown())
+      if (!data) return text(res, 404, 'no walkthrough yet')
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+      return res.end(JSON.stringify(data))
+    }
+    if (url.pathname === '/api/learned') {
+      const run = shown()
+      return run ? json(res, learned(run)) : text(res, 404, 'no run')
+    }
+    // Tokens by stage and model from the transcripts of the sessions that drove the run.
+    if (url.pathname === '/api/usage') {
+      const run = shown()
+      if (!run) return text(res, 404, 'no run')
+      return json(res, { usage: DEMO ? DEMO_USAGE : usage(run, readEvents()), transcripts: DEMO ? 2 : (run.transcripts ?? []).length })
+    }
+    // The diagnostic record, only for a run started with --diagnostics.
+    if (url.pathname === '/api/log') {
+      const run = shown()
+      if (!run?.diagnostics?.enabled && !DEMO) return text(res, 404, 'this run was started without --diagnostics')
+      const { events, unreadable } = DEMO ? { events: DEMO_LOG, unreadable: 0 } : readDiag(diagDir(ROOT, run.story, runKey(run)))
+      return json(res, { events: events.slice(-3000), total: events.length, unreadable })
+    }
     if (url.pathname.startsWith('/evidence/')) {
       let name
       try { name = decodeURIComponent(url.pathname.slice('/evidence/'.length)) } catch { return text(res, 404, 'not found') }
-      const shot = evidenceShot(readJson(P.active), name)
+      const shot = evidenceShot(shown(), name)
       if (!shot) return text(res, 404, 'not found')
       res.writeHead(200, { 'content-type': shot.type, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'" })
       return res.end(shot.data)
@@ -421,6 +514,104 @@ const DEMO_DIFF = `--- a/app/helpers/sidebar_helper.rb\n+++ b/app/helpers/sideba
 const DEMO_ANSWER = `**What it does.** \`genre_links\` now loads a shelf's genres once per request and keeps them in a hash keyed by shelf id.\n\n**Why here.** The sidebar is rendered from several partials; the helper is the one place they all go through, so one memo covers every caller.\n\n**How it connects.** \`reading_lists/index.html.haml\` → \`SidebarHelper#genre_links\` → \`Shelf#genres\`.`
 const DEMO_QUIZ = `1. Which object decides what the overview page lists?\n2. Why is the genres memo in the helper and not in the view?\n3. What does the request spec prove that the query spec cannot?\n4. What happens for a shelf with no genres?\n\n## Answers\n\n1. \`ReadingLists::OverviewQuery\`; the controller only passes params in.\n2. Several partials call it; the helper is the one place they share.\n3. That routing, auth and rendering are wired together.\n4. \`genre_links\` returns an empty array and the section is not rendered.`
 
+// The demo's walkthrough, shaped as loop.mjs walkthrough accepts it, over these diffs.
+const DEMO_DIFFS = {
+  'app/controllers/reading_lists_controller.rb': `--- a/app/controllers/reading_lists_controller.rb\n+++ b/app/controllers/reading_lists_controller.rb\n@@ -4,7 +4,9 @@ class ReadingListsController < ApplicationController\n   before_action :authenticate_reader!\n \n   def index\n-    @shelves = current_reader.shelves.order(:position)\n+    @shelves = ReadingLists::OverviewQuery.new(current_reader).call\n+    @selected = @shelves.find { |shelf| shelf.id == params[:shelf].to_i } || @shelves.first\n+    fresh_when etag: [@shelves.map(&:cache_key_with_version), @selected&.id]\n   end\n \n   private\n`,
+  'app/queries/reading_lists/overview_query.rb': `--- /dev/null\n+++ b/app/queries/reading_lists/overview_query.rb\n@@ -0,0 +1,16 @@\n+module ReadingLists\n+  # One query for the whole overview: each shelf with its count of active flows.\n+  class OverviewQuery\n+    def initialize(reader)\n+      @reader = reader\n+    end\n+\n+    def call\n+      @reader.shelves\n+        .left_joins(:flows)\n+        .group('shelves.id')\n+        .select('shelves.*, COUNT(flows.id) FILTER (WHERE flows.archived_at IS NULL) AS flows_count')\n+        .order(:position)\n+    end\n+  end\n+end\n`,
+  'app/views/reading_lists/index.html.haml': `--- a/app/views/reading_lists/index.html.haml\n+++ b/app/views/reading_lists/index.html.haml\n@@ -1,4 +1,7 @@\n %h1= t('.title')\n-%ul.shelves\n-  - @shelves.each do |shelf|\n-    %li= link_to shelf.name, shelf\n+.tiles\n+  - @shelves.each do |shelf|\n+    = render 'tile', shelf: shelf, selected: shelf == @selected\n+- if @selected.flows_count.zero?\n+  = render 'empty_state', shelf: @selected\n+= render 'sidebar', shelf: @selected\n`,
+  'app/helpers/sidebar_helper.rb': DEMO_DIFF,
+  'spec/requests/reading_lists_spec.rb': `--- /dev/null\n+++ b/spec/requests/reading_lists_spec.rb\n@@ -0,0 +1,9 @@\n+RSpec.describe 'Reading lists overview' do\n+  let(:reader) { create(:reader, :with_shelves, shelves: 5) }\n+  before { sign_in reader }\n+\n+  it 'shows one tile per shelf in three queries' do\n+    expect { get reading_lists_path }.to make_database_queries(count: 3)\n+    expect(response.body).to include(*reader.shelves.map(&:name))\n+  end\n+end\n`,
+}
+const DEMO_MUTANTS = {
+  outcomes: {
+    'app/controllers/reading_lists_controller.rb:7:a1b2c3': 'killed',
+    'app/controllers/reading_lists_controller.rb:8:d4e5f6': 'survived',
+    'app/controllers/reading_lists_controller.rb:9:a7b8c9': 'killed',
+    'app/queries/reading_lists/overview_query.rb:12:d1e2f3': 'killed',
+    'app/queries/reading_lists/overview_query.rb:13:a4b5c6': 'killed',
+    'app/helpers/sidebar_helper.rb:14:d7e8f9': 'killed',
+  },
+  dispositions: { 'app/controllers/reading_lists_controller.rb:8:d4e5f6': 'Opening the page without ?shelf is covered by browser check 1-desktop, not by a spec.' },
+}
+const DEMO_WALKTHROUGH = {
+  tree: 'demo', commit: 'demo',
+  summary: [
+    { label: 'Goal', text: 'A signed-in reader sees every shelf as a tile, picks one, and sees its genres, or an empty state when it has no flows.' },
+    { label: 'How', text: 'One query object loads every shelf with its count of active flows. The controller picks the selected shelf; the view renders tiles and the sidebar.' },
+    { label: 'Proven by', text: '4 of 4 browser checks and a request spec that counts database queries.', basis: 'proven', evidence: 'verify: 1-desktop, 1-mobile, 2-genres, 3-empty · spec/requests/reading_lists_spec.rb:6' },
+    { label: 'Hard decision', text: 'The page answers 304 when nothing changed (HTTP caching with an etag).', basis: 'risk' },
+    { label: 'Guard left behind', text: 'The request spec fails if the page needs more than three queries for five shelves.', basis: 'proven', evidence: 'spec/requests/reading_lists_spec.rb:6' },
+    { label: 'Side effect to expect', text: 'A renamed genre can show its old name until a shelf changes, because genres are not in the etag.', basis: 'claim' },
+  ],
+  chapters: [
+    { step: 1, title: 'A reader sees every shelf as a tile', lead: 'The page used to list shelf names. It now loads all shelves with their flow counts in one query and renders one tile each.', changes: [
+      { file: 'app/queries/reading_lists/overview_query.rb', what: 'A new query object: every shelf of the reader, with how many active flows it has, in one SQL query.', notes: [
+        { lines: [1, 6], text: 'A query object, the pattern app/queries already uses for pages that need more than one table.', basis: 'claim' },
+        { lines: [8, 13], text: 'Counts only active flows inside the same query, so the page never asks the database once per shelf.', basis: 'proven', evidence: 'spec/requests/reading_lists_spec.rb:6 expects 3 queries for 5 shelves; mutants on lines 12 and 13 are killed' },
+      ] },
+      { file: 'app/controllers/reading_lists_controller.rb', what: 'The overview asks the query object for the shelves and picks the selected one from the URL.', notes: [
+        { lines: [7, 7], text: 'The controller no longer builds the query itself.', basis: 'proven', evidence: 'browser checks 1-desktop and 1-mobile: five tiles' },
+        { lines: [8, 8], text: 'Falls back to the first shelf when ?shelf is missing or unknown. A mutant survived here: picking the last shelf passes every spec.', basis: 'risk', evidence: 'accepted: browser check 1-desktop opens the page without ?shelf' },
+        { lines: [9, 9], text: 'HTTP caching: the browser gets a 304 when no shelf changed. Genres are not part of the etag.', basis: 'risk' },
+      ] },
+      { file: 'app/views/reading_lists/index.html.haml', what: 'The list of names becomes a grid of tiles, and the sidebar shows the selected shelf.', notes: [
+        { lines: [2, 4], text: 'One tile per shelf; the selected one is marked.', basis: 'proven', evidence: 'browser checks 1-desktop, 1-mobile' },
+      ] },
+    ] },
+    { step: 2, title: 'The sidebar lists the chosen shelf’s genres', lead: 'The second review found genres loaded once per link. They now load once per shelf and request.', changes: [
+      { file: 'app/helpers/sidebar_helper.rb', what: 'Genres are kept per shelf for the rest of the request instead of loaded again for every link.', notes: [
+        { lines: [13, 14], text: 'Memoised by shelf id, so several partials share one load.', basis: 'proven', evidence: 'fixes finding c1 (codex); mutant on line 14 killed; browser check 2-genres' },
+      ] },
+    ] },
+    { step: 3, title: 'A shelf without flows shows the empty state', changes: [
+      { file: 'app/views/reading_lists/index.html.haml', what: 'When the selected shelf has no active flows, the empty state renders instead of an empty grid.', notes: [
+        { lines: [5, 6], text: 'Reads the flow count the query already loaded; no extra query.', basis: 'proven', evidence: 'browser check 3-empty' },
+      ] },
+    ] },
+  ],
+  tests: [{ file: 'spec/requests/reading_lists_spec.rb', proves: 'The overview renders every shelf and needs exactly three database queries for five shelves.' }],
+  gaps: [
+    { where: 'reading_lists_controller.rb:8', text: 'Opening the page without ?shelf is only checked in the browser; a mutant survived here.' },
+    { where: 'reading_lists_controller.rb:9', text: 'No test checks the 304 answer.' },
+  ],
+}
+
+// The learning loop in the demo: what earlier runs taught, and what this run's retro adds.
+const DEMO_LESSONS = [
+  { id: 'l1', pattern: 'n-plus-one-in-helper', from: ['c1'], check: 'test', proposal: 'a request spec that counts queries for every page with a sidebar, in the spec template for index pages' },
+  { id: 'l2', pattern: 'etag-misses-dependency', from: ['back:1'], check: 'review', proposal: 'a review angle: every fresh_when names everything the page renders' },
+]
+const DEMO_LEDGER = [
+  { run: 'r-101', story: 'sc-11980', lessons: [{ pattern: 'n-plus-one-in-helper', check: 'test', proposal: 'a request spec that counts queries' }, { pattern: 'missing-empty-state', check: 'test', proposal: 'request spec for a list with no rows' }] },
+  { run: 'r-102', story: 'sc-12077', lessons: [{ pattern: 'missing-empty-state', check: 'test', proposal: 'request spec for a list with no rows' }] },
+  { run: 'r-103', story: 'sc-12210', lessons: [{ pattern: 'missing-locale-key', check: 'lint', proposal: 'i18n-tasks missing in CI' }] },
+]
+// Tokens as ledger.mjs usage() reports them, for the demo's usage popup.
+const DEMO_USAGE = {
+  messages: 412,
+  by_stage: {
+    contract: { input: 42000, cache_write: 180000, cache_read: 2100000, output: 38000 },
+    build: { input: 61000, cache_write: 420000, cache_read: 6800000, output: 145000 },
+    quality: { input: 9000, cache_write: 40000, cache_read: 610000, output: 8000 },
+    test_review: { input: 21000, cache_write: 90000, cache_read: 1500000, output: 26000 },
+    verify: { input: 33000, cache_write: 150000, cache_read: 2400000, output: 31000 },
+    second_review: { input: 18000, cache_write: 120000, cache_read: 900000, output: 22000 },
+    report: { input: 12000, cache_write: 60000, cache_read: 700000, output: 19000 },
+  },
+  by_model: {
+    'claude-opus-5-5': { input: 120000, cache_write: 700000, cache_read: 10800000, output: 190000 },
+    'claude-sonnet-5-5': { input: 51000, cache_write: 250000, cache_read: 2900000, output: 70000 },
+    'claude-haiku-5-5': { input: 9000, cache_write: 40000, cache_read: 510000, output: 9000 },
+    'claude-fable-5-2': { input: 16000, cache_write: 70000, cache_read: 800000, output: 20000 },
+  },
+}
+const DEMO_LOG = [
+  ['run.start', null, null, 'accepted', null], ['transition', 'contract', 1, 'accepted', null], ['cli', 'contract', 1, 'accepted', 'checks set'],
+  ['transition', 'build', 1, 'accepted', null], ['agent.start', 'build', 1, null, 'Overview query'], ['transition', 'quality', 1, 'rejected', 'build is not passed yet'],
+  ['transition', 'quality', 1, 'accepted', null], ['mutate.baseline', 'test_review', 1, 'ok', null], ['review.recorded', 'second_review', 1, 'accepted', null],
+  ['transition', 'second_review', 1, 'accepted', 'genres loaded per link'], ['board.explain', null, null, 'ok', null],
+].map(([kind, stage, attempt, outcome, reason], i) => ({ v: 1, id: `demo-${i}`, ts: new Date(Date.UTC(2026, 10, 26, 9, 0, i * 37)).toISOString(), run: 'demo', story: 'sc-12345', stage, attempt, kind, outcome, reason, details: { step: i + 1 } }))
+
 // The approved check list for the demo story; the results below report against these ids.
 const DEMO_CHECKS = [
   { id: '1-desktop', step: 1, case: 'EN · desktop' },
@@ -433,7 +624,7 @@ const DEMO_FIX = 'b71e0c4d9a2f6e3b8c5d1a7f4e0b9c2d6a3f8e15'
 
 if (DEMO) {
   mkdirSync(dirname(P.active), { recursive: true })
-  let run = { ...newRun('sc-12345'), title: 'Reading list overview', branch: 'feat/sc-12345-reading-list-overview', pr: 482, base: 'origin/main' }
+  let run = { ...newRun('sc-12345'), title: 'Reading list overview', branch: 'feat/sc-12345-reading-list-overview', pr: 482, base: 'origin/main', repo: 'acme/bookshelf', story_url: 'https://app.shortcut.com/acme/story/12345', walkthrough: { tree: 'demo', commit: 'demo' }, diagnostics: { enabled: true } }
   save(ROOT, run)
   // Every move renews the demo conductor's lease, as the real hooks do.
   const step = (verb, stage, arg, reason) => {
@@ -492,6 +683,12 @@ if (DEMO) {
     () => { step('start', 'push'); put({ pushed: { state: 'attempted', sha: DEMO_SHA, branch: run.branch } }) },
     () => { put({ pushed: { ...run.pushed, state: 'confirmed' } }); step('pass', 'push') },
     () => { put({ copilot: { state: 'requested', head: DEMO_SHA }, ci: { sha: DEMO_SHA, state: 'pending', checks: [{ name: 'rspec', bucket: 'pending' }, { name: 'eslint', bucket: 'pass' }] } }); step('wait', 'copilot_review', 'copilot', 'review requested') },
+    () => { put({ copilot: { state: 'reviewed', head: DEMO_SHA }, ci: { sha: DEMO_SHA, state: 'pass', checks: [{ name: 'rspec', bucket: 'pass' }, { name: 'eslint', bucket: 'pass' }] } }); step('start', 'copilot_review'); step('pass', 'copilot_review', undefined, 'no comments') },
+    () => { step('start', 'fix_comments'); step('pass', 'fix_comments', undefined, 'no comments to fix') },
+    () => { step('start', 'report'); put({ report: { state: 'confirmed', sha: DEMO_SHA, comment_id: 1 } }) },
+    () => step('pass', 'report', undefined, 'report posted on PR 482'),
+    () => step('start', 'retro'),
+    () => { put({ lessons: DEMO_LESSONS }); step('pass', 'retro', undefined, '2 lessons') },
     () => emit(ROOT, { kind: 'session', phase: 'idle' }),
   ]
   // Stand-in screenshots: plain SVG frames, served only in demo mode.
