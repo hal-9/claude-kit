@@ -8,7 +8,7 @@
 //   SessionStart   / PostModelSwitch: remember the session's model; tell a new session about the run
 //   PreModelSwitch keep the conductor on its model while a run is active
 import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { GRAPH, LEASE_MS, findRoot, load, update, emit as emitRaw, stopReason, liveWorkers, liveHelpers, deliver, current, ownerState, gitIn } from './loop.mjs'
@@ -32,6 +32,21 @@ const OUTWARD = /\bgit\b[^\n;&|]*\spush\b|\bgh\b[^\n;&|]*\b(pr|api|issue|release
 // Running a script that writes the run, not reading or grepping one (`grep x github.mjs` is no write).
 const LOOP_WRITE = /\bnode\b[^\n;&|]*loop\.mjs["']?\s+(start|pass|skip|block|wait|back|put|checks|note|end|review|mutant|quality|finding)\b|\bnode\b[^\n;&|]*\b(publish|github|mutate|quality)\.mjs/
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+
+// The directories a shell command acts in: each `cd <dir>` (in order) and `git -C <dir>`.
+// [] when it names none; null when one cannot be read from the spelling ($VAR, `cd -`, globs).
+export function commandDirs(command, cwd) {
+  const dirs = []
+  let here = cwd
+  for (const m of command.matchAll(/(?:^|[;&|(]\s*)cd\s+("[^"]*"|'[^']*'|[^\s;&|)]+)|\bgit\s+-C\s+("[^"]*"|'[^']*'|\S+)/g)) {
+    const raw = (m[1] ?? m[2]).replace(/^(["'])(.*)\1$/, '$2')
+    if (/[$`*?]/.test(raw) || raw === '-') return null
+    const dir = resolve(here, raw.replace(/^~(?=\/|$)/, homedir()))
+    if (m[1] !== undefined) here = dir
+    dirs.push(dir)
+  }
+  return dirs
+}
 
 // Returns the reason a shell command is refused during a run, or null.
 // ponytail: this reads the command's spelling, so it stops accidents and the
@@ -181,7 +196,12 @@ function main() {
   if (event === 'SessionStart' && input.model) writeFileSync(modelFile(input.session_id), String(input.model))
   if (event === 'PostModelSwitch' && input.to_model) writeFileSync(modelFile(input.session_id), String(input.to_model))
   // A run is started and advanced on the conductor's model only. An unknown model passes: we cannot see it.
-  const root = findRoot(input.cwd || process.cwd())
+  // A shell command is guarded by the run of the checkout it acts in, not the session's: a push
+  // that cds into another repository is not this run's. Any doubt keeps the session's checkout.
+  const cwd = input.cwd || process.cwd()
+  const dirs = event === 'PreToolUse' && input.tool_name === 'Bash' ? commandDirs(command, cwd) : null
+  const roots = new Set(dirs?.map(dir => findRoot(dir)))
+  const root = dirs?.length && roots.size === 1 ? [...roots][0] : findRoot(cwd)
   if (root) DENIED = { root, tool: input.tool_name ?? null, tool_use_id: input.tool_use_id ?? null }
   if (event === 'PreToolUse' && input.tool_name === 'Bash' && !input.agent_id && /loop\.mjs["']?\s+(init|start)\b/.test(command)) {
     const model = knownModel(input.session_id)

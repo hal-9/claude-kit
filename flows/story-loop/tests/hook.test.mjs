@@ -2,10 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { checkCommand, checkAgent, guidanceProblem } from '../skills/story-loop/scripts/hook.mjs'
+import { checkCommand, checkAgent, guidanceProblem, commandDirs } from '../skills/story-loop/scripts/hook.mjs'
 import { newRun, save, load, move, readInbox, writeInbox, LEASE_MS } from '../skills/story-loop/scripts/loop.mjs'
 import { B } from './helpers.mjs'
 
@@ -358,4 +358,27 @@ test('the board feed never keeps a secret from a command, with or without diagno
   assert.deepEqual(tools.map(e => e.program), ['curl', 'gh', 'echo'])
   assert.ok(tools.every(e => e.text.length <= 140))
   assert.match(tools[1].text, /^GH_TOKEN=\[redacted\] gh pr view 7/)
+})
+
+test('commandDirs reads where a command acts: cd in order, git -C, and gives up on what it cannot read', () => {
+  assert.deepEqual(commandDirs('git status', '/r'), [])
+  assert.deepEqual(commandDirs('cd ~/kit && git status', '/r'), [join(homedir(), 'kit')])
+  assert.deepEqual(commandDirs('cd a; cd b && git -C ../c log', '/r'), ['/r/a', '/r/a/b', '/r/a/c'])
+  assert.deepEqual(commandDirs('cd "/x y" && ls', '/r'), ['/x y'])
+  for (const cmd of ['cd $HOME && ls', 'cd - && ls', 'git -C "$D" log', 'cd `pwd` && ls'])
+    assert.equal(commandDirs(cmd, '/r'), null, cmd)
+})
+
+test('a push into another repository is not the run\'s; one into the run\'s checkout, or anywhere unreadable, is refused', () => {
+  const root = runDirWith(owned('other'))
+  mkdirSync(join(root, '.git'))
+  const other = mkdtempSync(join(tmpdir(), 'sl-other-'))
+  mkdirSync(join(other, '.git'))
+  const push = ' push origin main'
+  assert.equal(fire(root, bash(`cd ${other} && git${push}`)).status, 0)
+  assert.equal(fire(root, bash(`git -C ${other}${push}`)).status, 0)
+  assert.equal(fire(other, bash(`cd ${root}/sub && git${push}`)).status, 2, 'cd into the run from elsewhere is guarded')
+  assert.equal(fire(root, bash(`cd ${other} && cd ${root} && git${push}`)).status, 2, 'mixed targets keep the guard')
+  assert.equal(fire(root, bash(`cd $HOME && git${push}`)).status, 2, 'an unreadable target keeps the guard')
+  assert.equal(fire(root, bash(`git${push}`)).status, 2)
 })
