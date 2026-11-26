@@ -4,6 +4,11 @@
 // the added lines is removed or stands with a recorded reason.
 //   node quality.mjs [--base <base>] --lint '<command>' [--lint '<command>']...
 //   node quality.mjs [--base <base>] --no-lint "<why this repo has no linter for these files>"
+//   node quality.mjs --explore --lint '<command>'   look only: prints, records nothing, changes no gate
+// A recorded run is the replacement of the quality gate's one unit: from its start until it
+// records a result, the gate is not satisfied, and its result (clean or failed) is the gate's
+// result, whatever an earlier run said. --base must be the run's base; change that with
+// loop.mjs put base, which decides every diff-scoped gate again.
 // Signals, read from the added lines only (what was there before is not this change's):
 //   lint-disable        a linter or type checker switched off in place
 //   skipped-test        a test skipped, pending or focused
@@ -15,7 +20,8 @@
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { GRAPH, findRoot, load, update, emit, gitIn, dirty, headTree, headCommit, baseName, diffBase, opStart, opUpdate, opEnd, qualityProblem } from './loop.mjs'
+import { GRAPH, findRoot, load, update, emit, gitIn, dirty, headTree, headCommit, baseName, diffBase, opStart, opUpdate, opEnd, qualityProblem, subjectOf } from './loop.mjs'
+import { sanitizeOutput } from './diag.mjs'
 import { changedLines } from './mutate.mjs'
 
 const fail = message => { throw new Error(message) }
@@ -45,12 +51,16 @@ function main(argv) {
     if (argv[i] === '--lint') opt.lint.push(argv[++i])
     else if (argv[i] === '--no-lint') opt.noLint = argv[++i]
     else if (argv[i] === '--base') opt.base = argv[++i]
+    else if (argv[i] === '--explore') opt.explore = true
     else fail('usage: quality.mjs [--base <base>] --lint \'<command>\'... | --no-lint "<reason>"')
   }
   opt.lint.length || opt.noLint?.trim() || fail('name the lint command(s) for the changed files (--lint \'bundle exec rubocop app/x.rb\'), or say why there is none: --no-lint "<reason>"')
   const root = findRoot() ?? fail('no active story-loop run here')
   const run = load(root)
   const base = opt.base ?? run.base ?? fail('record the base branch first (loop.mjs put base <branch>), or pass --base')
+  // Evidence for one base is not evidence for another: a helper base that differs from the run's is refused.
+  if (opt.base && run.base && !opt.explore && baseName(opt.base) !== baseName(run.base))
+    fail(`--base ${opt.base} is not the run's base ${run.base}; the gate decides against the run's base. Change it with loop.mjs put base <branch>, or look without recording: --explore`)
   dirty(root) && fail('the checkout has uncommitted changes; the gate covers committed code')
   const git = gitIn(root)
   // The subject is frozen before anything is read: every line scanned and every result
@@ -59,7 +69,9 @@ function main(argv) {
   // and undone while lint runs goes unseen. Run lint in a detached worktree to close that.
   const commit = headCommit(root) ?? fail('not a git checkout')
   const tree = headTree(root)
-  const ctx = opStart(root, 'quality', 'quality', { base, lint: opt.lint, subject: { commit, tree } })
+  const merge_base = subjectOf(root, { ...run, base }).merge_base
+  // Exploration runs the same checks and keeps nothing: no claim, no evidence, no gate change.
+  const ctx = opt.explore ? null : opStart(root, 'quality', 'quality', { base, merge_base, lint: opt.lint, subject: { commit, tree } }, ['quality'])
   try {
     const range = `${diffBase(git, base)}...${commit}`
     const files = git('diff', '--name-only', '--diff-filter=AMR', range).split('\n').filter(Boolean)
@@ -90,10 +102,15 @@ function main(argv) {
     const lint = opt.lint.map(command => {
       // ponytail: the command is the conductor's, run as written in the repo root.
       const r = spawnSync('sh', ['-c', command], { cwd: root, encoding: 'utf8', timeout: 10 * 60_000, maxBuffer: 32 << 20 })
-      return { command, exit: r.status ?? (r.signal ? `signal ${r.signal}` : 'did not run'), output: `${r.stdout ?? ''}${r.stderr ?? ''}`.slice(-2000) }
+      return { command, exit: r.status ?? (r.signal ? `signal ${r.signal}` : 'did not run'), output: sanitizeOutput(`${r.stdout ?? ''}${r.stderr ?? ''}`, 2000) }
     })
     const moved = () => headTree(root) !== tree || dirty(root)
       ? `the code moved while lint ran (${commit.slice(0, 7)} was checked, the checkout is now ${headCommit(root)?.slice(0, 7)}${dirty(root) ? ' with uncommitted changes' : ''}); run quality.mjs again on it` : null
+    if (opt.explore) {
+      for (const l of lint) console.log(`lint ${l.exit === 0 ? 'clean ' : 'FAILED'}  ${l.command}${l.exit === 0 ? '' : `\n${l.output}`}`)
+      for (const [id, f] of Object.entries(flags)) console.log(`SIGNAL    ${id}  ${f.text}`)
+      return console.log('explore: nothing recorded; the quality gate is unchanged')
+    }
     const next = opUpdate(root, ctx, r => {
       const earlier = r.evidence?.quality
       // A reason was given for one line of one tree; on other code it has to be given again.
@@ -103,7 +120,7 @@ function main(argv) {
       const was = code(earlier?.size)
       if (flags.size && !kept.size && /^human:/i.test(accepted ?? '') && code(size) <= was * SIZE_CARRY)
         kept.size = `${accepted.replace(/ \(carried from \d+ lines\)$/, '')} (carried from ${was} lines)`
-      const quality = { tree, commit, base: baseName(base), lint, no_lint: opt.noLint ?? null, flags, dispositions: kept, size: { ...size, lane, budget }, at: new Date().toISOString() }
+      const quality = { tree, commit, base: baseName(base), merge_base, op: ctx.op, seq: ctx.seq, lint, no_lint: opt.noLint ?? null, flags, dispositions: kept, size: { ...size, lane, budget }, at: new Date().toISOString() }
       return { ...r, evidence: { ...r.evidence, quality } }
     }, { flags, lint, size, subject: { commit, tree } }, moved)
     const q = next.evidence.quality
@@ -122,7 +139,7 @@ function main(argv) {
     opEnd(root, ctx, 'ok', problem ?? 'clean')
     if (problem) process.exitCode = 1
   } catch (error) {
-    opEnd(root, ctx, error.kind === 'stale' ? 'stale' : 'failed', error.message)
+    if (ctx) opEnd(root, ctx, error.kind === 'stale' ? 'stale' : 'failed', error.message)
     throw error
   }
 }

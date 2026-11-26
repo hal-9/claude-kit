@@ -23,6 +23,10 @@ const ownerOf = dir => { try { return JSON.parse(readFileSync(join(dir, 'owner.j
 // A lease whose creator died between mkdir and writing its owner.
 const orphan = dir => { try { return Date.now() - statSync(dir).mtimeMs > 30_000 } catch { return false } }
 
+// The token this process wrote into each lease it holds: release removes a lease only while
+// it still carries that token, so an owner whose lease was reclaimed (it looked dead, or its
+// pid was reused) never removes the newer owner's lease.
+const held = new Map()
 // The lowest free number of `kind` from `from` on, now held by `owner` ({ pid } or { path }).
 export function acquire(root, kind, owner, { from = 1, max = 64 } = {}) {
   const reg = registry(root)
@@ -41,12 +45,27 @@ export function acquire(root, kind, owner, { from = 1, max = 64 } = {}) {
       rmSync(dead, { recursive: true, force: true })
       try { mkdirSync(dir) } catch { continue }
     }
-    writeFileSync(join(dir, 'owner.json'), JSON.stringify({ ...owner, token: randomUUID(), at: new Date().toISOString() }))
+    const token = randomUUID()
+    writeFileSync(join(dir, 'owner.json'), JSON.stringify({ ...owner, token, at: new Date().toISOString() }))
+    held.set(dir, token)
     return n
   }
   throw new Error(`no free ${kind} lease among ${from}..${from + max - 1}; release finished ones or end their runs`)
 }
 
 export function release(root, kind, n) {
-  try { rmSync(join(registry(root), `${kind}-${n}`), { recursive: true, force: true }) } catch { /* not a checkout any more */ }
+  let dir
+  try { dir = join(registry(root), `${kind}-${n}`) } catch { return /* not a checkout any more */ }
+  const token = held.get(dir)
+  held.delete(dir)
+  // Only our own lease: one we never took here, or one that now carries another token, stays.
+  if (!token || ownerOf(dir)?.token !== token) return
+  const gone = `${dir}.released-${randomUUID().slice(0, 8)}`
+  try { renameSync(dir, gone) } catch { return }
+  if (ownerOf(gone)?.token !== token) { try { renameSync(gone, dir) } catch {} return }
+  rmSync(gone, { recursive: true, force: true })
+}
+// Like acquire, but null instead of an error when every number is held.
+export function tryAcquire(root, kind, owner, opts) {
+  try { return acquire(root, kind, owner, opts) } catch (error) { if (/no free/.test(error.message)) return null; throw error }
 }

@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,10 +12,11 @@ import {
   verifyRequest, commentsProblem, mutantsProblem, imageProblem, verifyReport, environmentProblem,
   FRESH, runProblem, laneProblem, qualityProblem, humanReviewProblem, lessonsProblem, verifyCarry, reviewScope, figmaRef, checksProblem,
   active, findRoot,
+  SCHEMA, REVIEW_SCHEMA,
 } from '../skills/story-loop/scripts/loop.mjs'
 import { readLedger, summary, lessons, usage, ledgerFile, readHandled } from '../skills/story-loop/scripts/ledger.mjs'
 import { signalsFor } from '../skills/story-loop/scripts/quality.mjs'
-import { repo, withRun, PNG, B, ENV, META, LANE } from './helpers.mjs'
+import { repo, withRun, PNG, B, ENV, META, LANE, greenEvidence } from './helpers.mjs'
 
 const LOOP = fileURLToPath(new URL('../skills/story-loop/scripts/loop.mjs', import.meta.url))
 const done = (run, ...stages) => stages.reduce((r, s) => move(move(r, 'start', s), 'pass', s), run)
@@ -205,7 +207,7 @@ test('a corrupt state file is reported, not replaced, and recover restores the l
 test('an old run migrates with its data and no fresh evidence', () => {
   const old = { story: 'sc-9', session: 's1', started_at: 'x', stages: Object.fromEntries(GRAPH.stages.map(s => [s.id, { status: 'passed', rounds: 0 }])), tasks: [1], findings: [], evidence: { mutants: { killed: 1 } } }
   const run = migrate(old)
-  assert.equal(run.schema, 3)
+  assert.equal(run.schema, SCHEMA)
   assert.equal(run.migrated_from, 1)
   assert.deepEqual(run.owner, { session: 's1', since: 'x', heartbeat: 0 })
   assert.deepEqual(run.tasks, [1])
@@ -255,24 +257,33 @@ test('stages pass on evidence, not on a success message', () => {
   run.evidence = { mutants: { tree: 'old' } }
   assert.match(passProblem(dir, run, 'test_review'), /older code/)
   const tree = git('rev-parse', 'HEAD^{tree}')
-  // the gate reads the per-mutant outcomes, never a count somebody summed up
-  run.evidence = { mutants: { tree, outcomes: { 'a.js:1:aaaaaa': 'invalid' } } }
-  assert.match(passProblem(dir, run, 'test_review'), /no valid mutant/)
-  run.evidence = { mutants: { tree, outcomes: { 'a.js:1:aaaaaa': 'killed', 'a.js:2:bbbbbb': 'infra' } } }
-  assert.match(passProblem(dir, run, 'test_review'), /inconclusive/)
+  const mb = git('merge-base', 'main', 'HEAD')
   run.evidence = { mutants: { tree, outcomes: { 'a.js:1:aaaaaa': 'killed' } } }
+  assert.match(passProblem(dir, run, 'test_review'), /without the base their diff was taken from/, 'evidence of an older schema is not kept green')
+  // the gate reads the per-mutant outcomes, never a count somebody summed up
+  run.evidence = { mutants: { tree, base: mb, outcomes: { 'a.js:1:aaaaaa': 'invalid' } } }
+  assert.match(passProblem(dir, run, 'test_review'), /no valid mutant/)
+  run.evidence = { mutants: { tree, base: mb, outcomes: { 'a.js:1:aaaaaa': 'killed', 'a.js:2:bbbbbb': 'infra' } } }
+  assert.match(passProblem(dir, run, 'test_review'), /inconclusive/)
+  run.evidence = { mutants: { tree, base: mb, outcomes: { 'a.js:1:aaaaaa': 'killed' } } }
   assert.equal(passProblem(dir, run, 'test_review'), null)
 
   run.findings = [{ id: 'c1', source: 'codex', severity: 'major', verdict: 'open' }]
   assert.match(passProblem(dir, run, 'second_review'), /second_review was not started on this attempt/)
-  run.stages.second_review.request = { id: 'q1', attempt: 1, tree }
+  run.stages.second_review.request = { id: 'q1', attempt: 1, tree, merge_base: mb }
   assert.match(passProblem(dir, run, 'second_review'), /record the review of this code/)
-  run.review = { reviewer: 'codex', request: 'q1', attempt: 1, tree: 'older' }
-  assert.match(passProblem(dir, run, 'second_review'), /covered older code or an earlier attempt/)
-  run.review = { reviewer: 'codex', request: 'q0', attempt: 1, tree } // the same code, answered for another request
-  assert.match(passProblem(dir, run, 'second_review'), /covered older code or an earlier attempt/)
-  run.review = { reviewer: 'codex', request: 'q1', attempt: 1, tree }
+  const artifact = join(dir, '.start-story', 'q1.json')
+  const answer = JSON.stringify({ schema: REVIEW_SCHEMA, request: 'q1', angles: [{ angle: 'standards', status: 'complete', findings: [] }] })
+  writeFileSync(artifact, answer)
+  const recorded = { reviewer: 'codex', request: 'q1', attempt: 1, tree, output: artifact, sha256: createHash('sha256').update(answer).digest('hex'), structured: true, angles: { standards: 'complete' }, sources: [] }
+  run.reviews = [{ ...recorded, tree: 'older' }]
+  assert.match(passProblem(dir, run, 'second_review'), /record the review of this code/)
+  run.reviews = [{ ...recorded, request: 'q0' }] // the same code, answered for another request
+  assert.match(passProblem(dir, run, 'second_review'), /record the review of this code/)
+  run.reviews = [recorded]
   assert.match(passProblem(dir, run, 'second_review'), /c1 is open/)
+  writeFileSync(artifact, answer.replace('complete', 'failed'))
+  assert.match(passProblem(dir, run, 'second_review'), /missing or changed since it was recorded/, 'an artifact edited after recording is not the review')
 
   assert.match(passProblem(dir, run, 'push'), /nothing published/)
   assert.match(passProblem(dir, run, 'copilot_review'), /no Copilot review/)
@@ -284,16 +295,17 @@ test('a code change after the reviews makes their evidence stale until the run g
   const head = git('rev-parse', 'HEAD')
   const run = withRun(dir)
   for (const id of ['contract', 'build', 'quality', 'test_review', 'verify', 'second_review', 'push', 'copilot_review']) run.stages[id].status = 'passed'
-  for (const id of FRESH) run.stages[id].tree = tree
+  greenEvidence(run, dir)
   Object.assign(run, { pushed: { state: 'confirmed', sha: head }, ci: { sha: head, state: 'pending' }, copilot: { review: { id: 9 }, comments: { review: 9, ids: [] } } })
   assert.deepEqual(staleStages(dir, run), [])
   assert.match(passProblem(dir, run, 'report'), /required CI is pending/)
   run.ci.state = 'pass'
   assert.match(passProblem(dir, run, 'report'), /report for HEAD is not posted/)
   commit()
-  assert.deepEqual(staleStages(dir, run), FRESH)
-  assert.match(passProblem(dir, run, 'fix_comments'), /covered older code/)
-  assert.match(passProblem(dir, run, 'report'), /covered older code/)
+  // verify was skipped on the human's word in this fixture; every gate that read the code is not current
+  assert.deepEqual(staleStages(dir, run), ['quality', 'test_review', 'second_review'])
+  assert.match(passProblem(dir, run, 'fix_comments'), /cover older code/)
+  assert.match(passProblem(dir, run, 'report'), /cover older code/)
 })
 
 test('notes belong to their run, and a copied note is still delivered', () => {
@@ -439,11 +451,20 @@ test('H02: a review is an artifact for one attempt and one code tree; the last a
   // a new request for B; the answer for A, read again under the new id, is not a fresh review once it is on record
   const second = requestId(cli(dir, 'start', 'second_review').stdout)
   assert.notEqual(second, first)
-  assert.equal(cli(dir, 'review', 'codex', answer('b.txt', 'Reviewed B. No blocking findings.'), '--request', second).status, 0)
+  const recordedB = cli(dir, 'review', 'codex', answer('b.txt', 'Reviewed B. No blocking findings.'), '--request', second)
+  assert.equal(recordedB.status, 0, recordedB.stderr)
   const review = load(dir).review
   assert.deepEqual([review.reviewer, review.request, review.attempt, review.tree, review.commit], ['codex', second, 1, git('rev-parse', 'HEAD^{tree}'), git('rev-parse', 'HEAD')])
   assert.match(readFileSync(review.output, 'utf8'), /Reviewed B/)
   assert.match(review.output, new RegExp(`reviews/${second}\\.txt$`), 'one immutable file per request')
+  // Free text is kept, but never read as "no findings": the gate waits for its structured transcription.
+  assert.match(cli(dir, 'pass', 'second_review').stderr, /free text .*not read as "no findings"/)
+  const transcribe = (request, raw) => {
+    const sha = createHash('sha256').update(readFileSync(raw)).digest('hex')
+    const file = answer(`t-${request}.json`, JSON.stringify({ schema: REVIEW_SCHEMA, request, transcribes: sha, angles: [{ angle: 'standards', status: 'complete', findings: [] }] }))
+    return cli(dir, 'review', 'codex', file, '--request', request)
+  }
+  assert.equal(transcribe(second, review.output).status, 0)
   assert.equal(cli(dir, 'pass', 'second_review').status, 0)
   // back to build, a new commit, forward again: reviewer name and settled findings are all still there
   update(dir, run => { run.stages.push.status = 'running'; return run })
@@ -455,7 +476,7 @@ test('H02: a review is an artifact for one attempt and one code tree; the last a
   const third = requestId(cli(dir, 'start', 'second_review').stdout)
   const refused = cli(dir, 'pass', 'second_review')
   assert.equal(refused.status, 1)
-  assert.match(refused.stderr, /covered older code or an earlier attempt/)
+  assert.match(refused.stderr, /record the review of this code/)
   // the previous attempt's reviewer answers late, and the old answer file is offered again: neither is this attempt's review
   assert.match(cli(dir, 'review', 'codex', out, '--request', second).stderr, /An answer to an earlier request is history/)
   assert.match(cli(dir, 'review', 'codex', join(dir, '.start-story', 'b.txt'), '--request', third).stderr, /already recorded for request .*not a new review/)
@@ -463,8 +484,9 @@ test('H02: a review is an artifact for one attempt and one code tree; the last a
   update(dir, run => { run.stages.second_review.status = 'blocked'; return run })
   assert.equal(requestId(cli(dir, 'start', 'second_review').stdout), third)
   assert.equal(cli(dir, 'review', 'codex', answer('c.txt', 'Reviewed the fix. Nothing new.'), '--request', third).status, 0)
+  assert.equal(transcribe(third, load(dir).review.output).status, 0)
   assert.equal(cli(dir, 'pass', 'second_review').status, 0)
-  assert.deepEqual([load(dir).review.attempt, load(dir).reviews.map(r => r.request)], [2, [second, third]])
+  assert.deepEqual([load(dir).review.attempt, load(dir).reviews.map(r => r.request)], [2, [second, second, third, third]])
   assert.ok(load(dir).reviews.every(r => existsSync(r.output)), 'the earlier answer is kept as history')
 })
 
@@ -492,7 +514,7 @@ test('H12, H13: every fetched Copilot comment needs a finding, and fix_comments 
   update(dir, r => {
     for (const id of GRAPH.stages.map(s => s.id)) r.stages[id] = { status: 'passed', rounds: 0, attempt: 1, tree: git('rev-parse', 'HEAD^{tree}') }
     r.stages.fix_comments.status = 'pending'; r.stages.report.status = 'pending'
-    return r
+    return greenEvidence(r, dir)
   })
   const skipped = cli(dir, 'skip', 'fix_comments', 'no further work needed')
   assert.equal(skipped.status, 1)
@@ -796,7 +818,7 @@ test('tests added in test review are checked by the quality gate then, not found
 
   // Test review adds a test for a surviving mutant: the gate has not seen it.
   commit('calc_spec.rb', lines(10))
-  update(dir, r => ({ ...r, evidence: { ...r.evidence, mutants: { tree: git('rev-parse', 'HEAD^{tree}'), lane: 'light', scope: [], covered: [], outcomes: { 'calc.rb:1:aaaaaa': 'killed' } } } }))
+  update(dir, r => ({ ...r, evidence: { ...r.evidence, mutants: { tree: git('rev-parse', 'HEAD^{tree}'), base: git('merge-base', 'main', 'HEAD'), lane: 'light', scope: [], covered: [], outcomes: { 'calc.rb:1:aaaaaa': 'killed' } } } }))
   assert.match(passProblem(dir, load(dir), 'test_review'), /changed the code after the quality gate; run quality\.mjs again/)
 
   // One clean run brings the gate up to date, and the human's size yes carries over to the grown diff.
@@ -1178,9 +1200,10 @@ test('a browser pass stands when only tests were committed since, a review does 
   const deltaId = again.match(/review request: (\S+)/)[1]
   assert.notEqual(deltaId, reviewId)
   assert.match(again, /review scope: delta .*only tests changed/)
-  writeFileSync(join(dir, '..', 'review.txt'), 'the new spec is fine')
-  assert.equal(cli(dir, 'review', 'codex', join(dir, '..', 'review.txt'), '--request', deltaId).status, 0)
-  assert.equal(cli(dir, 'pass', 'second_review', 'nothing found').status, 0)
+  writeFileSync(join(dir, '..', 'review.json'), JSON.stringify({ schema: REVIEW_SCHEMA, request: deltaId, angles: [{ angle: 'delta', status: 'complete', findings: [] }] }))
+  assert.equal(cli(dir, 'review', 'codex', join(dir, '..', 'review.json'), '--request', deltaId).status, 0)
+  const passed = cli(dir, 'pass', 'second_review', 'nothing found')
+  assert.equal(passed.status, 0, passed.stderr)
   // a code change is new code: a new request
   const codeStale = () => staleStages(dir, load(dir)).filter(s => ['verify', 'second_review'].includes(s))
   assert.deepEqual(codeStale(), [])

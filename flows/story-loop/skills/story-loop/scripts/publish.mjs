@@ -9,7 +9,7 @@
 import { execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { findRoot, load, emit, current, gitIn, dirty, staleStages, remoteRepo, baseName, opContext, opUpdate } from './loop.mjs'
+import { findRoot, load, emit, current, gitIn, dirty, gateProblems, subjectOf, remoteRepo, baseName, opContext, opUpdate } from './loop.mjs'
 import { bind, record, redact } from './diag.mjs'
 
 const fail = message => { throw new Error(message) }
@@ -49,9 +49,11 @@ export function publish(root) {
   dirty(root) && fail('the checkout has uncommitted changes; commit them first')
   const sha = git('rev-parse', 'HEAD') // frozen: whatever moves HEAD from here on is not published
   // The contract push opens the draft PR before any review exists; the push stage publishes reviewed code only.
+  // The decision is the shared gate evaluator's, made before anything is written to the remote:
+  // a failed or still-running rerun, a moved base or a missing artifact refuses it like stale code.
   if (current(run) === 'push') {
-    const stale = staleStages(root, run, git('rev-parse', `${sha}^{tree}`))
-    stale.length && fail(`${stale.join(', ')} covered older code than ${sha.slice(0, 7)}; nothing was pushed. Go back to build so they run on this code`)
+    const open = Object.entries(gateProblems(root, run, subjectOf(root, run, git('rev-parse', `${sha}^{tree}`))))
+    open.length && fail(`${open.map(([id, why]) => `${id}: ${why}`).join('; ')}; nothing was pushed. Run what failed again, or go back to build so it runs on this code`)
   }
 
   const remote = run.remote ?? 'origin'
@@ -89,7 +91,7 @@ export function publish(root) {
   const said = (outcome, more = {}) => record(root, 'publish', { outcome, repo: remoteRepo(url), destination: redact(url), ref, commit: sha, elapsed_ms: Date.now() - started, ...more })
   // The target is on record before the first write to the remote.
   const before = (() => { try { return remoteSha() } catch { return undefined } })()
-  set({ state: 'attempted', sha, branch, ref, repo: remoteRepo(url), remote_url: urls[0], remote_before: before ?? null, at: new Date().toISOString() })
+  set({ state: 'attempted', stage: ctx.stage, sha, branch, ref, repo: remoteRepo(url), remote_url: urls[0], remote_before: before ?? null, at: new Date().toISOString() })
   // An earlier attempt may have landed after its answer was lost: then there is nothing to push.
   if (before !== sha) {
     try {

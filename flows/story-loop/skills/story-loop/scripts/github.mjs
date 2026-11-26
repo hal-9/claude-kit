@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { findRoot, repoRoot, load, update, emit, baseName, runKey, opContext, opStart, opUpdate, opEnd } from './loop.mjs'
+import { findRoot, repoRoot, load, update, emit, baseName, runKey, opContext, opStart, opUpdate, opEnd, gateProblems, headCommit } from './loop.mjs'
 import { bind, record } from './diag.mjs'
 import { readLedger, readHandled, markHandled } from './ledger.mjs'
 
@@ -103,10 +103,25 @@ function observe(root, run, pr) {
 // After the push: the PR leaves draft, so required CI that skips drafts runs on the
 // published commit. Only for exactly that commit, on the run's own PR, once; raw
 // `gh pr ready` stays refused by the hook. Merging remains the human's alone.
+// Why the PR may not leave draft now, or null. Decided from local state alone, before any
+// call to GitHub: only a confirmed publication from the push stage (reviewed code, not the
+// contract's draft push) of the commit that is HEAD, with every gate holding for it.
+export function readinessProblem(root, run) {
+  if (run.pushed?.state !== 'confirmed') return 'publish first; the PR is marked ready for the published commit'
+  if (run.pushed.stage !== 'push' || run.stages?.push?.status !== 'passed')
+    return 'the published commit is the contract\'s draft push, not reviewed code; the PR leaves draft after the push stage passed'
+  if (headCommit(root) !== run.pushed.sha) return `HEAD ${headCommit(root)?.slice(0, 7)} is not the published ${run.pushed.sha.slice(0, 7)}`
+  const open = Object.entries(gateProblems(root, run))
+  return open.length ? `the evidence does not hold for the published commit (${open.map(([id, why]) => `${id}: ${why}`).join('; ')})` : null
+}
+
 export function ready(root) {
   const run = load(root)
   const ctx = begin(root, run, 'ready', 'copilot_review')
-  const head = run.pushed?.state === 'confirmed' ? run.pushed.sha : fail('publish first; the PR is marked ready for the published commit')
+  if (run.ready?.sha && run.ready.sha === run.pushed?.sha) return `already marked ready at ${run.ready.sha.slice(0, 7)}`
+  const refused = readinessProblem(root, run)
+  if (refused) { record(root, 'ready', { outcome: 'refused', reason: refused }); fail(`not marked ready: ${refused}. Nothing was changed on GitHub`) }
+  const head = run.pushed.sha
   const prSha = prHead(root, run)
   prSha === head || fail(`PR ${run.pr} is at ${prSha.slice(0, 7)}, not the published ${head.slice(0, 7)}; publish again before marking it ready`)
   if (run.ready?.sha === head) return `already marked ready at ${head.slice(0, 7)}`
@@ -295,17 +310,52 @@ export function reply(root, mapFile) {
   return done
 }
 
-// The PR's checks as gh lists them; only the ones GitHub labels required, or all.
-function prChecks(root, run, required) {
-  // gh exits non-zero when checks fail or are pending, and still prints the JSON.
-  let out
-  try { out = gh(['pr', 'checks', String(run.pr), '-R', repoOf(run), ...(required ? ['--required'] : []), '--json', 'name,state,bucket'], root) } catch (error) {
-    if (error.kind !== 'error') throw error
-    out = /no required checks|no checks reported/i.test(error.message) ? '[]' : error.stdout
+// ---- required CI ---------------------------------------------------------------------
+// A requirement is a context name plus, where the policy names one, the GitHub App that must
+// produce it (branch protection "checks[].app_id", a ruleset's "integration_id"). A check of
+// the same name from another producer never stands in for it. Without an app (legacy
+// contexts, app_id -1 "any source", the human's own list) any producer of that name counts,
+// as on GitHub. Observed results are read for exactly the PR's head commit: check runs (with
+// their app) and commit statuses (no app, so they never satisfy an app-bound requirement).
+// Latest result per producer and name decides; for an any-source requirement every producer's
+// latest result must pass. Buckets: pass, skipping (GitHub's skipped and neutral satisfy a
+// required check), pending, fail, cancel, and unknown (anything unrecognised): only pass and
+// skipping are green; unknown never is.
+// Not covered: merge-queue and merge-commit (pull_request_target / merge_group) results and
+// rules story-loop cannot read are reported as such, never reconstructed.
+const anyApp = app => app === null || app === undefined || app === -1
+export function bucketOf(c) {
+  if (c.type === 'check') {
+    if (c.status !== 'completed') return ['queued', 'in_progress', 'waiting', 'requested', 'pending'].includes(c.status) ? 'pending' : 'unknown'
+    return { success: 'pass', neutral: 'skipping', skipped: 'skipping', failure: 'fail', timed_out: 'fail', action_required: 'fail', startup_failure: 'fail', stale: 'fail', cancelled: 'cancel' }[c.conclusion] ?? 'unknown'
   }
-  let checks
-  try { checks = JSON.parse(out.trim() || 'null') } catch { checks = null }
-  return Array.isArray(checks) ? checks : fail(`gh pr checks gave no readable result: ${String(out).slice(0, 200)}`)
+  if (c.type === 'status') return { success: 'pass', pending: 'pending', failure: 'fail', error: 'fail' }[c.state] ?? 'unknown'
+  return 'unknown'
+}
+// Every check run and status on `head`, schema-checked: a row that is not what it says is an error, never a pass.
+function observedChecks(root, repo, head) {
+  const runs = lines(gh(['api', '--paginate', `repos/${repo}/commits/${head}/check-runs?per_page=100`, '--jq', '.check_runs[] | {type: "check", name, app_id: .app.id, app: .app.slug, status, conclusion, id, head_sha}'], root))
+  const statuses = paged(root, `repos/${repo}/commits/${head}/statuses?per_page=100`, '{type: "status", name: .context, state, id}')
+  for (const c of [...runs, ...statuses]) {
+    typeof c?.name === 'string' && c.name || fail(`GitHub returned a check without a name: ${JSON.stringify(c).slice(0, 120)}`)
+    Number.isFinite(Number(c.id)) || fail(`GitHub returned check "${c.name}" without an id`)
+    if (c.type === 'check' && c.head_sha !== undefined && c.head_sha !== head) fail(`check run "${c.name}" is for ${String(c.head_sha).slice(0, 7)}, not the head ${head.slice(0, 7)}`)
+  }
+  // Latest per producer: a re-run replaces the earlier result of the same check.
+  const latest = new Map()
+  for (const c of [...runs, ...statuses]) {
+    const key = JSON.stringify([c.type, c.name, c.type === 'check' ? c.app_id ?? null : null])
+    if (!latest.has(key) || Number(c.id) > Number(latest.get(key).id)) latest.set(key, c)
+  }
+  return [...latest.values()].map(c => ({ ...c, bucket: bucketOf(c) }))
+}
+// One requirement against what was observed: { name, app_id, bucket, producers }.
+export function matchRequirement(req, observed) {
+  const from = observed.filter(c => c.name === req.name && (anyApp(req.app_id) || (c.type === 'check' && c.app_id === req.app_id)))
+  const buckets = from.map(c => c.bucket)
+  const bucket = !from.length ? 'missing' : buckets.includes('fail') ? 'fail' : buckets.includes('cancel') ? 'cancel'
+    : buckets.includes('unknown') ? 'unknown' : buckets.includes('pending') ? 'pending' : 'pass'
+  return { name: req.name, app_id: anyApp(req.app_id) ? null : req.app_id, bucket, producers: from.map(c => c.type === 'check' ? `${c.app ?? c.app_id}` : 'status') }
 }
 
 // The list the human named, as long as it was approved for this repository and this base.
@@ -320,19 +370,18 @@ export function ci(root) {
   const repo = repoOf(run)
   const base = baseOf(run)
   const head = prHead(root, run)
-  // What must pass: the base branch's policy, plus what the human named. An unreadable
-  // policy is unknown, never "nothing required"; then only the human's list stands in for it.
+  // What must pass: the base branch's policy, plus what the human named (any source, by name).
+  // An unreadable policy is unknown, never "nothing required"; then only the human's list stands in for it.
   const policy = requiredChecks(root, repo, base)
   const manual = manualChecks(run, repo, base)
-  const required = policy.state === 'unknown' && !manual ? null : [...new Set([...policy.names, ...(manual ?? [])])]
-  // `gh pr checks --required` lists what GitHub labels required. A check the policy
-  // or the human names without that label is looked up among all the PR's checks.
-  const labelled = prChecks(root, run, true)
-  const unlabelled = (required ?? []).filter(name => !labelled.some(c => c.name === name))
-  const checks = [...labelled, ...(unlabelled.length ? prChecks(root, run, false).filter(c => unlabelled.includes(c.name)) : [])]
+  const reqs = policy.state === 'unknown' && !manual ? null
+    : [...policy.required, ...(manual ?? []).filter(name => !policy.required.some(r => r.name === name && anyApp(r.app_id))).map(name => ({ name, app_id: null, source: 'human' }))]
+  const required = reqs?.map(r => r.name) ?? null
+  const observed = observedChecks(root, repo, head)
+  const matched = (reqs ?? []).map(r => matchRequirement(r, observed))
   // A required check GitHub has not created yet is missing, which is pending, not absent.
-  const missing = (required ?? []).filter(name => !checks.some(c => c.name === name))
-  const buckets = checks.map(c => c.bucket)
+  const missing = matched.filter(m => m.bucket === 'missing').map(m => m.app_id ? `${m.name} (app ${m.app_id})` : m.name)
+  const checks = matched.filter(m => m.bucket !== 'missing').map(m => ({ name: m.name, bucket: m.bucket, app_id: m.app_id, producers: m.producers }))
   const provenance = { state: policy.state, sources: policy.sources, why: policy.why ?? null, manual: manual ? { names: manual, ...run.required_checks_for } : null }
   // The checks were read after the head: if the head moved in between, or is not what
   // this run published, they belong to another commit and are recorded as nothing.
@@ -341,47 +390,59 @@ export function ci(root) {
     opUpdate(root, ctx, r => ({ ...r, ci: { sha: after, state: 'head_moved', at: new Date().toISOString() } }), { head, after })
     fail(`the PR head is ${after.slice(0, 7)}, not the published ${run.pushed?.sha?.slice(0, 7) ?? 'commit'}; someone else pushed. These checks are not this run's`)
   }
-  // A passing subset proves nothing while the set of required checks is unknown.
+  const buckets = matched.map(m => m.bucket)
+  // A failing required check fails; a passing subset proves nothing while the required set is unknown.
   const state = buckets.includes('fail') || buckets.includes('cancel') ? 'fail'
-    : required === null ? 'unknown'
-    : buckets.includes('pending') || missing.length ? 'pending'
-    : checks.length ? 'pass' : 'none'
-  const result = { sha: head, state, checks, required, missing, policy: provenance, repo, base, at: new Date().toISOString() }
+    : reqs === null ? 'unknown'
+    : buckets.includes('unknown') ? 'unknown'
+    : buckets.includes('pending') || buckets.includes('missing') ? 'pending'
+    : reqs.length ? 'pass' : 'none'
+  const result = { sha: head, state, checks, required, requirements: reqs, missing, policy: provenance, repo, base, at: new Date().toISOString() }
   opUpdate(root, ctx, r => ({ ...r, ci: result }), result,
     r => r.pushed?.sha === head && baseName(r.base) === base ? null : 'the run\'s published commit or base changed while CI was read')
-  record(root, 'ci', { outcome: state, expected: required, observed: checks.map(c => `${c.name}:${c.bucket}`), missing, policy: provenance, commit: head, base })
+  record(root, 'ci', { outcome: state, expected: reqs, observed: observed.map(c => `${c.name}@${c.type === 'check' ? c.app_id : 'status'}:${c.bucket}`), missing, policy: provenance, commit: head, base })
   emit(root, { kind: 'note', text: `required CI on ${head.slice(0, 7)}: ${state}` })
   return { sha: head, state, checks, required, missing, policy: provenance }
 }
 
 // Which status checks the base branch requires, from branch protection and rulesets.
-//   state   "known" (names), "empty" (read, and nothing is required) or "unknown"
-//   sources how each part was learned; why names what could not be read
+//   state     "known", "empty" (read, and nothing is required) or "unknown"
+//   required  [{ name, app_id }]: app_id null means any producer of that name
+//   sources   how each part was learned; why names what could not be read
 // GitHub answers 404 both for "no such rule" and for "you may not see this", so
 // a bare 404 is never taken as "nothing is required"; only GitHub's own
 // "Branch not protected" and a readable branch are.
+const PROTECTION_JQ = '(.checks // ((.contexts // []) | map({context: ., app_id: null})))[] | {name: .context, app_id}'
 export function requiredChecks(root, repo, base) {
   const branch = encodeURIComponent(base) // a base like release/1.0 must not become two path segments
-  const names = new Set()
+  const required = []
   const sources = []
   const unreadable = []
-  const read = (args, source) => { lines(gh(args, root)).forEach(c => names.add(c.name)); sources.push(source) }
+  const add = (rows, source) => {
+    for (const c of rows) {
+      typeof c?.name === 'string' && c.name || fail(`the ${source} named a required check without a name`)
+      const app_id = anyApp(c.app_id) ? null : Number(c.app_id)
+      if (!required.some(r => r.name === c.name && r.app_id === app_id)) required.push({ name: c.name, app_id, source })
+    }
+    sources.push(source)
+  }
   const short = error => error.message.match(/HTTP \d+/)?.[0] ?? error.kind ?? 'error'
   try {
-    read(['api', `repos/${repo}/branches/${branch}/protection/required_status_checks`, '--jq', '.contexts[] | {name: .}'], 'branch protection')
+    add(lines(gh(['api', `repos/${repo}/branches/${branch}/protection/required_status_checks`, '--jq', PROTECTION_JQ], root)), 'branch protection')
   } catch (error) {
     if (/Branch not protected/i.test(error.message)) sources.push('branch protection (GitHub says the branch is not protected)')
     else {
-      // The protection endpoint wants admin rights; the branch itself lists the same contexts to anyone who can read it.
-      try { read(['api', `repos/${repo}/branches/${branch}`, '--jq', '.protection.required_status_checks.contexts[] | {name: .}'], 'branch metadata') }
+      // The protection endpoint wants admin rights; the branch itself lists the same checks to anyone who can read it.
+      try { add(lines(gh(['api', `repos/${repo}/branches/${branch}`, '--jq', `.protection.required_status_checks | ${PROTECTION_JQ}`], root)), 'branch metadata') }
       catch (second) { unreadable.push(`branch protection (${short(error)}) and the branch itself (${short(second)})`) }
     }
   }
   try {
-    read(['api', '--paginate', `repos/${repo}/rules/branches/${branch}`, '--jq', '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | {name: .context}'], 'rulesets')
+    add(lines(gh(['api', '--paginate', `repos/${repo}/rules/branches/${branch}`, '--jq', '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | {name: .context, app_id: .integration_id}'], root)), 'rulesets')
   } catch (error) { unreadable.push(`rulesets (${short(error)})`) }
-  if (unreadable.length) return { state: 'unknown', names: [...names], sources, why: `could not read ${unreadable.join(' and ')}` }
-  return { state: names.size ? 'known' : 'empty', names: [...names], sources }
+  const names = [...new Set(required.map(r => r.name))]
+  if (unreadable.length) return { state: 'unknown', names, required, sources, why: `could not read ${unreadable.join(' and ')}` }
+  return { state: required.length ? 'known' : 'empty', names, required, sources }
 }
 
 // One report comment per run, found again by its marker so a retry edits it instead of posting twice.
@@ -471,7 +532,7 @@ async function main([cmd, ...args]) {
     case 'ci': {
       const result = ci(root)
       console.log(`required CI on ${result.sha.slice(0, 7)}: ${result.state}${result.checks.length ? '' : ' (no required checks)'}`)
-      for (const c of result.checks) console.log(`  ${c.bucket.padEnd(8)} ${c.name}`)
+      for (const c of result.checks) console.log(`  ${c.bucket.padEnd(8)} ${c.name}${c.app_id ? ` (app ${c.app_id})` : ''}  from ${c.producers.join(', ')}`)
       for (const name of result.missing) console.log(`  missing  ${name}  (required, not created by GitHub yet)`)
       console.log(`  required set: ${result.required ? (result.required.join(', ') || 'none') : 'unknown'}  (${[...result.policy.sources, result.policy.manual ? 'the human\'s list' : null].filter(Boolean).join(', ') || 'no readable source'}${result.policy.why ? `; ${result.policy.why}` : ''})`)
       if (!['pass', 'none'].includes(result.state)) process.exitCode = 1

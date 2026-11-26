@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  remoteRepo, issueRepo, storyId, load, update, staleStages, passProblem, verifyCarry, reviewScope, parallelWorktree, verifyRequest, headTree, headCommit,
+  remoteRepo, issueRepo, storyId, load, update, staleStages, evidenceStale, passProblem, verifyCarry, reviewScope, parallelWorktree, verifyRequest, headTree, headCommit,
 } from '../skills/story-loop/scripts/loop.mjs'
 import { destinationProblem } from '../skills/story-loop/scripts/publish.mjs'
 import { carriedKills } from '../skills/story-loop/scripts/mutate.mjs'
@@ -149,8 +149,8 @@ test('a changed caller turns earlier kills into survivors: warm and cold runs ag
   git('add', '.'); git('commit', '-qm', 'base'); git('branch', 'base')
   writeFileSync(join(dir, 'calc.mjs'), 'export const big = n => n > 10\n')
   git('commit', '-qam', 'change')
-  withRun(dir)
-  const mutate = () => spawnSync('node', [script('mutate.mjs'), '--base', 'base', '--test', 'node check.mjs', 'calc.mjs'], { cwd: dir, encoding: 'utf8' })
+  withRun(dir, { base: 'base' })
+  const mutate = () => spawnSync('node', [script('mutate.mjs'), '--adapter', 'exit', '--base', 'base', '--test', 'node check.mjs', 'calc.mjs'], { cwd: dir, encoding: 'utf8' })
   const killed = out => JSON.parse(out.match(/RESULT (.*)/)[1]).killed
   assert.ok(killed(mutate().stdout) > 0)
   update(dir, r => ({ ...r, history: [...(r.history ?? []), { evidence: r.evidence }], evidence: {} }))
@@ -187,7 +187,9 @@ test('test-only commits keep verify but not the second review', () => {
     return r
   })
   commit('app.test.js', 'test\n')
-  assert.deepEqual(staleStages(dir, load(dir)).filter(s => ['verify', 'second_review'].includes(s)), ['second_review'])
+  // The second review covered other code; verify's code identity still holds (its gate then asks for its results file).
+  assert.ok(staleStages(dir, load(dir)).includes('second_review'))
+  assert.doesNotMatch(evidenceStale(dir, load(dir), 'verify'), /application code changed/)
   // A review of only the new tests is a delta review, not a full blind one.
   assert.equal(reviewScope({ prior: { commit: head }, delta: { files: ['app.test.js'], lines: 1, commits: ['c'] }, branchLines: 100, findings: [] }).scope, 'delta')
 })

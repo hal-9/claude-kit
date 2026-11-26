@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { load, update } from '../skills/story-loop/scripts/loop.mjs'
-import { repo, withRun, B } from './helpers.mjs'
+import { repo, withRun, B, greenEvidence } from './helpers.mjs'
 import { passProblem, FRESH } from '../skills/story-loop/scripts/loop.mjs'
 import { readEvents, diagDir } from '../skills/story-loop/scripts/diag.mjs'
 import { ledgerFile, readHandled } from '../skills/story-loop/scripts/ledger.mjs'
@@ -39,6 +39,9 @@ const PR = (over = {}) => JSON.stringify({ headRefOid: SHA, headRefName: B, base
 const view = (over, times = 99) => ({ match: 'pr view 7 -R acme/app --json headRefOid', stdout: PR(over), times })
 const rules = list => { writeFileSync(RULES, JSON.stringify(list)); writeFileSync(LOG, '') }
 const calls = () => readFileSync(LOG, 'utf8').split('\n').filter(Boolean)
+const CONCLUSION = { pass: 'success', fail: 'failure', skipping: 'skipped', cancel: 'cancelled' }
+// The head commit's check runs as the API lists them (one rule answers check-runs and statuses).
+const runs = (list, times = 9) => ({ match: 'commits/.*/(check-runs|statuses)', times, stdout: list.map((c, i) => JSON.stringify({ type: 'check', name: c.name, app_id: c.app_id ?? 1, app: c.app ?? 'ci', status: c.bucket === 'pending' ? 'in_progress' : 'completed', conclusion: c.bucket === 'pending' ? null : CONCLUSION[c.bucket] ?? c.bucket, id: c.id ?? i + 1 })).join('\n') + '\n' })
 const jsonl = rows => rows.map(r => JSON.stringify(r)).join('\n') + '\n'
 function published(patch = {}) {
   const { dir: root } = repo()
@@ -127,23 +130,23 @@ test('required CI is evaluated on the PR head: pending and failing are not passi
   const head = view()
   const protection = names => ({ match: 'protection/required_status_checks', stdout: jsonl(names.map(name => ({ name }))), times: 9 })
   const noRules = { match: 'rules/branches', stdout: '', times: 9 }
-  rules([head, protection(['rspec']), noRules, { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pending' }]), code: 8 }])
+  rules([head, protection(['rspec']), noRules, runs([{ name: 'rspec', bucket: 'pending' }])])
   assert.equal(gh.ci(root).state, 'pending')
-  rules([head, protection(['rspec']), noRules, { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'fail' }, { name: 'lint', bucket: 'pass' }]), code: 1 }])
+  rules([head, protection(['rspec']), noRules, runs([{ name: 'rspec', bucket: 'fail' }, { name: 'lint', bucket: 'pass' }])])
   assert.equal(gh.ci(root).state, 'fail')
-  rules([head, protection(['rspec']), noRules, { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pass' }, { name: 'docs', bucket: 'skipping' }]) }])
+  rules([head, protection(['rspec']), noRules, runs([{ name: 'rspec', bucket: 'pass' }, { name: 'docs', bucket: 'skipping' }])])
   assert.deepEqual([gh.ci(root).state, load(root).ci.sha], ['pass', SHA])
   // right after a push GitHub has created no check runs yet: required ones are missing, not absent
-  rules([head, protection(['rspec']), { match: 'rules/branches', stdout: jsonl([{ name: 'lint' }]), times: 9 }, { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pass' }]) }])
+  rules([head, protection(['rspec']), { match: 'rules/branches', stdout: jsonl([{ name: 'lint' }]), times: 9 }, runs([{ name: 'rspec', bucket: 'pass' }])])
   assert.deepEqual([gh.ci(root).state, load(root).ci.missing], ['pending', ['lint']])
-  rules([head, protection(['rspec']), noRules, { match: 'pr checks', stderr: 'no checks reported on the \'x\' branch', code: 1 }])
+  rules([head, protection(['rspec']), noRules, runs([])])
   assert.equal(gh.ci(root).state, 'pending')
-  rules([head, { match: 'protection', stderr: 'HTTP 404: Branch not protected', code: 1, times: 9 }, noRules, { match: 'pr checks', stderr: 'no required checks reported on the \'x\' branch', code: 1 }])
+  rules([head, { match: 'protection', stderr: 'HTTP 404: Branch not protected', code: 1, times: 9 }, noRules, runs([])])
   assert.equal(gh.ci(root).state, 'none')
-  rules([head, { match: 'protection', stderr: 'HTTP 403: Must have admin rights', code: 1, times: 9 }, noRules, { match: 'pr checks', stderr: 'no required checks reported', code: 1 }])
+  rules([head, { match: 'protection', stderr: 'HTTP 403: Must have admin rights', code: 1, times: 9 }, noRules, runs([])])
   assert.equal(gh.ci(root).state, 'unknown')
-  rules([head, protection([]), noRules, { match: 'pr checks', stdout: '', stderr: 'boom', code: 1 }])
-  assert.throws(() => gh.ci(root), /no readable result/)
+  rules([head, protection([]), noRules, { match: 'check-runs', stdout: 'not json', times: 9 }])
+  assert.throws(() => gh.ci(root), /not JSON/)
 })
 
 test('the report is one comment: a retry edits it, and a lost answer is reconciled instead of posting twice', () => {
@@ -173,7 +176,7 @@ test('H04: every gh call names the run\'s repository; a run without one is refus
   const body = join(root, 'body.md'); writeFileSync(body, 'x')
   rules([view(), { match: 'pr edit', times: 9 }, { match: 'reviews', stdout: jsonl([{ id: 99, user: 'Copilot', commit_id: SHA, state: 'COMMENTED', submitted_at: 'y' }]), times: 9 },
     { match: 'pulls/7/comments', stdout: '', times: 9 }, { match: 'protection', stdout: '', times: 9 }, { match: 'rules/branches', stdout: '', times: 9 },
-    { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pass' }]), times: 9 }, { match: '^api user', stdout: 'bot\n', times: 9 },
+    runs([{ name: 'rspec', bucket: 'pass' }]), { match: '^api user', stdout: 'bot\n', times: 9 },
     { match: 'issues/7/comments', stdout: jsonl([{ id: 5, user: 'bot', body: '<!-- story-loop-report -->' }]), times: 9 }, { match: 'PATCH', stdout: '{}', times: 9 }])
   update(root, r => ({ ...r, copilot: { ...r.copilot, state: 'timeout' } })); gh.copilotRequest(root)
   await gh.copilotWait(root, { minutes: 1, interval: 0.01 }); gh.comments(root); gh.ci(root); gh.report(root, body)
@@ -192,7 +195,7 @@ test('H04: every gh call names the run\'s repository; a run without one is refus
 
 test('H10: an unreadable required-check policy is unknown, never a pass on the visible checks', () => {
   const root = published()
-  const green = { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pass' }]), times: 9 }
+  const green = runs([{ name: 'rspec', bucket: 'pass' }])
   const noRules = { match: 'rules/branches', stdout: '', times: 9 }
   const forbidden = { match: 'protection', stderr: 'HTTP 403: Must have admin rights', code: 1, times: 9 } // the branch fallback too: its --jq names .protection
   rules([view(), forbidden, noRules, green])
@@ -216,7 +219,7 @@ test('H10: an unreadable required-check policy is unknown, never a pass on the v
 
 // ---- regressions from the 0.8.0 review -------------------------------------------
 const notFound = match => ({ match, stderr: 'gh: Not Found (HTTP 404)', code: 1, times: 9 })
-const noChecksYet = { match: 'pr checks', stderr: 'no checks reported on the \'x\' branch', code: 1, times: 9 }
+const noChecksYet = runs([])
 const put = (root, ...args) => spawnSync('node', [LOOP, 'put', ...args], { cwd: root, encoding: 'utf8' })
 
 test('R1: a 404 on the policy is unknown, never "nothing required"; the human\'s list stands, and a base with a slash is one path segment', () => {
@@ -230,14 +233,14 @@ test('R1: a 404 on the policy is unknown, never "nothing required"; the human\'s
   assert.equal(load(root).ci.policy.state, 'unknown')
   assert.match(load(root).ci.policy.why, /could not read branch protection \(HTTP 404\) and the branch itself \(HTTP 404\) and rulesets \(HTTP 404\)/)
   assert.match(passProblem(root, load(root), 'report') ?? '', /./)
-  const paths = calls().filter(c => c.startsWith('api'))
+  const paths = calls().filter(c => c.startsWith('api') && /branches/.test(c))
   assert.ok(paths.length >= 3)
   for (const call of paths) assert.match(call, /branches\/release%2F1\.0(\/| |$)/, call)
   // the same 404s with no list from the human: unknown, with no checks started and with green ones
   const bare = published({ base: 'release/1.0' })
   rules([head, notFound('protection'), notFound('rules/branches'), noChecksYet])
   assert.deepEqual([gh.ci(bare).state, load(bare).ci.required], ['unknown', null])
-  rules([head, notFound('protection'), notFound('rules/branches'), { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pass' }]), times: 9 }])
+  rules([head, notFound('protection'), notFound('rules/branches'), runs([{ name: 'rspec', bucket: 'pass' }])])
   assert.equal(gh.ci(bare).state, 'unknown')
 })
 
@@ -246,26 +249,23 @@ test('R1: requirements are empty only when GitHub says so; a named check is miss
   const unprotected = { match: 'protection', stderr: 'gh: Branch not protected (HTTP 404)', code: 1, times: 9 }
   const noRules = { match: 'rules/branches', stdout: '', times: 9 }
   // affirmatively empty: GitHub's own "not protected", and a readable ruleset list with nothing in it
-  rules([view(), unprotected, noRules, { match: 'pr checks', stderr: 'no required checks reported', code: 1, times: 9 }])
+  rules([view(), unprotected, noRules, runs([])])
   assert.deepEqual([gh.ci(root).state, load(root).ci.required, load(root).ci.policy.state], ['none', [], 'empty'])
   assert.match(load(root).ci.policy.sources.join(), /not protected.*rulesets/)
   // the human names a check GitHub does not label required: it is looked up among all checks
   assert.equal(put(root, 'required_checks', '["lint"]').status, 0)
-  const checks = list => ({ match: 'pr checks 7 -R acme/app --json', stdout: JSON.stringify(list), code: list.some(c => c.bucket !== 'pass') ? 1 : 0, times: 9 })
-  const labelled = { match: 'pr checks 7 -R acme/app --required', stderr: 'no required checks reported', code: 1, times: 9 }
   for (const [list, state, missing] of [
     [[{ name: 'docs', bucket: 'pass' }], 'pending', ['lint']], // not created yet
     [[{ name: 'lint', bucket: 'pending' }], 'pending', []],
     [[{ name: 'lint', bucket: 'fail' }], 'fail', []],
     [[{ name: 'lint', bucket: 'pass' }, { name: 'docs', bucket: 'fail' }], 'pass', []], // docs is nobody's requirement
   ]) {
-    rules([view(), unprotected, noRules, labelled, checks(list)])
+    rules([view(), unprotected, noRules, runs(list)])
     const result = gh.ci(root)
     assert.deepEqual([result.state, result.missing], [state, missing], JSON.stringify(list))
-    assert.ok(calls().some(c => /^pr checks 7 -R acme\/app --json/.test(c)), 'the unlabelled check was looked up among all checks')
   }
   // the policy and the human's list add up: neither replaces the other
-  rules([view(), { match: 'protection', stdout: jsonl([{ name: 'rspec' }]), times: 9 }, noRules, labelled, checks([{ name: 'rspec', bucket: 'pass' }, { name: 'lint', bucket: 'pass' }])])
+  rules([view(), { match: 'protection', stdout: jsonl([{ name: 'rspec' }]), times: 9 }, noRules, runs([{ name: 'rspec', bucket: 'pass' }, { name: 'lint', bucket: 'pass' }])])
   assert.deepEqual([gh.ci(root).state, load(root).ci.required], ['pass', ['rspec', 'lint']])
 })
 
@@ -280,7 +280,7 @@ test('R1: a list approved for one base says nothing about another', () => {
   assert.deepEqual([load(root).required_checks, load(root).required_checks_for, load(root).ci], [undefined, undefined, undefined])
   // a list written by hand for another base is not used either
   update(root, r => ({ ...r, required_checks: ['lint'], required_checks_for: { repo: 'acme/app', base: 'main' } }))
-  rules([view({ baseRefName: 'release' }), notFound('protection'), notFound('rules/branches'), { match: 'pr checks', stdout: JSON.stringify([{ name: 'lint', bucket: 'pass' }]), times: 9 }])
+  rules([view({ baseRefName: 'release' }), notFound('protection'), notFound('rules/branches'), runs([{ name: 'lint', bucket: 'pass' }])])
   assert.deepEqual([gh.ci(root).state, load(root).ci.policy.manual], ['unknown', null])
 })
 
@@ -352,7 +352,7 @@ test('R9: polling options must be positive numbers, and Copilot is the bot, not 
 
 test('R9: a PR a human closed, merged or marked ready is written down and said, never undone', () => {
   const root = published()
-  const policy = [{ match: 'protection', stdout: jsonl([{ name: 'rspec' }]), times: 9 }, { match: 'rules/branches', stdout: '', times: 9 }, { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pass' }]), times: 9 }]
+  const policy = [{ match: 'protection', stdout: jsonl([{ name: 'rspec' }]), times: 9 }, { match: 'rules/branches', stdout: '', times: 9 }, runs([{ name: 'rspec', bucket: 'pass' }])]
   rules([view({ state: 'OPEN', isDraft: true }), ...policy])
   assert.equal(gh.ci(root).state, 'pass')
   assert.deepEqual([load(root).pr_state.state, load(root).pr_state.draft], ['OPEN', true])
@@ -370,7 +370,7 @@ test('R10: with diagnostics on, each GitHub step leaves what it asked, what came
   const root = published({ diagnostics: { enabled: true } })
   const body = join(root, 'body.md'); writeFileSync(body, 'the whole report text, which is not for the record')
   rules([view(), { match: 'protection', stderr: 'HTTP 403: Must have admin rights', code: 1, times: 9 }, { match: 'rules/branches', stdout: '', times: 9 },
-    { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pending' }]), code: 8, times: 9 },
+    runs([{ name: 'rspec', bucket: 'pending' }]),
     { match: '^api user', stdout: 'bot\n', times: 9 }, { match: 'issues/7/comments', stdout: jsonl([{ id: 5, user: 'bot', body: '<!-- story-loop-report -->' }]), times: 9 }, { match: 'PATCH', stdout: '{}', times: 9 }])
   assert.equal(put(root, 'required_checks', '["rspec","lint"]').status, 0)
   assert.equal(gh.ci(root).state, 'pending')
@@ -378,7 +378,7 @@ test('R10: with diagnostics on, each GitHub step leaves what it asked, what came
   const run = load(root)
   const { events } = readEvents(diagDir(root, run.story, run.id))
   const ci = events.find(e => e.kind === 'ci')
-  assert.deepEqual([ci.outcome, ci.details.expected, ci.details.observed, ci.details.missing, ci.commit, ci.stage], ['pending', ['rspec', 'lint'], ['rspec:pending'], ['lint'], SHA, 'report'])
+  assert.deepEqual([ci.outcome, ci.details.expected.map(r => [r.name, r.app_id]), ci.details.observed, ci.details.missing, ci.commit, ci.stage], ['pending', [['rspec', null], ['lint', null]], ['rspec@1:pending'], ['lint'], SHA, 'report'])
   assert.deepEqual([ci.details.policy.state, ci.details.policy.manual.names, ci.details.policy.manual.base], ['unknown', ['rspec', 'lint'], 'main'])
   assert.match(ci.details.policy.why, /branch protection \(HTTP 403\)/)
   const calls = events.filter(e => e.kind === 'gh')
@@ -394,7 +394,7 @@ test('R10: with diagnostics on, each GitHub step leaves what it asked, what came
 
 test('H11: checks of a head that moved, or of another base or branch, are never recorded for the published commit', () => {
   const other = 'b'.repeat(40)
-  const green = { match: 'pr checks', stdout: JSON.stringify([{ name: 'rspec', bucket: 'pass' }]), times: 9 }
+  const green = runs([{ name: 'rspec', bucket: 'pass' }])
   const policy = [{ match: 'protection', stdout: jsonl([{ name: 'rspec' }]), times: 9 }, { match: 'rules/branches', stdout: '', times: 9 }]
   // a collaborator pushes between reading the head and reading the checks
   let root = published()
@@ -425,8 +425,7 @@ test('H14: a report that could not be posted stays "attempted" and does not pass
   const { dir: root, git } = repo()
   const head = git('rev-parse', 'HEAD')
   withRun(root, { pushed: { state: 'confirmed', sha: head }, ci: { sha: head, state: 'pass', required: [] } })
-  update(root, r => { for (const s of Object.values(r.stages)) s.status = 'passed'; r.stages.copilot_review.status = 'skipped'; r.stages.report.status = 'running'; return r })
-  for (const id of FRESH) update(root, r => { r.stages[id].tree = git('rev-parse', 'HEAD^{tree}'); return r })
+  update(root, r => { for (const s of Object.values(r.stages)) s.status = 'passed'; r.stages.copilot_review.status = 'skipped'; r.stages.report.status = 'running'; return greenEvidence(r, root) })
   const body = join(root, 'body.md'); writeFileSync(body, 'x')
   rules([view({ headRefOid: head }), { match: '^api user', stdout: 'bot\n', times: 9 }, { match: 'issues/7/comments', stdout: '', times: 9 },
     { match: 'pr comment 7', stderr: 'HTTP 403: Resource not accessible', code: 1, times: 9 }])
@@ -438,33 +437,74 @@ test('H14: a report that could not be posted stays "attempted" and does not pass
   update(root, r => ({ ...r, report: { state: 'confirmed', sha: head, comment_id: 9 } }))
   assert.match(passProblem(root, load(root), 'report'), /no walkthrough for HEAD/)
   update(root, r => ({ ...r, walkthrough: { tree: git('rev-parse', 'HEAD^{tree}'), commit: head } }))
+  assert.match(passProblem(root, load(root), 'report'), /explains the diff from another base/, 'a walkthrough of an unknown base is not current')
+  update(root, r => ({ ...r, walkthrough: { ...r.walkthrough, merge_base: git('merge-base', 'main', 'HEAD') } }))
   assert.equal(passProblem(root, load(root), 'report'), null)
 })
+
+// A run whose push stage passed on reviewed code: HEAD is published and every gate holds for it.
+function eligible() {
+  const { dir: root, git } = repo()
+  const head = git('rev-parse', 'HEAD')
+  withRun(root, { pushed: { state: 'confirmed', stage: 'push', sha: head } })
+  update(root, r => {
+    for (const id of ['contract', 'build', 'quality', 'test_review', 'verify', 'second_review', 'push']) r.stages[id].status = 'passed'
+    return greenEvidence(r, root)
+  })
+  return { root, head, git }
+}
 
 test('ready: the PR leaves draft once, at the published commit, and is not reported as a human\'s doing', () => {
   assert.throws(() => gh.ready(published({ pushed: null })), /publish first/)
 
-  const root = published()
+  const { root, head } = eligible()
   rules([view({ headRefOid: 'b'.repeat(40) })])
-  assert.throws(() => gh.ready(root), /not the published aaaaaaa; publish again/)
+  assert.throws(() => gh.ready(root), new RegExp(`not the published ${head.slice(0, 7)}; publish again`))
   assert.equal(calls().filter(c => /pr ready/.test(c)).length, 0)
 
-  rules([view(), { match: 'pr view 7 -R acme/app --json state,isDraft', stdout: JSON.stringify({ state: 'OPEN', isDraft: true }), times: 1 },
+  rules([view({ headRefOid: head }), { match: 'pr view 7 -R acme/app --json state,isDraft', stdout: JSON.stringify({ state: 'OPEN', isDraft: true }), times: 1 },
     { match: '^pr ready 7 -R acme/app$', stdout: '', times: 1 }])
-  assert.match(gh.ready(root), /marked ready at aaaaaaa/)
-  assert.deepEqual([load(root).ready.sha, load(root).ready.by, load(root).pr_state.draft], [SHA, 'story-loop', false])
+  assert.match(gh.ready(root), new RegExp(`marked ready at ${head.slice(0, 7)}`))
+  assert.deepEqual([load(root).ready.sha, load(root).ready.by, load(root).pr_state.draft], [head, 'story-loop', false])
   assert.match(gh.ready(root), /already marked ready/)
   assert.equal(calls().filter(c => /pr ready/.test(c)).length, 1, 'once per commit')
 
   // A human marked it ready first: left as it is, nothing sent.
-  const human = published()
-  rules([view(), { match: 'json state,isDraft', stdout: JSON.stringify({ state: 'OPEN', isDraft: false }) }])
-  assert.match(gh.ready(human), /already ready/)
+  const human = eligible()
+  rules([view({ headRefOid: human.head }), { match: 'json state,isDraft', stdout: JSON.stringify({ state: 'OPEN', isDraft: false }) }])
+  assert.match(gh.ready(human.root), /already ready/)
   assert.equal(calls().filter(c => /pr ready/.test(c)).length, 0)
 
-  const closed = published()
-  rules([view(), { match: 'json state,isDraft', stdout: JSON.stringify({ state: 'CLOSED', isDraft: true }) }])
-  assert.throws(() => gh.ready(closed), /is closed; nothing to mark ready/)
+  const closed = eligible()
+  rules([view({ headRefOid: closed.head }), { match: 'json state,isDraft', stdout: JSON.stringify({ state: 'CLOSED', isDraft: true }) }])
+  assert.throws(() => gh.ready(closed.root), /is closed; nothing to mark ready/)
+})
+
+// 2026-11-26 audit, readiness: a contract-stage push or evidence that does not hold never
+// reaches GitHub. Every refusal below is decided before the first gh call.
+test('readiness is refused before any GitHub call for a draft push, failed, running or stale evidence', () => {
+  const refused = (root, why) => {
+    rules([])
+    assert.throws(() => gh.ready(root), why)
+    assert.equal(calls().length, 0, 'no gh call at all, let alone pr ready')
+  }
+  // The contract's draft push: quality, verification and the second review are still pending.
+  const { dir: draft, git } = repo()
+  withRun(draft, { pushed: { state: 'confirmed', stage: 'contract', sha: git('rev-parse', 'HEAD') } })
+  update(draft, r => { r.stages.contract.status = 'passed'; return r })
+  refused(draft, /contract's draft push/)
+  // A failed quality rerun after the push stage passed.
+  const failed = eligible()
+  update(failed.root, r => { r.evidence.quality.lint = [{ command: 'npm run lint', exit: 1, output: 'x' }]; return r })
+  refused(failed.root, /quality: lint failed/)
+  // A replacement quality run that is still going.
+  const running = eligible()
+  update(running.root, r => ({ ...r, claims: { 'quality:quality': { op: 'q2', kind: 'quality', seq: 9, state: 'running', pid: process.pid } } }))
+  refused(running.root, /replacement quality for quality is still running/)
+  // A commit made after the publication.
+  const moved = eligible()
+  writeFileSync(join(moved.root, 'late.txt'), 'x'); moved.git('add', '.'); moved.git('commit', '-qm', 'late')
+  refused(moved.root, /HEAD .* is not the published/)
 })
 
 test('replies: a bad map posts nothing; a fix must be pushed; only fixed threads resolve; a retry never posts twice', () => {
@@ -570,4 +610,42 @@ test('an issue closed as completed marks its pattern handled; one closed as not 
   rules([{ match: 'issue list -R acme/app --state all', stdout: JSON.stringify(issue('COMPLETED', '2026-03-02T00:00:00Z')), times: 1 }])
   assert.deepEqual(gh.promote(root, 'hardcoded-path', { dryRun: true }), { state: 'handled', title: TITLE, url: 'https://github.com/acme/app/issues/9' })
   assert.deepEqual(readHandled(root)['hardcoded-path'], { at: '2026-03-02T00:00:00Z', by: 'https://github.com/acme/app/issues/9' })
+})
+
+// 2026-11-26 audit, CI identity: a required check keeps its producer. The policy below
+// requires required-ci from the GitHub App 15368; a same-name check from app 999 is not it.
+test('a same-name success from another producer never stands in for a required check', () => {
+  const root = published()
+  const policy = { match: 'protection/required_status_checks', stdout: jsonl([{ name: 'required-ci', app_id: 15368 }]), times: 9 }
+  const noRules = { match: 'rules/branches', stdout: '', times: 9 }
+  const ci = list => { rules([view(), policy, noRules, runs(list)]); return gh.ci(root) }
+  // only the wrong producer reported, green
+  let result = ci([{ name: 'required-ci', app_id: 999, bucket: 'pass' }])
+  assert.deepEqual([result.state, result.missing], ['pending', ['required-ci (app 15368)']])
+  // the expected producer pending, failing, then passing, with the wrong one green beside it
+  assert.equal(ci([{ name: 'required-ci', app_id: 999, bucket: 'pass' }, { name: 'required-ci', app_id: 15368, bucket: 'pending', id: 5 }]).state, 'pending')
+  assert.equal(ci([{ name: 'required-ci', app_id: 999, bucket: 'pass' }, { name: 'required-ci', app_id: 15368, bucket: 'fail', id: 5 }]).state, 'fail')
+  assert.equal(ci([{ name: 'required-ci', app_id: 15368, bucket: 'pass', id: 5 }]).state, 'pass')
+  // a re-run of the expected producer: the latest result decides
+  assert.equal(ci([{ name: 'required-ci', app_id: 15368, bucket: 'fail', id: 5 }, { name: 'required-ci', app_id: 15368, bucket: 'pass', id: 9 }]).state, 'pass')
+  // a commit status of that name has no app, so it cannot satisfy an app-bound requirement
+  rules([view(), policy, noRules, { match: 'check-runs', stdout: '', times: 9 }, { match: 'statuses', stdout: jsonl([{ type: 'status', name: 'required-ci', state: 'success', id: 3 }]), times: 9 }])
+  assert.equal(gh.ci(root).state, 'pending')
+})
+
+test('an any-source requirement needs every producer of that name green; neutral and skipped count, unknown never does', () => {
+  const root = published()
+  const policy = { match: 'protection/required_status_checks', stdout: jsonl([{ name: 'rspec', app_id: -1 }]), times: 9 }
+  const noRules = { match: 'rules/branches', stdout: '', times: 9 }
+  const ci = list => { rules([view(), policy, noRules, runs(list)]); return gh.ci(root).state }
+  assert.equal(ci([{ name: 'rspec', app_id: 1, bucket: 'pass' }, { name: 'rspec', app_id: 2, bucket: 'fail' }]), 'fail')
+  assert.equal(ci([{ name: 'rspec', app_id: 1, bucket: 'skipping' }]), 'pass')
+  assert.equal(ci([{ name: 'rspec', app_id: 1, bucket: 'neutral' }]), 'pass')
+  assert.equal(ci([{ name: 'rspec', app_id: 1, bucket: 'pass' }, { name: 'rspec', app_id: 2, bucket: 'something_new' }]), 'unknown')
+  // a malformed row is an error, never a pass
+  rules([view(), policy, noRules, { match: 'commits/.*/(check-runs|statuses)', stdout: jsonl([{ type: 'check', status: 'completed', conclusion: 'success', id: 1 }]), times: 9 }])
+  assert.throws(() => gh.ci(root), /without a name/)
+  // a check run reported for another commit is refused
+  rules([view(), policy, noRules, { match: 'commits/.*/(check-runs|statuses)', stdout: jsonl([{ type: 'check', name: 'rspec', app_id: 1, status: 'completed', conclusion: 'success', id: 1, head_sha: 'b'.repeat(40) }]), times: 9 }])
+  assert.throws(() => gh.ci(root), /not the head/)
 })

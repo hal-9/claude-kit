@@ -23,7 +23,7 @@ function fixture(source, check) {
   r.git('commit', '-qam', 'change')
   return r
 }
-const mutate = (dir, ...args) => spawnSync('node', [SCRIPT, '--base', 'base', ...args], { cwd: dir, encoding: 'utf8' })
+const mutate = (dir, ...args) => spawnSync('node', [SCRIPT, '--adapter', 'exit', '--base', 'base', ...args], { cwd: dir, encoding: 'utf8' })
 const result = stdout => JSON.parse(stdout.match(/RESULT (.*)/)[1])
 
 test('mutantsFor breaks one thing per variant and leaves comments alone', () => {
@@ -51,7 +51,7 @@ test('only a real test failure is a kill', () => {
 test('a weak test lets a boundary mutant survive; the checkout is untouched and the result is evidence', () => {
   const source = 'export const big = n => n > 10\n'
   const { dir } = fixture(source, "import { big } from './calc.mjs'\nif (!big(11) || big(5)) process.exit(1)\n")
-  withRun(dir)
+  withRun(dir, { base: 'base' })
   const run = mutate(dir, '--test', 'node check.mjs', 'calc.mjs')
   assert.equal(run.status, 0, run.stderr)
   assert.match(run.stdout, /SURVIVED calc\.mjs:1 .*n > 10\s+->\s+.*n >= 10/)
@@ -84,7 +84,9 @@ if (!big(11) || big(5) || !small(2) || small(5)) process.exit(1)
   assert.equal(parallel.status, 0, parallel.stderr)
   const lines = out => out.split('\n').filter(l => /^(killed|SURVIVED|invalid|timeout|not run)/.test(l)).join('\n')
   assert.equal(lines(parallel.stdout), lines(serial.stdout), 'same mutants, same outcomes, same order')
-  assert.deepEqual(result(parallel.stdout), result(serial.stdout))
+  // The same outcomes; how they were run (slots, process counts, time) differs by design.
+  const outcome = out => { const { stats, ...rest } = result(out); return rest }
+  assert.deepEqual(outcome(parallel.stdout), outcome(serial.stdout))
 
   const seen = readFileSync(join(probe, 'log'), 'utf8').trim().split('\n').map(l => l.split(':'))
   assert.deepEqual([...new Set(seen.map(([slot]) => slot))].sort(), ['1', '2', '3'], 'every slot ran')
@@ -96,7 +98,7 @@ if (!big(11) || big(5) || !small(2) || small(5)) process.exit(1)
 
 test('--jobs: a slot that cannot run green next to the others stops the call before any mutant counts', () => {
   const { dir } = fixture('export const big = n => n > 10\n', "if (process.env.STORY_LOOP_SLOT === '2') process.exit(1)\n")
-  withRun(dir)
+  withRun(dir, { base: 'base' })
   const run = mutate(dir, '--test', 'node check.mjs', '--jobs', '2', 'calc.mjs')
   assert.notEqual(run.status, 0)
   assert.match(run.stderr, /fails on unmutated code.*--jobs 1/s)
@@ -114,7 +116,7 @@ test('the lane sets the budget: light mutates up to 10 front-end mutants, heavy 
   writeFileSync(join(r.dir, 'model.rb'), 'def big(n) = n > 10\n'); r.git('add', '.'); r.git('commit', '-qm', 'ruby too')
   const { dir } = r
 
-  withRun(dir, { lane: { ...LANE, lane: 'light' } })
+  withRun(dir, { base: 'base', lane: { ...LANE, lane: 'light' } })
   const light = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'model.rb')
   assert.equal(light.status, 0, light.stderr)
   const l = result(light.stdout)
@@ -172,7 +174,7 @@ for (const signal of ['SIGTERM', 'SIGKILL']) {
   test(`${signal} mid-run never changes the checkout`, async () => {
     const source = 'export const big = n => n > 10\n'
     const { dir, git } = fixture(source, "import { big } from './calc.mjs'\nsetTimeout(() => { if (!big(11)) process.exit(1) }, 3000)\n")
-    const child = spawn('node', [SCRIPT, '--base', 'base', '--test', 'node check.mjs', 'calc.mjs'], { cwd: dir })
+    const child = spawn('node', [SCRIPT, '--adapter', 'exit', '--base', 'base', '--test', 'node check.mjs', 'calc.mjs'], { cwd: dir })
     await new Promise(ok => setTimeout(ok, 4500)) // baseline done, first mutant running
     child.kill(signal)
     await new Promise(ok => child.on('close', ok))
@@ -196,7 +198,7 @@ test('H06: a changed source file left out of the call, and a surviving mutant, b
   writeFileSync(join(dir, 'other.mjs'), 'export const small = n => n < 3\n')
   writeFileSync(join(dir, 'notes.md'), 'docs\n')
   git('add', '.'); git('commit', '-qm', 'second file')
-  withRun(dir)
+  withRun(dir, { base: 'base' })
   const run = mutate(dir, '--test', 'node check.mjs', 'calc.mjs')
   assert.match(run.stdout, /Changed source files not mutated in this call: other\.mjs/)
   assert.match(run.stdout, /cannot mutate.*notes\.md/)
@@ -227,7 +229,7 @@ function unparsable(ext) {
   r.git('add', '.'); r.git('commit', '-qm', 'base'); r.git('branch', 'base')
   writeFileSync(join(r.dir, file), 'export const padding = "\\0"\n')
   r.git('commit', '-qam', 'change')
-  withRun(r.dir)
+  withRun(r.dir, { base: 'base' })
   return { ...r, file }
 }
 // The compiler-present branch needs a typescript package. story-loop has no dependencies, so it
@@ -260,7 +262,7 @@ for (const ext of ['.ts', '.tsx', '.jsx']) {
 test('H08: a test run that dies of a signal behind a shell is inconclusive, not a kill', () => {
   // The runner is the shell's child here, so the signal reaches us as exit code 143.
   const { dir } = fixture('export const big = n => n > 10\n', "import { big } from './calc.mjs'\nif (!big(11) || big(10)) process.kill(process.pid, 'SIGTERM')\n")
-  withRun(dir)
+  withRun(dir, { base: 'base' })
   const run = mutate(dir, '--test', 'node check.mjs && true', 'calc.mjs')
   assert.equal(run.status, 0, run.stderr)
   const r = result(run.stdout)
@@ -290,7 +292,7 @@ test('H09: a source symlink that leaves the disposable copy is never written thr
 
 test('H19: a retry on the same code replaces the earlier outcome of each mutant; the first log stays', () => {
   const { dir } = fixture('export const big = n => n > 10\n', WEAK)
-  withRun(dir)
+  withRun(dir, { base: 'base' })
   const flag = join(mkdtempSync(join(tmpdir(), 'sl-flag-')), 'baseline-done')
   // first call: the baseline passes, then the "infrastructure" is down for every mutant
   const first = mutate(dir, '--test', `if [ -f ${flag} ]; then exit 127; fi; touch ${flag}`, 'calc.mjs')
@@ -317,7 +319,7 @@ const storyDir = (dir, story = 'sc-1') => join(dir, '.start-story', story)
 const logs = (dir, story) => readdirSync(storyDir(dir, story)).filter(n => /^mutants-.*\.json$/.test(n)).map(n => JSON.parse(readFileSync(join(storyDir(dir, story), n), 'utf8')))
 // Starts mutate.mjs and resolves `started` once it is listed in the run (its baseline is about to run).
 function background(dir, { inRun = true } = {}) {
-  const child = spawn('node', [SCRIPT, '--base', 'base', '--test', 'node check.mjs', 'calc.mjs'], { cwd: dir })
+  const child = spawn('node', [SCRIPT, '--adapter', 'exit', '--base', 'base', '--test', 'node check.mjs', 'calc.mjs'], { cwd: dir })
   let stderr = ''
   child.stderr.on('data', chunk => { stderr += chunk })
   const closed = new Promise(ok => child.on('close', (code, signal) => ok({ code, signal, stderr })))
@@ -330,7 +332,7 @@ function background(dir, { inRun = true } = {}) {
 
 test('R2: mutants that finish after their run was replaced are not the new run\'s evidence', async () => {
   const { dir } = fixture('export const big = n => n > 10\n', SLOW)
-  const first = withRun(dir)
+  const first = withRun(dir, { base: 'base' })
   const { closed, started } = background(dir)
   await started
   assert.match(spawnSync('node', [LOOP, 'status'], { cwd: dir, encoding: 'utf8' }).stdout, /outstanding: mutate \w+ for test_review attempt 1.*still running/)
@@ -352,7 +354,7 @@ test('R2: mutants that finish after their run was replaced are not the new run\'
 
 test('R2: ending a run asks its mutation helper to stop, and what it had is kept as interrupted, not as evidence', async () => {
   const { dir, git } = fixture('export const big = n => n > 10\n', SLOW)
-  withRun(dir)
+  withRun(dir, { base: 'base' })
   const { child, closed, started } = background(dir)
   await started
   const ended = spawnSync('node', [LOOP, 'end'], { cwd: dir, encoding: 'utf8' })
@@ -368,7 +370,7 @@ test('R2: ending a run asks its mutation helper to stop, and what it had is kept
 
 test('R2: mutants from before a return to build are not the next attempt\'s evidence; a stale error changes nothing either', async () => {
   const { dir } = fixture('export const big = n => n > 10\n', SLOW)
-  withRun(dir)
+  withRun(dir, { base: 'base' })
   const { closed, started } = background(dir)
   await started
   // back to build: the same run, every stage from build on is on its next attempt
@@ -384,7 +386,7 @@ test('R2: a mutation run started with no run active never attaches itself to one
   const { dir } = fixture('export const big = n => n > 10\n', SLOW)
   const { closed } = background(dir, { inRun: false })
   await wait(500)
-  withRun(dir)
+  withRun(dir, { base: 'base' })
   const done = await closed
   assert.equal(done.code, 0, done.stderr)
   assert.deepEqual([load(dir).evidence, load(dir).ops], [{}, undefined])
@@ -393,7 +395,7 @@ test('R2: a mutation run started with no run active never attaches itself to one
 
 test('R2: results merge only with evidence of the same run, attempt, tree and base', () => {
   const { dir } = fixture('export const big = n => n > 10\n', WEAK)
-  const first = withRun(dir)
+  const first = withRun(dir, { base: 'base' })
   assert.equal(mutate(dir, '--test', 'node check.mjs', 'calc.mjs').status, 0)
   const good = load(dir).evidence.mutants
   assert.deepEqual([good.run, good.attempt, good.total], [first.id, 1, 2])
@@ -411,7 +413,7 @@ test('R2: results merge only with evidence of the same run, attempt, tree and ba
 
 test('R10: with diagnostics on, a mutation run records its scope, its baseline, every mutant and its end', () => {
   const { dir, git } = fixture('export const big = n => n > 10\n', WEAK)
-  const run = withRun(dir, { diagnostics: { enabled: true } })
+  const run = withRun(dir, { base: 'base', diagnostics: { enabled: true } })
   const token = `ghp_${'k'.repeat(36)}`.replace(/k/g, () => Math.floor(Math.random() * 10))
   assert.equal(mutate(dir, '--test', `API_TOKEN=${token} node check.mjs`, 'calc.mjs').status, 0)
   const { events } = readEvents(diagDir(dir, 'sc-1', run.id))
@@ -430,7 +432,7 @@ test('R10: with diagnostics on, a mutation run records its scope, its baseline, 
 
 test('R10: a baseline that fails is kept with its output, and leaves no evidence and no listed helper', () => {
   const { dir } = fixture('export const big = n => n > 10\n', WEAK)
-  withRun(dir)
+  withRun(dir, { base: 'base' })
   const run = mutate(dir, '--test', 'echo the suite is broken; exit 1', 'calc.mjs')
   assert.equal(run.status, 1)
   assert.match(run.stderr, /fails on unmutated code/)
@@ -448,7 +450,7 @@ test('a second attempt on other code runs every mutant again: earlier kills are 
   writeFileSync(join(r.dir, 'other.mjs'), 'export const small = n => n < 3\n')
   r.git('add', '.'); r.git('commit', '-qm', 'other')
   const { dir } = r
-  withRun(dir)
+  withRun(dir, { base: 'base' })
   const first = mutate(dir, '--test', 'node check.mjs', 'calc.mjs', 'other.mjs')
   assert.equal(first.status, 0, first.stderr)
   const killedFirst = result(first.stdout).killed

@@ -110,7 +110,7 @@ test('H03: a commit made after the reviews is refused before anything reaches th
   const { dir, origin, commit } = repo({ remote: true })
   withRun(dir); atPush(dir)
   commit() // new code no review covered
-  assert.throws(() => publish(dir), /quality, test_review, verify, second_review covered older code.*nothing was pushed/)
+  assert.throws(() => publish(dir), /quality: .*cover older code.*second_review: .*nothing was pushed/)
   assert.equal(remoteRef(origin, `refs/heads/${B}`), null)
   assert.equal(load(dir).pushed, undefined)
   // the contract push opens the draft PR before any review exists

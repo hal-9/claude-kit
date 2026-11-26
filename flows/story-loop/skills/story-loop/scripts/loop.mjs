@@ -7,16 +7,16 @@ import {
   readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, rmSync, renameSync, copyFileSync,
   statSync, realpathSync, openSync, readSync, closeSync, cpSync, symlinkSync, readdirSync,
 } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bind, record, toggle, exportBundle, diagDir, readEvents, readManifest, scrub } from './diag.mjs'
+import { bind, record, toggle, exportBundle, diagDir, readEvents, readManifest, scrub, sanitizeOutput } from './diag.mjs'
 import { appendLedger, readLedger, summary as ledgerSummary, lessons as ledgerLessons, ledgerFile, readHandled, markHandled } from './ledger.mjs'
 import { acquire } from './lease.mjs'
 
 export const GRAPH = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'graph.json'), 'utf8'))
-export const SCHEMA = 3
+export const SCHEMA = 4
 export const LEASE_MS = 15 * 60_000
 const DONE = new Set(['passed', 'skipped'])
 const PUT_KEYS = new Set(['title', 'branch', 'pr', 'base', 'repo', 'tasks', 'findings', 'browser', 'environment', 'required_checks', 'lane', 'lessons', 'evidence_sharing', 'web_guidance', 'story_url'])
@@ -32,6 +32,9 @@ const SKIP = {
 }
 // Stages whose evidence covers one exact code tree; a later change makes it stale.
 export const FRESH = ['quality', 'test_review', 'verify', 'second_review']
+// The gates publication, readiness, the report and the board ask about: the evidence stages,
+// and build when the contract recorded a verification plan (its required checks ran on this code).
+export const GATES = ['build', ...FRESH]
 
 // A run starts from a Shortcut story (sc-123) or a GitHub issue (gh-123).
 // Accepts SC-123, 123, gh-123, #123, and the URL of either.
@@ -96,7 +99,10 @@ export function newRun(story, now = new Date().toISOString()) {
 
 // Old runs keep their data. A schema 1 run recorded no code tree, so nothing it
 // passed counts as fresh evidence; a stage the graph gained since is pending, so
-// the run stops there first.
+// the run stops there first. Schema 4 (0.21) binds evidence to the diff's merge base,
+// to its operation claim and, for a review, to a structured artifact: evidence of an
+// older schema keeps its history but nothing is invented for it, so the gate decision
+// asks for the check to run again (gateProblem says which and why).
 export function migrate(run) {
   if (run.schema === SCHEMA || !run.stages || typeof run.stages !== 'object') return run
   const { session, ...rest } = run
@@ -190,6 +196,7 @@ export function move(run, verb, stage, arg, reason, now = new Date().toISOString
       // Evidence of the old attempt is history now: kept, never counted again.
       next.history = [...(next.history ?? []), { at: now, from: stage, to: arg, reason, evidence: next.evidence }]
       next.evidence = {}
+      next.claims = {}
       if (!byHuman) next.stages[arg].rounds += 1
       next.stages[arg].reason = reason
       break
@@ -204,6 +211,7 @@ export function move(run, verb, stage, arg, reason, now = new Date().toISOString
       DONE.has(st.status) || ['running', 'waiting', 'blocked'].includes(st.status) || fail(`"${stage}" is ${st.status}; nothing to reopen`)
       next.history = [...(next.history ?? []), { at: now, reopened: stage, attempt: st.attempt ?? 1, reason }]
       next.stages[stage] = { status: 'pending', rounds: st.rounds, attempt: (st.attempt ?? 1) + 1, reason }
+      next.claims = Object.fromEntries(Object.entries(next.claims ?? {}).filter(([k]) => !k.startsWith(`${stage}:`)))
       break
     default:
       fail(`unknown verb "${verb}" (start | pass | skip | block | wait | back | reopen)`)
@@ -380,13 +388,23 @@ export function opContext(root, run, kind, stage, extra = {}) {
 }
 const alive = pid => { try { process.kill(pid, 0); return true } catch (error) { return error.code !== 'ESRCH' } }
 // For the helpers that run long: also listed in the run, so status, a takeover and `end` can see them.
-export function opStart(root, kind, stage, extra = {}) {
+// `units` are the required check units this operation replaces (quality: ["quality"], a
+// mutate call: its files). Each start claims them under a number that only grows: the
+// newest claim of a unit is its authority. An older operation that finishes later
+// changes nothing for that unit, and a newest claim that is still running, failed or
+// was interrupted leaves the gate unsatisfied (claimProblems) whatever passed before.
+export const claimKey = (stage, unit) => `${stage}:${unit}`
+export function opStart(root, kind, stage, extra = {}, units = []) {
   let ctx
   const run = update(root, r => {
     ctx = opContext(root, r, kind, stage, extra)
     // A helper that was killed hard never said it ended; its entry goes when the next one starts.
     const ops = Object.fromEntries(Object.entries(r.ops ?? {}).filter(([, o]) => alive(o.pid)))
-    return { ...r, ops: { ...ops, [ctx.op]: { kind, stage, attempt: ctx.attempt, pid: process.pid, started_at: ctx.started_at } } }
+    const seq = (r.op_seq ?? 0) + 1
+    Object.assign(ctx, { seq, units })
+    const claims = { ...r.claims }
+    for (const u of units) claims[claimKey(stage, u)] = { op: ctx.op, kind, seq, state: 'running', pid: process.pid, attempt: ctx.attempt, tree: ctx.tree, at: ctx.started_at }
+    return { ...r, op_seq: seq, claims, ops: { ...ops, [ctx.op]: { kind, stage, attempt: ctx.attempt, pid: process.pid, started_at: ctx.started_at } } }
   })
   bind(root, run, ctx)
   record(root, 'op.start', { kind, pid: process.pid, ...extra })
@@ -400,13 +418,31 @@ export function staleReason(run, ctx) {
 // Applies fn only while ctx still names the active run and attempt (and `also`
 // finds nothing else changed). Otherwise `result` is kept under the identity it
 // was produced for, and the caller gets an error of kind "stale".
-export function opUpdate(root, ctx, fn, result, also = () => null) {
+// The units of ctx whose newest claim is still ctx's own.
+export const ownedUnits = (run, ctx) => (ctx.units ?? []).filter(u => run.claims?.[claimKey(ctx.stage, u)]?.seq === ctx.seq)
+// A result for claimed units counts only for the units no newer operation claimed since;
+// with `partial` (one mutate call over several files) the owned ones still count.
+function supersededReason(run, ctx, partial) {
+  if (!ctx.units?.length) return null
+  const owned = ownedUnits(run, ctx)
+  const lost = ctx.units.filter(u => !owned.includes(u))
+  if (!lost.length || (partial && owned.length)) return null
+  const by = run.claims?.[claimKey(ctx.stage, lost[0])]
+  return `a newer ${by?.kind ?? ctx.kind} (op ${by?.op ?? 'unknown'}) replaced ${lost.join(', ')} after this one started; the newest one decides`
+}
+export function opUpdate(root, ctx, fn, result, also = () => null, { partial = false } = {}) {
   let why = null
   let next
   try {
     next = update(root, r => {
-      why = staleReason(r, ctx) ?? also(r)
-      return why ? undefined : fn(r)
+      why = staleReason(r, ctx) ?? supersededReason(r, ctx, partial) ?? also(r)
+      if (why) return undefined
+      const owned = ownedUnits(r, ctx)
+      const out = fn(r, owned)
+      if (out === undefined || !owned.length) return out
+      const claims = { ...out.claims }
+      for (const u of owned) claims[claimKey(ctx.stage, u)] = { ...claims[claimKey(ctx.stage, u)], state: 'done', done_at: new Date().toISOString() }
+      return { ...out, claims }
     })
   } catch (error) {
     if (existsSync(paths(root).active)) throw error
@@ -426,10 +462,15 @@ export function opEnd(root, ctx, outcome, reason) {
   let changed = false
   try {
     update(root, r => {
-      if (runKey(r) !== ctx.run || !r.ops?.[ctx.op]) return undefined
+      if (runKey(r) !== ctx.run) return undefined
+      // A claim this operation still holds and never settled: the replacement did not finish.
+      const open = ownedUnits(r, ctx).filter(u => r.claims[claimKey(ctx.stage, u)].state === 'running')
+      if (!r.ops?.[ctx.op] && !open.length) return undefined
       changed = (r.owner?.generation ?? 0) !== ctx.generation
-      const { [ctx.op]: _, ...ops } = r.ops
-      return { ...r, ops }
+      const { [ctx.op]: _, ...ops } = r.ops ?? {}
+      const claims = { ...r.claims }
+      for (const u of open) claims[claimKey(ctx.stage, u)] = { ...claims[claimKey(ctx.stage, u)], state: 'failed', outcome, reason: outcome === 'ok' ? 'it ended without recording a result' : String(reason ?? '').slice(0, 300) }
+      return { ...r, ops, claims }
     })
   } catch { /* the run ended or is unreadable: there is no entry left to clear */ }
   record(root, 'op.end', { kind: ctx.kind, op: ctx.op, stage: ctx.stage, attempt: ctx.attempt, outcome, reason, ownership_changed: changed,
@@ -456,30 +497,115 @@ export function headTree(root) { try { return gitIn(root)('rev-parse', 'HEAD^{tr
 export function headCommit(root) { try { return gitIn(root)('rev-parse', 'HEAD') } catch { return null } }
 export function dirty(root) { try { return gitIn(root)('status', '--porcelain') } catch { return 'not a git checkout' } }
 
-// Why a passed stage's evidence no longer covers its inputs, or null. One answer for the
-// stage gates, publication, the board and the report. Each kind of evidence names what
-// it depends on:
-//   quality, test_review  the exact code tree (tests, config and lockfiles are in it), and for mutants the lane
+// ---- the gate decision -----------------------------------------------------------
+// One answer to "is this gate satisfied for the code as it is now?", asked by the stage
+// gates (passProblem), publication, readiness, the report, the CLI status and the board.
+// It is semantic only: it never asks which stage is current, so any action can ask it.
+// A gate is satisfied when
+//   - its stage passed (or was skipped under its skip policy),
+//   - its accepted result exists, reads as what it claims to be, and its outcome meets the policy,
+//   - the result's identity is the current subject: the code tree, the diff's merge base,
+//     the lane, the check list and environment, the review request,
+//   - no newer replacement of any of its units is running, failed or was interrupted (claims),
+//   - its waivers (accepted mutants and signals, parked findings) are recorded for these results.
+// Whatever is missing, unreadable or of an older schema is an unsatisfied gate with its
+// reason, never a green one kept from before. What each kind of evidence depends on:
+//   quality, test_review  the exact code tree (tests, config and lockfiles are in it) and the merge base
+//                         the diff was taken from; for mutants also the lane
 //   verify                the application code (a commit of tests only leaves it standing), the approved
-//                         check list revision and the environment the browser tested
-//   second_review         the exact code tree: tests are executable code and are reviewed too
-// A passed stage that names no tree (a run from before 0.7) proves nothing about this code.
-// Stale evidence stays on record with its reason; it never satisfies a current gate.
-export function evidenceStale(root, run, id, tree = headTree(root)) {
-  const s = run.stages[id]
-  if (s?.status !== 'passed' || !FRESH.includes(id)) return null
-  if (id === 'verify') {
-    const request = s.request
-    if (request && (request.checks_revision ?? 0) !== (run.checks_revision ?? 0)) return 'the approved check list changed since the browser ran'
-    if (request && run.environment && request.env_tag !== undefined && request.env_tag !== envTag(run.environment)) return 'the environment changed since the browser ran'
-    if (s.tree !== tree && !(s.commit && testsOnlySince(root, s.commit))) return 'the application code changed since the browser ran'
-    return null
+//                         check list revision, the environment, and the results file itself
+//   second_review         the exact code tree and merge base (tests are code and are reviewed too);
+//                         every requested angle answered, every source finding accounted for
+//   build                 when the contract recorded a verification plan: each required check ran on this tree
+// A message-only amend keeps the tree, so local content checks stay current across it.
+
+// The subject evidence is compared with: the tree, the commit, and the merge base the diff
+// against the run's base starts from. A base tip that moves without changing the merge base
+// changes no diff, so it invalidates nothing.
+export function subjectOf(root, run, tree = headTree(root)) {
+  let merge_base = null
+  try { const git = gitIn(root); merge_base = git('merge-base', diffBase(git, run.base || 'main'), 'HEAD') } catch {}
+  return { tree, commit: headCommit(root), base: baseName(run.base) || null, merge_base }
+}
+// The newest claim of each unit of a stage that did not end in a recorded result.
+export function claimProblems(run, stage) {
+  return Object.entries(run.claims ?? {}).filter(([k]) => k.startsWith(`${stage}:`)).flatMap(([k, c]) => {
+    const unit = k.slice(stage.length + 1)
+    if (c.state === 'running') return [alive(c.pid) ? `a replacement ${c.kind} for ${unit} is still running (op ${c.op})` : `the ${c.kind} for ${unit} was interrupted (op ${c.op}, its process is gone); run it again`]
+    if (c.state === 'failed') return [`the newest ${c.kind} for ${unit} did not finish (${c.reason || c.outcome || 'failed'}); run it again`]
+    return []
+  })
+}
+const shortSha = sha => String(sha ?? 'none').slice(0, 7)
+function identityProblem(e, subject, what, mergeBase = e?.merge_base) {
+  if (e.tree !== subject.tree) return `the ${what} cover older code; run it again`
+  if (!mergeBase) return `the ${what} were recorded without the base their diff was taken from (before 0.21); run it again`
+  if (subject.merge_base && mergeBase !== subject.merge_base)
+    return `the ${what} diffed against ${shortSha(mergeBase)}, but the run's base ${subject.base} gives ${shortSha(subject.merge_base)} now; run it again`
+  return null
+}
+// Why the evidence of `id` does not satisfy its gate for `subject`, or null. Ignores the stage status.
+export function evidenceProblem(root, run, id, subject = subjectOf(root, run)) {
+  const claims = claimProblems(run, id)
+  if (claims.length) return claims.join('; ')
+  switch (id) {
+    case 'build':
+      return run.verification?.checks?.length ? verificationProblem(run.verification, subject) : null
+    case 'quality': {
+      const q = run.evidence?.quality
+      if (!q) return 'no quality results for this attempt (run quality.mjs)'
+      return identityProblem(q, subject, 'quality results') ?? qualityProblem(q)
+    }
+    case 'test_review': {
+      const m = run.evidence?.mutants
+      if (!m) return 'no mutation results for this attempt (run mutate.mjs)'
+      // Before 0.21 `base` already held the merge-base commit the mutants were taken from.
+      const wrong = identityProblem(m, subject, 'mutation results', m.merge_base ?? m.base)
+      if (wrong) return wrong
+      const lane = run.lane?.lane ?? 'standard'
+      if (m.lane && m.lane !== lane) return `the mutants ran under the ${m.lane} lane, the story is now ${lane}; run mutate.mjs again`
+      return mutantsProblem(m)
+    }
+    case 'verify': {
+      const s = run.stages.verify
+      const request = s.request
+      if (request && (request.checks_revision ?? 0) !== (run.checks_revision ?? 0)) return 'the approved check list changed since the browser ran'
+      if (request && run.environment && request.env_tag !== undefined && request.env_tag !== envTag(run.environment)) return 'the environment changed since the browser ran'
+      const tree = s.tree ?? request?.tree
+      const commit = s.commit ?? request?.commit
+      if (tree !== subject.tree && !(commit && testsOnlySince(root, commit))) return 'the application code changed since the browser ran'
+      return verifyProblem(root, run)
+    }
+    case 'second_review': {
+      const request = run.stages.second_review.request
+      if (!request) return 'second_review was not started on this attempt; loop.mjs start second_review prints the request id the review is recorded under'
+      if (request.tree !== subject.tree) return 'the code changed since this review was requested (tests are code too); run loop.mjs start second_review again and review this code'
+      if (!request.merge_base) return 'the review request was made before 0.21 and names no base for its diff; run loop.mjs start second_review again'
+      if (subject.merge_base && request.merge_base !== subject.merge_base) return `the review covered the diff from ${shortSha(request.merge_base)}, but the run's base ${subject.base} gives ${shortSha(subject.merge_base)} now; run loop.mjs start second_review again`
+      return reviewProblem(root, run, request) ?? findingsProblem((run.findings ?? []).filter(f => f.source !== 'copilot'))
+    }
   }
-  if (id === 'test_review' && s.lane && s.lane !== (run.lane?.lane ?? 'standard')) return `the mutants ran under the ${s.lane} lane`
-  return s.tree === tree ? null : 'the code changed since it passed'
+  return null
+}
+// The gate of `id`: its stage passed or was skipped, and its evidence holds now.
+export function gateProblem(root, run, id, subject = subjectOf(root, run)) {
+  if (id === 'build' && !run.verification?.checks?.length) return null
+  const s = run.stages[id]
+  if (s?.status === 'skipped') return null
+  if (s?.status !== 'passed') return `${id} has not passed`
+  return evidenceProblem(root, run, id, subject)
+}
+// Every gate whose stage is done but whose evidence does not hold for the subject: { stage: reason }.
+export function gateProblems(root, run, subject = subjectOf(root, run)) {
+  return Object.fromEntries(GATES.filter(id => DONE.has(run.stages[id]?.status))
+    .map(id => [id, gateProblem(root, run, id, subject)]).filter(([, why]) => why))
+}
+// Kept for callers that ask by tree: a passed gate's reason, or null.
+export function evidenceStale(root, run, id, tree = headTree(root)) {
+  return run.stages[id]?.status === 'passed' ? gateProblem(root, run, id, subjectOf(root, run, tree)) : null
 }
 export function staleStages(root, run, tree = headTree(root)) {
-  return FRESH.filter(id => evidenceStale(root, run, id, tree))
+  return Object.keys(gateProblems(root, run, subjectOf(root, run, tree)))
 }
 
 // ---- notes from the board ----------------------------------------------------
@@ -852,7 +978,7 @@ function designProblem(r, check) {
 }
 
 const SEVERITY = ['blocker', 'major', 'minor', 'nit', 'question']
-const VERDICTS = ['open', 'fix_requested', 'fixed', 'rejected', 'parked']
+const VERDICTS = ['open', 'fix_requested', 'fixed', 'rejected', 'parked', 'duplicate']
 export function findingsProblem(findings) {
   for (const f of findings) {
     const name = `finding ${f.id ?? '(no id)'}`
@@ -863,6 +989,113 @@ export function findingsProblem(findings) {
     if (f.verdict === 'fixed' && !f.commit) return `${name} is fixed but names no commit that fixed it`
     if (['rejected', 'parked'].includes(f.verdict) && !f.note) return `${name} is ${f.verdict} without a reason (note)`
     if (f.verdict === 'parked' && f.severity === 'blocker') return `${name} is a blocker; a blocker is fixed or rejected with a reason, never parked`
+    if (f.verdict === 'duplicate') {
+      const canonical = findings.find(x => x.id === f.duplicate_of)
+      if (!canonical || canonical.id === f.id) return `${name} is a duplicate but names no other finding it duplicates (duplicate_of)`
+      if (canonical.verdict === 'duplicate') return `${name} is a duplicate of ${canonical.id}, which is a duplicate itself; name the canonical finding`
+    }
+  }
+  return null
+}
+
+// ---- structured review results ---------------------------------------------------
+// A reviewer answers one request with one JSON object (agents/ and SKILL.md show it):
+//   { "schema": "story-loop.review/1", "request": "<id>", "reviewer": "codex",
+//     "angles": [ { "angle": "standards", "status": "complete" | "no_op" | "failed" | "incomplete", "note": "…",
+//                   "findings": [ { "id": "s1", "severity": "blocker", "title": "…", "file": "app/x.rb", "line": 12, "body": "…" } ] } ] }
+// Its findings are the source findings: kept as recorded, each under a stable id
+// <reviewer>/<angle>/<id>, and each one must end up in a triaged finding's "sources".
+// Free text is still recorded (an integration that cannot emit JSON), but it is never
+// read as "no findings": the gate waits until a structured transcription of it, naming
+// the text's sha256 in "transcribes", is recorded for the same request.
+// The reviewer's text is data. Nothing in it is run or followed.
+export const REVIEW_SCHEMA = 'story-loop.review/1'
+const ANGLE_STATES = ['complete', 'no_op', 'failed', 'incomplete']
+const SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+export function reviewArtifactProblem(data, requestId) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return 'a structured review is one JSON object'
+  if (data.schema !== REVIEW_SCHEMA) return `schema must be "${REVIEW_SCHEMA}"`
+  if (data.request !== requestId) return `it answers request "${data.request ?? 'none'}", not "${requestId}"`
+  if (data.transcribes !== undefined && !/^[0-9a-f]{64}$/.test(String(data.transcribes))) return 'transcribes is the sha256 of the free-text review it transcribes'
+  if (!Array.isArray(data.angles) || !data.angles.length) return 'angles: one entry per angle reviewed, each with its status'
+  const seen = new Set()
+  for (const [i, a] of data.angles.entries()) {
+    const at = `angle ${i + 1}`
+    if (!SLUG.test(String(a?.angle ?? ''))) return `${at} needs a name (angle: letters, digits, . _ -)`
+    if (seen.has(a.angle)) return `angle ${a.angle} is listed twice`
+    seen.add(a.angle)
+    if (!ANGLE_STATES.includes(a.status)) return `angle ${a.angle}: status is one of ${ANGLE_STATES.join(', ')}`
+    if (!Array.isArray(a.findings)) return `angle ${a.angle}: findings is a list ([] when it found nothing)`
+    if (a.status === 'no_op' && a.findings.length) return `angle ${a.angle} says no_op but lists findings`
+    if (a.status === 'no_op' && !(typeof a.note === 'string' && a.note.trim())) return `angle ${a.angle} says no_op: say why it had nothing to review (note)`
+    const ids = new Set()
+    for (const [j, f] of a.findings.entries()) {
+      const fat = `angle ${a.angle}, finding ${j + 1}`
+      if (!SLUG.test(String(f?.id ?? ''))) return `${fat} needs a stable id`
+      if (ids.has(f.id)) return `${fat}: id ${f.id} is used twice`
+      ids.add(f.id)
+      if (!SEVERITY.includes(f.severity)) return `${fat} (${f.id}) needs a severity (${SEVERITY.join(' | ')})`
+      if (!(typeof f.title === 'string' && f.title.trim())) return `${fat} (${f.id}) needs a title`
+    }
+  }
+  return null
+}
+// The source findings of one structured review, under their stable ids.
+export const sourceFindings = (reviewer, data) => data.angles.flatMap(a => a.findings.map(f => ({
+  id: `${reviewer}/${a.angle}/${f.id}`, angle: a.angle, severity: f.severity, title: String(f.title).slice(0, 300),
+  file: typeof f.file === 'string' ? f.file : null, line: Number.isInteger(f.line) ? f.line : null,
+})))
+// Why the reviews recorded for `request` do not yet account for it, or null. Independent of
+// the order answers arrived in: an angle counts once any answer for it completed (or said
+// no_op), and every source finding of every answer must be triaged.
+export function reviewProblem(root, run, request) {
+  const usage = `loop.mjs review codex|claude|<name> <file> --request ${request.id}`
+  const mine = (run.reviews ?? []).filter(v => v.request === request.id && v.tree === request.tree)
+  if (!mine.length) return `record the review of this code (${usage})`
+  for (const v of mine) {
+    let data = null
+    try { data = readFileSync(v.output) } catch {}
+    if (!data || createHash('sha256').update(data).digest('hex') !== v.sha256) return `the review artifact ${v.output} is missing or changed since it was recorded; record the review again`
+  }
+  const structured = mine.filter(v => v.structured)
+  const raw = mine.filter(v => !v.structured && !structured.some(s => s.transcribes === v.sha256))
+  if (raw.length) return `the review by ${raw[0].reviewer} is free text (${raw[0].sha256.slice(0, 12)}); it is not read as "no findings". Record a structured transcription of every finding in it with "transcribes":"${raw[0].sha256}" (${usage})`
+  const best = {}
+  for (const v of structured) for (const [angle, status] of Object.entries(v.angles ?? {}))
+    if (!['complete', 'no_op'].includes(best[angle])) best[angle] = status
+  const wanted = request.angles?.length ? request.angles : Object.keys(best)
+  const open = wanted.filter(a => !['complete', 'no_op'].includes(best[a])).map(a => `${a} (${best[a] ?? 'no answer'})`)
+  if (open.length) return `requested review angles did not complete: ${open.join(', ')}; run them again and record their answers`
+  const mapped = new Set((run.findings ?? []).flatMap(f => Array.isArray(f.sources) ? f.sources : []))
+  const missing = [...new Set(structured.flatMap(v => v.sources ?? []))].filter(id => !mapped.has(id))
+  return missing.length ? `${missing.length} review findings have no triaged finding: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', …' : ''}. Each source finding stays in a finding's "sources" (mark repeats with loop.mjs finding <id> duplicate --of <canonical>)` : null
+}
+
+// ---- verification plan -------------------------------------------------------------
+// The checks the contract says must run on the code before it is published, by stable id:
+//   loop.mjs verification set '[{"id":"unit","command":"bin/rspec spec/models","version":1}]'
+//   loop.mjs verification run unit      the trusted runner: runs it, records what ran on which tree
+// A model saying a task was accepted is not a record that its checks ran.
+export function verificationPlanProblem(checks) {
+  if (!Array.isArray(checks)) return 'the verification plan is a JSON list of checks'
+  const ids = new Set()
+  for (const [i, c] of checks.entries()) {
+    if (!SLUG.test(String(c?.id ?? ''))) return `check ${i + 1} needs an id`
+    if (ids.has(c.id)) return `check ${c.id} is listed twice`
+    ids.add(c.id)
+    if (!(typeof c.command === 'string' && c.command.trim())) return `check ${c.id} needs the command that runs it`
+    if (c.version !== undefined && !Number.isInteger(c.version)) return `check ${c.id}: version is a whole number`
+  }
+  return null
+}
+export function verificationProblem(plan, subject) {
+  for (const c of plan.checks.filter(c => c.required !== false)) {
+    const r = plan.records?.[c.id]
+    const how = `loop.mjs verification run ${c.id}`
+    if (!r) return `required check ${c.id} has not run on this code (${how})`
+    if (r.revision !== plan.revision || r.command !== c.command) return `required check ${c.id} ran under an older verification plan; run it again (${how})`
+    if (r.tree !== subject.tree) return `required check ${c.id} ran on older code; run it again (${how})`
+    if (r.exit !== 0) return `required check ${c.id} failed on this code (exit ${r.exit}); fix it and run it again (${how})`
   }
   return null
 }
@@ -888,8 +1121,8 @@ export function mutantsProblem(m) {
   const fileOf = id => id.split(':').slice(0, -2).join(':')
   const uncovered = (m.scope ?? []).filter(f => !(m.covered ?? []).includes(f) && !reasons[f])
   if (uncovered.length) return `changed source files were not mutated: ${uncovered.join(', ')}; run mutate.mjs on them, or record why not: loop.mjs mutant accept <file> "<reason>"`
-  const unclear = outcomes.filter(([, o]) => o === 'infra' || o === 'inconclusive').length
-  if (unclear) return `${unclear} mutant runs were inconclusive (infrastructure or a signal); fix the cause and run mutate.mjs again`
+  const unclear = outcomes.filter(([, o]) => ['infra', 'inconclusive', 'no_tests'].includes(o)).length
+  if (unclear) return `${unclear} mutant runs were inconclusive (infrastructure, no tests selected, an unreadable report or a signal); fix the cause and run mutate.mjs again`
   if (!outcomes.some(([, o]) => o === 'killed' || o === 'survived')) return 'no valid mutant ran, so the results say nothing about the tests; with nothing to mutate, skip test_review with the reason'
   const open = outcomes.filter(([id, o]) => UNRESOLVED.includes(o) && !reasons[id] && !(o === 'skipped' && reasons[fileOf(id)])).map(([id, o]) => `${id} (${o})`)
   return open.length ? `${open.length} mutants need a decision: ${open.slice(0, 5).join(', ')}${open.length > 5 ? ', …' : ''}. Kill each with a test and run mutate.mjs again, or record why it stands: loop.mjs mutant accept <id> "<reason>"` : null
@@ -1034,9 +1267,11 @@ export function lessonsProblem(run) {
 export function passProblem(root, run, stage) {
   const tree = headTree(root)
   const head = headCommit(root)
+  const subject = subjectOf(root, run, tree)
+  // Every finished gate, decided now: a failed rerun, a running replacement, a moved base or a lost artifact all count.
   const stale = () => {
-    const list = staleStages(root, run, tree)
-    return list.length ? `${list.join(', ')} covered older code or other inputs than now (${list.map(id => `${id}: ${evidenceStale(root, run, id, tree)}`).join('; ')}); go back to build so they run on this code` : null
+    const open = Object.entries(gateProblems(root, run, subject))
+    return open.length ? `${open.map(([id]) => id).join(', ')} no longer hold for this code (${open.map(([id, why]) => `${id}: ${why}`).join('; ')}); run what failed again, or go back to build so they run on this code` : null
   }
   switch (stage) {
     case 'contract': {
@@ -1052,27 +1287,21 @@ export function passProblem(root, run, stage) {
       if (!run.tasks?.length) return 'no tasks recorded'
       const open = run.tasks.filter(t => t.status !== 'accepted')
       if (open.length) return `tasks not accepted yet: ${open.map(t => t.title ?? t.id).join(', ')}`
-      return dirty(root) ? 'the checkout has uncommitted changes; commit the integrated work first' : null
+      if (dirty(root)) return 'the checkout has uncommitted changes; commit the integrated work first'
+      return evidenceProblem(root, run, 'build', subject)
     }
     case 'quality': {
-      const q = run.evidence?.quality
-      if (!q) return 'no quality results for this attempt (run quality.mjs)'
-      if (q.tree !== tree) return 'the quality results cover older code; run quality.mjs again'
-      return qualityProblem(q) ?? (dirty(root) ? 'commit first; the gate covers committed code' : null)
+      return evidenceProblem(root, run, 'quality', subject) ?? (dirty(root) ? 'commit first; the gate covers committed code' : null)
     }
     case 'test_review': {
-      const m = run.evidence?.mutants
-      if (!m) return 'no mutation results for this attempt (run mutate.mjs)'
-      if (m.tree !== tree) return 'the mutation results cover older code; run mutate.mjs again'
-      // Results under one lane's budget say nothing about a lane signed off later.
-      const lane = run.lane?.lane ?? 'standard'
-      if (m.lane && m.lane !== lane) return `the mutants ran under the ${m.lane} lane, the story is now ${lane}; run mutate.mjs again`
+      const own = evidenceProblem(root, run, 'test_review', subject)
+      if (own) return own
       // Tests added for surviving mutants are code the quality gate has not seen: check them now, not at the push.
-      if (run.stages.quality?.status === 'passed' && run.stages.quality.tree !== tree)
-        return 'test review changed the code after the quality gate; run quality.mjs again on it (a clean run brings the gate up to date)'
+      if (run.stages.quality?.status === 'passed' && gateProblem(root, run, 'quality', subject))
+        return `test review changed the code after the quality gate; run quality.mjs again on it (a clean run brings the gate up to date). The gate says: ${gateProblem(root, run, 'quality', subject)}`
       const sibling = groupOf('test_review').find(id => id !== 'test_review' && evidenceStale(root, run, id, tree))
       if (sibling) return `${sibling} passed on code test review changed since (${evidenceStale(root, run, sibling, tree)}); run it again on this code: loop.mjs reopen ${sibling} "<why>"`
-      return mutantsProblem(m) ?? (dirty(root) ? 'commit the test changes first' : null)
+      return dirty(root) ? 'commit the test changes first' : null
     }
     case 'verify': {
       const request = run.stages.verify.request
@@ -1086,15 +1315,7 @@ export function passProblem(root, run, stage) {
         (run.browser ? null : 'record the browser that was used (loop.mjs put browser chrome|browseros|playwright)')
     }
     case 'second_review': {
-      const review = run.review
-      const request = run.stages.second_review.request
-      const usage = 'loop.mjs review codex|claude|<name> <file with the reviewer\'s output> --request <id>'
-      if (!request) return 'second_review was not started on this attempt; loop.mjs start second_review prints the request id the review is recorded under'
-      if (request.tree !== tree) return 'the code changed since this review was requested (tests are code too); run loop.mjs start second_review again and review this code'
-      if (!review) return `record the review of this code (${usage})`
-      if (review.request !== request.id || review.attempt !== (run.stages.second_review.attempt ?? 1) || review.tree !== request.tree)
-        return `the recorded review covered older code or an earlier attempt; review this code and record it (${usage})`
-      return findingsProblem((run.findings ?? []).filter(f => f.source !== 'copilot')) ?? (dirtyCode(root) ? 'commit first' : null)
+      return evidenceProblem(root, run, 'second_review', subject) ?? (dirtyCode(root) ? 'commit first' : null)
     }
     case 'push':
       if (stale()) return stale()
@@ -1116,7 +1337,8 @@ export function passProblem(root, run, stage) {
       if (run.ci.state === 'none' && run.ci.required?.length !== 0) return 'no checks reported on HEAD yet and the required checks are unknown; run github.mjs ci again'
       if (run.report?.sha === head && run.report.state !== 'confirmed') return `the report was ${run.report.state}, not confirmed on the PR; run github.mjs report again to reconcile`
       if (!(run.report?.sha === head && run.report.comment_id)) return 'the report for HEAD is not posted (github.mjs report)'
-      return run.walkthrough?.tree === tree ? null : 'no walkthrough for HEAD: write it and record it with loop.mjs walkthrough <file>'
+      if (run.walkthrough?.tree !== tree) return 'no walkthrough for HEAD: write it and record it with loop.mjs walkthrough <file>'
+      return run.walkthrough.merge_base === subject.merge_base ? null : 'the walkthrough explains the diff from another base than the run\'s now; write it again (loop.mjs walkthrough <file>)'
     case 'human_review':
       return humanReviewProblem(run)
     case 'retro':
@@ -1135,8 +1357,11 @@ export function passStamp(root, stage, run) {
 
 // ---- CLI ---------------------------------------------------------------------
 
-function status(run) {
+function status(run, root = null) {
   const cur = current(run)
+  // The same decision publication and the board use, for every gate whose stage is done.
+  let gates = {}
+  if (root) { try { gates = gateProblems(root, run) } catch { /* not a checkout any more */ } }
   const now = active(run)
   const rows = GRAPH.stages.map(({ id, label }) => {
     const s = run.stages[id]
@@ -1149,7 +1374,8 @@ function status(run) {
   const owner = run.owner?.session ? `owner ${run.owner.session}` : 'no owner yet'
   // Helpers still at work for this run: a new owner should know before starting the same thing again.
   const ops = Object.entries(run.ops ?? {}).map(([op, o]) => `outstanding: ${o.kind} ${op} for ${o.stage} attempt ${o.attempt}, started ${o.started_at} (${alive(o.pid) ? `pid ${o.pid}, still running` : 'its process is gone'})`)
-  return [`story-loop ${run.story}${run.branch ? ` · ${run.branch}` : ''}${run.pr ? ` · PR ${run.pr}` : ''} · ${owner}${run.diagnostics?.enabled ? ' · diagnostics on' : ''}`, ...rows, ...ops,
+  const held = Object.entries(gates).map(([id, why]) => `NOT CURRENT: ${id}: ${why}`)
+  return [`story-loop ${run.story}${run.branch ? ` · ${run.branch}` : ''}${run.pr ? ` · PR ${run.pr}` : ''} · ${owner}${run.diagnostics?.enabled ? ' · diagnostics on' : ''}`, ...rows, ...ops, ...held,
     cur ? `next: ${now.join(' + ')}${now.length > 1 ? ' (side by side)' : ''}` : 'all stages done'].join('\n')
 }
 
@@ -1449,11 +1675,11 @@ function main(argv) {
   const root = findRoot() ?? fail('no active story-loop run here (loop.mjs init SC-12345)')
   if (verb === 'recover') return recover(root)
   const run = load(root)
-  if (!verb || verb === 'status') return console.log(status(run))
+  if (!verb || verb === 'status') return console.log(status(run, root))
   if (verb === 'json') return console.log(JSON.stringify(run))
   if (verb === 'diagnostics') return diagnostics(root, run, args)
   // The hook does the actual acquire, because only it knows the session id.
-  if (verb === 'acquire') return console.log(status(run))
+  if (verb === 'acquire') return console.log(status(run, root))
   const started = Date.now()
   // Every command that can change the run leaves one record: what was asked and whether it was accepted or refused, and why.
   try {
@@ -1517,10 +1743,16 @@ function command(root, run, verb, args) {
     const [reviewer, file] = args.filter((_, i) => at < 0 || (i !== at && i !== at + 1))
     const usage = 'loop.mjs review codex|claude|<name> <file with the reviewer\'s output> --request <id from start second_review>'
     reviewer && file || fail(`usage: ${usage}`)
+    SLUG.test(reviewer) || fail('the reviewer name is letters, digits, . _ - (codex, claude, angle-security)')
     let output = ''
     try { output = readFileSync(resolve(file), 'utf8') } catch { fail(`cannot read the reviewer's output at ${file}`) }
     output.trim() || fail(`${file} is empty; a review that said nothing still says so`)
     const sha256 = createHash('sha256').update(output).digest('hex')
+    // JSON that is not a valid structured review is refused, never read as free text or as "nothing found".
+    let data = null
+    if (/^\s*[{[]/.test(output)) {
+      try { data = JSON.parse(output) } catch (error) { fail(`${file} looks like JSON but does not parse (${error.message}); nothing was recorded, the review is still open`) }
+    }
     const next = update(root, r => {
       active(r).includes('second_review') && r.stages.second_review.status === 'running' || fail('a review is recorded while second_review is running (loop.mjs start second_review)')
       const request = r.stages.second_review.request ?? fail('this attempt has no review request; run loop.mjs start second_review, then start the reviewer')
@@ -1530,16 +1762,75 @@ function command(root, run, verb, args) {
       request.tree === headTree(root) || fail(`the code changed since request ${request.id} was made (${request.commit?.slice(0, 7)} then, ${headCommit(root)?.slice(0, 7)} now); that answer reviewed the older code. Run loop.mjs start second_review again and review this code`)
       const earlier = (r.reviews ?? []).find(v => v.sha256 === sha256)
       earlier && fail(`this exact answer is already recorded for request ${earlier.request}; reading an old answer again is not a new review`)
-      const kept = join(runDir(root, r), 'reviews', `${request.id}.txt`)
-      existsSync(kept) && fail(`request ${request.id} already has its answer on record; for another review run loop.mjs start second_review again`)
+      if (data) { const problem = reviewArtifactProblem(data, request.id); problem && fail(`the structured review is not valid: ${problem}. Nothing was recorded; the review is still open`) }
+      if (data?.transcribes && !(r.reviews ?? []).some(v => v.request === request.id && !v.structured && v.sha256 === data.transcribes))
+        fail(`it transcribes ${data.transcribes.slice(0, 12)}, but no free-text review of request ${request.id} has that sha256`)
+      const n = (r.reviews ?? []).filter(v => v.request === request.id).length
+      const kept = join(runDir(root, r), 'reviews', n ? `${request.id}-${n + 1}.${data ? 'json' : 'txt'}` : `${request.id}.${data ? 'json' : 'txt'}`)
+      existsSync(kept) && fail(`${kept} is already on record`)
       mkdirSync(dirname(kept), { recursive: true })
       writeFileSync(kept, output)
-      const review = { reviewer, request: request.id, attempt: request.attempt, tree: request.tree, commit: request.commit, sha256, output: kept, at: new Date().toISOString() }
-      return { ...r, reviewer, review, reviews: [...(r.reviews ?? []), review] }
+      const sources = data ? sourceFindings(reviewer, data) : []
+      const review = { reviewer, request: request.id, attempt: request.attempt, tree: request.tree, commit: request.commit, sha256, output: kept, at: new Date().toISOString(),
+        structured: Boolean(data), ...(data ? { angles: Object.fromEntries(data.angles.map(a => [a.angle, a.status])), sources: sources.map(f => f.id), transcribes: data.transcribes ?? null } : {}) }
+      // Source findings become findings to triage, as the reviewer wrote them: none is retyped from memory.
+      const known = new Set((r.findings ?? []).flatMap(f => f.sources ?? []))
+      let k = (r.findings ?? []).length
+      const added = sources.filter(f => !known.has(f.id)).map(f => ({ id: `r${++k}`, source: reviewer, sources: [f.id], severity: f.severity, title: f.title, file: f.file, line: f.line, verdict: 'open' }))
+      return { ...r, reviewer, review, reviews: [...(r.reviews ?? []), review], findings: [...(r.findings ?? []), ...added] }
     })
-    record(root, 'review.recorded', { reviewer, request: next.review.request, tree: next.review.tree, commit: next.review.commit, sha256, stage: 'second_review', attempt: next.review.attempt })
-    emit(root, { kind: 'note', text: `review by ${reviewer} recorded for ${next.review.commit?.slice(0, 7)}` })
-    return console.log(`review by ${reviewer} recorded for ${next.review.commit?.slice(0, 7)} (request ${next.review.request})`)
+    const v = next.review
+    record(root, 'review.recorded', { reviewer, request: v.request, tree: v.tree, commit: v.commit, sha256, stage: 'second_review', attempt: v.attempt, structured: v.structured, angles: v.angles, sources: v.sources?.length ?? null })
+    emit(root, { kind: 'note', text: `review by ${reviewer} recorded for ${v.commit?.slice(0, 7)}${v.structured ? `: ${v.sources.length} finding${v.sources.length === 1 ? '' : 's'}` : ' (free text: transcribe it)'}` })
+    console.log(`review by ${reviewer} recorded for ${v.commit?.slice(0, 7)} (request ${v.request})`)
+    if (v.structured && v.sources.length) console.log(`${v.sources.length} source finding${v.sources.length === 1 ? '' : 's'} added for triage: loop.mjs finding <id> <verdict> "<note>" (repeats: loop.mjs finding <id> duplicate --of <canonical>)`)
+    if (!v.structured) console.log(`free text is not read as "no findings": record a structured transcription with "transcribes":"${sha256}" for the same request`)
+    return
+  }
+  // The angles a second review must answer; set while it runs. Each must complete or say no_op.
+  if (verb === 'angles') {
+    args.length && args.every(a => SLUG.test(a)) || fail('usage: loop.mjs angles <angle> [<angle>...]   (standards, security, a repo angle from .devloops)')
+    const next = update(root, r => {
+      r.stages.second_review.status === 'running' && r.stages.second_review.request || fail('angles are set on the running second review (loop.mjs start second_review)')
+      const angles = [...new Set([...(r.stages.second_review.request.angles ?? []), ...args])]
+      return { ...r, stages: { ...r.stages, second_review: { ...r.stages.second_review, request: { ...r.stages.second_review.request, angles } } } }
+    })
+    return console.log(`second review answers these angles: ${next.stages.second_review.request.angles.join(', ')}`)
+  }
+  // The trusted runner for the contract's verification plan.
+  if (verb === 'verification') {
+    const [sub, arg] = args
+    if (sub === 'set') {
+      let checks
+      try { checks = JSON.parse(arg) } catch { fail('usage: loop.mjs verification set \'[{"id":"unit","command":"<command>","version":1}]\'') }
+      const problem = verificationPlanProblem(checks); problem && fail(problem)
+      const next = update(root, r => {
+        const changed = JSON.stringify(r.verification?.checks ?? null) !== JSON.stringify(checks)
+        return changed ? { ...r, verification: { checks, revision: (r.verification?.revision ?? 0) + 1, records: {}, set_at: new Date().toISOString() } } : undefined
+      })
+      return console.log(`verification plan revision ${next.verification?.revision ?? 0}: ${checks.map(c => c.id).join(', ') || 'no checks'}`)
+    }
+    if (sub === 'run') {
+      const check = run.verification?.checks?.find(c => c.id === arg) ?? fail(`no check "${arg}" in the verification plan (loop.mjs verification set …)`)
+      dirty(root) && fail('commit first; a verification check runs on committed code')
+      const tree = headTree(root), commit = headCommit(root), revision = run.verification.revision
+      const started_at = new Date().toISOString()
+      const r = spawnSync('sh', ['-c', check.command], { cwd: root, encoding: 'utf8', timeout: 30 * 60_000, maxBuffer: 64 << 20 })
+      const exit = r.status ?? (r.signal ? `signal ${r.signal}` : 'did not run')
+      const output = sanitizeOutput(`${r.stdout ?? ''}${r.stderr ?? ''}`, 4000)
+      const dir = join(runDir(root, run), 'verification')
+      mkdirSync(dir, { recursive: true })
+      const artifact = join(dir, `${check.id}-${Date.now()}.log`)
+      writeFileSync(artifact, output)
+      const moved = headTree(root) !== tree || dirty(root)
+      const rec = { id: check.id, version: check.version ?? 1, revision, command: check.command, tree, commit, exit: moved ? 'code moved while it ran' : exit, started_at, ended_at: new Date().toISOString(), artifact }
+      update(root, x => x.verification?.revision === revision ? { ...x, verification: { ...x.verification, records: { ...x.verification.records, [check.id]: rec } } } : fail('the verification plan changed while the check ran; run it again'))
+      record(root, 'verification.run', { check: check.id, outcome: rec.exit === 0 ? 'pass' : 'fail', tree, commit, exit: rec.exit })
+      console.log(`${check.id}: ${rec.exit === 0 ? 'passed' : `FAILED (${rec.exit})`} on ${commit?.slice(0, 7)}\n${output.slice(-1500)}`)
+      if (rec.exit !== 0) process.exitCode = 1
+      return
+    }
+    fail('usage: loop.mjs verification set \'[…]\' | verification run <id>')
   }
   // A mutant that did not die, or a changed file that was not mutated, stands only with a reason.
   if (verb === 'mutant') {
@@ -1562,7 +1853,7 @@ function command(root, run, verb, args) {
     dirtyCode(root) && fail('commit first; a walkthrough explains committed code')
     const problem = walkthroughProblem(w, changedRanges(root, run.base))
     problem && fail(problem)
-    const stamp = { tree: headTree(root), commit: headCommit(root), at: new Date().toISOString() }
+    const stamp = { tree: headTree(root), commit: headCommit(root), merge_base: subjectOf(root, run).merge_base, at: new Date().toISOString() }
     const kept = join(runDir(root, run), 'walkthrough.json')
     mkdirSync(dirname(kept), { recursive: true })
     writeFileSync(kept, JSON.stringify({ ...w, ...stamp }, null, 2) + '\n')
@@ -1603,11 +1894,18 @@ function command(root, run, verb, args) {
   if (verb === 'finding') {
     const opt = name => { const i = args.indexOf(`--${name}`); return i < 0 ? undefined : args[i + 1] }
     const [id, verdict, ...rest] = args.filter((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--'))
-    id && verdict || fail('usage: loop.mjs finding <id> <open|fix_requested|fixed|rejected|parked> "<note>" [--commit <sha>] [--severity <s>]')
+    id && verdict || fail('usage: loop.mjs finding <id> <open|fix_requested|fixed|rejected|parked> "<note>" [--commit <sha>] [--severity <s>] | finding <id> duplicate --of <canonical>')
     VERDICTS.includes(verdict) || fail(`verdict is one of: ${VERDICTS.join(', ')}`)
     update(root, r => {
       const f = (r.findings ?? []).find(x => x.id === id) ?? fail(`no finding "${id}"; add new ones with loop.mjs put findings`)
       const next = { ...f, verdict, ...(rest.length ? { note: rest.join(' ') } : {}), ...(opt('commit') ? { commit: opt('commit') } : {}), ...(opt('severity') ? { severity: opt('severity') } : {}) }
+      // A repeat keeps its sources and points at the canonical finding, whose triage then answers for both.
+      if (verdict === 'duplicate') {
+        const of = opt('of') ?? fail('a duplicate names the canonical finding: loop.mjs finding <id> duplicate --of <canonical>')
+        const canonical = r.findings.find(x => x.id === of && x.id !== id) ?? fail(`no other finding "${of}"`)
+        canonical.verdict === 'duplicate' && fail(`${of} is a duplicate itself; name the canonical finding`)
+        next.duplicate_of = of
+      } else delete next.duplicate_of
       return { ...r, findings: r.findings.map(x => x.id === id ? next : x) }
     })
     emit(root, { kind: 'note', text: `finding ${id}: ${verdict}` })
@@ -1638,6 +1936,12 @@ function command(root, run, verb, args) {
         const ids = new Set(value.map(x => x?.id))
         const lost = (r[key] ?? []).map(x => x.id).filter(id => !ids.has(id))
         lost.length && !replace && fail(`this list leaves out recorded ${key} (${lost.join(', ')}); give the whole list, change one finding with loop.mjs finding <id> …, or drop them on purpose with --replace`)
+        // A reviewer's finding is a fact on record: it is settled (rejected with a note, a duplicate), never deleted.
+        if (key === 'findings') {
+          const kept = new Set(value.flatMap(x => Array.isArray(x?.sources) ? x.sources : []))
+          const dropped = (r.findings ?? []).flatMap(x => x.sources ?? []).filter(src => !kept.has(src))
+          dropped.length && fail(`this list drops reviewer findings ${dropped.slice(0, 5).join(', ')}; a source finding stays on record: settle it with loop.mjs finding <id> rejected "<why>" or mark it a duplicate`)
+        }
       }
       if (key === 'tasks') {
         // The build round a task belongs to: verify reruns only the steps this round's tasks name for the files they changed.
@@ -1659,6 +1963,8 @@ function command(root, run, verb, args) {
     })
     emit(root, { kind: 'note', text: `${key} updated` })
     if (dropped) console.log(`the required checks the human named were approved for the old ${key}; they are dropped. Ask again for this one: loop.mjs put required_checks '[…]'`)
+    // A new base can change the diff: every diff-scoped result is decided again against it.
+    if (key === 'base') for (const [id, why] of Object.entries(gateProblems(root, load(root)))) console.log(`NOT CURRENT: ${id}: ${why}`)
     return console.log(`${key} set`)
   }
   // wait and back take a second positional (who / target) before the reason.
@@ -1706,7 +2012,7 @@ function command(root, run, verb, args) {
       const open = r.stages.second_review.request
       // Starting again on the same code keeps the request, and with it an answer already on record
       // (a resume after a wait reviews nothing new). Changed code gets a new one; added tests do not.
-      const keep = open && open.attempt === attempt && open.tree === tree
+      const keep = open && open.attempt === attempt && open.tree === tree && open.merge_base === subjectOf(root, r, tree).merge_base
       if (keep) moved.stages.second_review.request = open
       else {
         // The last recorded review, also of this attempt (tests committed after it get a delta review).
@@ -1715,7 +2021,7 @@ function command(root, run, verb, args) {
         let branchLines = 0
         try { branchLines = changedSince(root, git('merge-base', diffBase(git, r.base), 'HEAD'))?.lines ?? 0 } catch {}
         const scope = reviewScope({ prior, delta: prior ? changedSince(root, prior.commit) : null, branchLines, findings: r.findings ?? [] })
-        moved.stages.second_review.request = { id: `${runKey(r)}-r${attempt}-${randomUUID().slice(0, 8)}`, attempt, tree, commit: headCommit(root), at: new Date().toISOString(), scope }
+        moved.stages.second_review.request = { id: `${runKey(r)}-r${attempt}-${randomUUID().slice(0, 8)}`, attempt, tree, commit: headCommit(root), merge_base: subjectOf(root, r, tree).merge_base, at: new Date().toISOString(), scope }
       }
     }
     if (verb === 'pass') Object.assign(moved.stages[stage], passStamp(root, stage, r))
@@ -1734,7 +2040,7 @@ function command(root, run, verb, args) {
   emit(root, { kind: 'stage', stage, verb, to: arg, text: reason })
   // The retro is the run's last word on itself: its ledger line carries the lessons.
   if (verb === 'pass' && stage === 'retro') { try { appendLedger(root, next) } catch (error) { console.error(`loop: the ledger line could not be written (${error.message}); the run is unaffected`) } }
-  console.log(status(next))
+  console.log(status(next, root))
   // A run whose retro passed is over: archived now, so its guards never hold up the next piece of work.
   // The human review left pending comes back later (followup); the one that settles it ends the run for good.
   const ends = verb === 'pass' && stage === 'retro' || !current(next)

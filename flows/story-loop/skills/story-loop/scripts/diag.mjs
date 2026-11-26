@@ -49,6 +49,33 @@ export function redact(text) {
   for (const [pattern, replacement] of SECRETS) out = out.replace(pattern, replacement)
   return out
 }
+// Command output as it may be kept: redacted whole first, then cut to its last `max`
+// characters at a line start. Cutting first could split a secret into a shape redact()
+// no longer recognises (ASSWORD="…"), so the order matters.
+export function sanitizeOutput(text, max = MAX_TEXT) {
+  const clean = redact(String(text ?? ''))
+  if (clean.length <= max) return clean
+  const tail = clean.slice(-max)
+  const nl = tail.indexOf('\n')
+  const kept = nl >= 0 && nl < tail.length - 1 ? tail.slice(nl + 1) : tail
+  return `[${clean.length - kept.length} earlier characters omitted]\n${kept}`
+}
+// A structured value, sanitized field by field before it is serialized: secret-named
+// fields lose their value, every string is redacted, and a string that holds JSON is
+// decoded, sanitized and encoded again (redacting the encoded text misreads escaped quotes).
+// Unlike scrub() nothing is cut short: an artifact keeps its whole structure.
+const SECRET_FIELD = /password|passwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|credential|authorization|cookie/i
+export function sanitizeValue(value, depth = 0) {
+  if (depth > 64) return '[omitted: nested deeper than 64 levels]'
+  if (typeof value === 'string') {
+    if (/^\s*[{[]/.test(value)) { try { return JSON.stringify(sanitizeValue(JSON.parse(value), depth + 1)) } catch { /* not JSON after all */ } }
+    return redact(value)
+  }
+  if (Array.isArray(value)) return value.map(v => sanitizeValue(v, depth + 1))
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) =>
+    [k, SECRET_FIELD.test(k) && (typeof v === 'string' || (v && typeof v === 'object')) ? '[redacted]' : sanitizeValue(v, depth + 1)]))
+  return value
+}
 const clip = text => text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}… [truncated, ${text.length} chars]` : text
 // A shell command as the board feed keeps it: the program and a short redacted line.
 // Redacted before it is cut, so a cut never splits a secret into a shape redact misses.
@@ -236,14 +263,20 @@ export function exportBundle(root, runId, { screenshots = false, out, now = new 
       writeFileSync(target, data); artifacts.push(entry); continue
     }
     // Every other known artifact is text, redacted on the way out (best-effort, see redact()).
+    // JSON is decoded and sanitized field by field, so what is exported is still JSON; JSON that
+    // does not parse is left out with the reason, never passed through a text filter.
+    const raw = data.toString('utf8')
+    let text
+    if (extname(name).toLowerCase() === '.json') {
+      try { text = JSON.stringify(sanitizeValue(JSON.parse(raw)), null, 2) + '\n' } catch (error) { omitted.push({ ...entry, why: `malformed JSON (${error.message}); not exported` }); continue }
+    } else text = redact(raw)
     const target = join(dest, 'artifacts', rel)
     mkdirSync(dirname(target), { recursive: true })
-    const text = redact(data.toString('utf8'))
     writeFileSync(target, text)
-    artifacts.push({ ...entry, redacted: text !== data.toString('utf8') })
+    artifacts.push({ ...entry, redacted: text !== raw, sanitized: 'best-effort' })
   }
   writeFileSync(join(dest, 'events.jsonl'), events.map(e => JSON.stringify(e) + '\n').join(''))
-  if (state) writeFileSync(join(dest, 'state.json'), redact(JSON.stringify(state.run, null, 2)) + '\n')
+  if (state) writeFileSync(join(dest, 'state.json'), JSON.stringify(sanitizeValue(state.run), null, 2) + '\n')
   let failures = []
   try { failures = readFileSync(join(storyDir, 'diagnostics', `recording-failures-${runId}.log`), 'utf8').split('\n').filter(Boolean) } catch {}
   const truncated = events.filter(e => e.details?.truncated).length
