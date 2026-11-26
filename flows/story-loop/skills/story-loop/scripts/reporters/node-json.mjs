@@ -9,12 +9,14 @@ export default async function* (source) {
     const error = d.details?.error
     const cause = error?.cause
     yield JSON.stringify({
-      type: event.type, name: d.name, nesting: d.nesting, kind: d.details?.type ?? 'test',
+      type: event.type, name: d.name, nesting: d.nesting, kind: d.details?.type ?? 'test', skipped: Boolean(d.skip || d.todo),
       failureType: error?.failureType ?? null,
       assertion: cause?.code === 'ERR_ASSERTION' || cause?.name === 'AssertionError',
-      fileLevel: Boolean(error) && !cause && Boolean(d.file) && basename(String(d.file)) === basename(String(d.name)),
+      // node reports a file that failed to load, or that ran no test at all, as one top-level
+      // "test" named after the file (on failure its cause is no Error). It is not a test.
+      fileLevel: d.nesting === 0 && Boolean(d.file) && basename(String(d.file)) === basename(String(d.name)) && !(cause instanceof Error),
       code: cause?.code ?? null,
-      message: String(cause?.message ?? error?.message ?? '').slice(0, 500),
+      message: String(cause?.message ?? cause ?? error?.message ?? '').slice(0, 500),
     }) + '\n'
   }
 }

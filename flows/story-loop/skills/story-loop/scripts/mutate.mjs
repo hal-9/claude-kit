@@ -209,8 +209,11 @@ function runTests(command, slot, seconds, stats) {
   stats.running++; stats.peak = Math.max(stats.peak, stats.running)
   return new Promise(done => {
     let out = '', timedOut = false
+    // NODE_TEST_CONTEXT is node:test's own marker for its child processes; inherited, it would turn the
+    // project's `node --test` into a child that reports to us instead of to its reporter.
+    const { NODE_TEST_CONTEXT, ...env } = process.env
     const child = spawn(command, { shell: true, cwd: slot.worktree, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...slotEnv(slot.n), STORY_LOOP_REPORT: report, STORY_LOOP_NODE_REPORTER: NODE_REPORTER } })
+      env: { ...env, ...slotEnv(slot.n), STORY_LOOP_REPORT: report, STORY_LOOP_NODE_REPORTER: NODE_REPORTER } })
     slot.child = child
     const keep = chunk => { out = (out + chunk).slice(-RAW_LIMIT) }
     child.stdout.on('data', keep); child.stderr.on('data', keep)

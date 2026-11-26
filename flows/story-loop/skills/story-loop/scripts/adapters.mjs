@@ -44,8 +44,9 @@ export function parseReport(adapter, text) {
 
 function parseNode(text) {
   const rows = String(text).split('\n').filter(Boolean).map(line => JSON.parse(line))
-  const tests = rows.filter(r => r.kind !== 'suite')
-  const failures = tests.filter(r => r.type === 'test:fail').map(r => {
+  // A skipped or todo test did not run: it counts for nothing (a filter that matches nothing selects no tests).
+  const tests = rows.filter(r => r.kind !== 'suite' && !r.skipped && !r.fileLevel)
+  const failures = rows.filter(r => r.type === 'test:fail' && r.kind !== 'suite').map(r => {
     const message = String(r.message ?? '')
     const kind = r.failureType === 'hookFailed' || r.failureType === 'cancelledByParent' ? 'setup'
       : r.failureType === 'testTimeoutFailure' ? 'timeout'
