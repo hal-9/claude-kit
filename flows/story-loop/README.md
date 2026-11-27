@@ -158,6 +158,22 @@ node skills/story-loop/board/server.mjs --demo
 
 Then open http://127.0.0.1:4317. It replays a scripted run in about 40 seconds.
 
+Present a real run front to back, at your pace:
+
+```bash
+node skills/story-loop/board/server.mjs --replay sc-12345 --root <repo>
+```
+
+It plays the newest ended run of that story back from its record in
+`<repo>/.start-story/sc-12345/`: the stages are rebuilt from the run's own feed,
+and what a stage produced (findings, screenshots, the walkthrough) shows once
+that stage ended. A caption says what the stage the replay stands on does and
+why. **Play** runs it on its own (1× to 8×); **Stage →** and **← Stage** (or the
+arrow keys, space to play) move one stage move at a time. The replay plays into
+a scratch folder, never into the repo's `.start-story`, and the explainer is off
+(it would read today's code, not the run's). A run that kept no feed is played
+from the start and end times of its stages only.
+
 ## Get started
 
 ### 1. Install

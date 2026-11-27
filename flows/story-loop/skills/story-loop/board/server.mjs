@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // story-loop board: serves one page and streams the run to it.
-//   node server.mjs [--root <repo>] [--port 4317] [--demo] [--open-after 10 | --no-open]
+//   node server.mjs [--root <repo>] [--port 4317] [--demo | --replay <story>] [--open-after 10 | --no-open]
+// --replay plays an ended run of <story> back from its record in <repo>/.start-story/<story>/.
 // It only reads: .start-story/active.json, .start-story/events.jsonl and git.
 // The one thing it starts is `claude -p` for an "explain" request: only the
 // Read, Grep and Glob tools exist in it, no MCP servers, bounded in time and count.
 import { createServer } from 'node:http'
-import { readFileSync, readdirSync, writeFileSync, statSync, existsSync, mkdtempSync, mkdirSync, realpathSync, openSync, fstatSync, closeSync, constants } from 'node:fs'
+import { readFileSync, readdirSync, writeFileSync, appendFileSync, statSync, existsSync, mkdtempSync, mkdirSync, realpathSync, openSync, fstatSync, closeSync, cpSync, rmSync, constants } from 'node:fs'
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -14,12 +15,20 @@ import { fileURLToPath } from 'node:url'
 import { GRAPH, paths, newRun, move, save, emit, readInbox, addNote, deliver, readResults, resultsFile, evidenceDir, runDir, staleStages, gateProblems, headCommit, headTree, verifyReport, diffBase, imageProblem, runKey } from '../scripts/loop.mjs'
 import { record, diagDir, readEvents as readDiag } from '../scripts/diag.mjs'
 import { usage, readLedger, readHandled } from '../scripts/ledger.mjs'
+import { recording, stateAt, EXPLAIN, VERBS } from './replay.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const argv = process.argv.slice(2)
 const flag = name => { const i = argv.indexOf(`--${name}`); return i < 0 ? undefined : argv[i + 1] ?? true }
 const DEMO = argv.includes('--demo')
-const ROOT = DEMO ? mkdtempSync(join(tmpdir(), 'story-loop-demo-')) : resolve(flag('root') ?? process.cwd())
+// A replay reads the recorded run from SRC and plays it into a scratch ROOT, so the
+// repo's own .start-story is never written. SCRIPTED: no gate to ask, as in the demo.
+const REPLAY = typeof flag('replay') === 'string' ? flag('replay') : null
+const SCRIPTED = DEMO || REPLAY !== null
+const SRC = REPLAY ? resolve(flag('root') ?? process.cwd()) : null
+let REC = null
+if (REPLAY) try { REC = recording(SRC, REPLAY) } catch (error) { console.error(`story-loop board: ${error.message}`); process.exit(1) }
+const ROOT = SCRIPTED ? mkdtempSync(join(tmpdir(), `story-loop-${DEMO ? 'demo' : 'replay'}-`)) : resolve(flag('root') ?? process.cwd())
 // --port wins; else the port `loop.mjs worktree` gave this checkout; else 4317. Without
 // --port, a taken port moves the board to the next free one (parallel runs).
 const ASKED_PORT = flag('port')
@@ -38,7 +47,9 @@ const QUESTIONS = {
   quiz: 'Write four short questions that check whether a developer understood this whole change: structure, placement, data flow, and one edge case. Put the answers at the end under "Answers".',
 }
 
-const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 << 20 })
+const git = (...args) => execFileSync('git', args, { cwd: SRC ?? ROOT, encoding: 'utf8', maxBuffer: 16 << 20 })
+// The code a replay shows is the commit the run pushed (or last checked), not HEAD today.
+const END = REC ? REC.run.pushed?.sha ?? REC.run.evidence?.quality?.commit ?? 'HEAD' : 'HEAD'
 const readJson = file => { try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return null } }
 // An unreadable notes file shows on the board as what it is, never as "no notes".
 const inbox = run => {
@@ -63,7 +74,7 @@ function takeSlot() {
 // With no active run, the board keeps showing the run that ended last (its retro done,
 // its human review a follow-up), so the end of a run is never a blank page.
 function lastEnded() {
-  if (DEMO) return null
+  if (SCRIPTED) return null
   let best = null, dirs = []
   try { dirs = readdirSync(P.dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name) } catch { return null }
   for (const d of dirs) {
@@ -78,14 +89,16 @@ const shown = () => readJson(shownFile())
 const stamp = file => { try { const s = statSync(file); return `${s.mtimeMs}:${s.size}` } catch { return '' } }
 
 function mergeBase(run) {
-  try { return git('merge-base', diffBase(git, run?.base || 'main'), 'HEAD').trim() } catch { return 'HEAD' }
+  try { return git('merge-base', diffBase(git, run?.base || 'main'), END).trim() } catch { return END }
 }
 function changes(run) {
   if (DEMO) return DEMO_CHANGES
+  // A replay shows the change once the build has started, as the live board did.
+  if (REPLAY && (!run || run.stages?.build?.status === 'pending')) return []
   try {
     // -z keeps odd file names literal; --no-renames lists a rename as its real old and new path,
     // so every entry is a path the diff endpoint can be asked for.
-    return git('diff', '--numstat', '-z', '--no-renames', mergeBase(run)).split('\0').filter(Boolean).map(entry => {
+    return git('diff', '--numstat', '-z', '--no-renames', mergeBase(run), ...(REPLAY ? [END] : [])).split('\0').filter(Boolean).map(entry => {
       const [added, removed, ...file] = entry.split('\t')
       return { file: file.join('\t'), added: Number(added) || 0, removed: Number(removed) || 0 }
     })
@@ -96,7 +109,7 @@ const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image
 // never worked out a second time here: a row is "accepted" only when it counts as
 // passing evidence for the request that is current now.
 function gate(run) {
-  if (!run || DEMO) return null
+  if (!run || SCRIPTED) return null
   try { return verifyReport(ROOT, run) } catch (error) { return { problem: error.message, rows: [], accepted: 0, total: 0, request: null, results_request: null, provenance: null } }
 }
 // The verifier's checks, with each screenshot as a URL this server can serve, and
@@ -125,7 +138,7 @@ function results(run, report = gate(run)) {
 function tested(run, report = gate(run), rows = results(run, report)) {
   if (!run) return null
   const checks = Array.isArray(run.checks) ? run.checks : null
-  const stale = (DEMO ? (run.stale ?? []) : staleStages(ROOT, run)).includes('verify')
+  const stale = (SCRIPTED ? (run.stale ?? []) : staleStages(ROOT, run)).includes('verify')
   const approved = new Set((checks ?? []).map(c => c.id))
   const accepted = report ? report.accepted : rows.filter(r => r.accepted && approved.has(r.id)).length
   const all = report ? report.problem === null : Boolean(checks?.length) && accepted === checks.length && rows.every(r => approved.has(r.id))
@@ -157,8 +170,8 @@ function view(run) {
   if (!run) return run
   const stages = Object.fromEntries(Object.entries(run.stages ?? {}).map(([id, st]) => [id, waitsOnHuman(st) ? { ...st, question_id: questionId(st) } : st]))
   // The gate decision publication and the CLI use: which done stages do not hold for the code now, and why.
-  const gates = DEMO ? Object.fromEntries((run.stale ?? []).map(id => [id, 'covered older code'])) : gateProblems(ROOT, run)
-  return { ...run, stages, run_key: runKey(run), ended: !DEMO && !existsSync(P.active), ...pauses(readEvents()), stale: Object.keys(gates), gates, head: DEMO ? 'demo' : headCommit(ROOT) }
+  const gates = SCRIPTED ? Object.fromEntries((run.stale ?? []).map(id => [id, 'covered older code'])) : gateProblems(ROOT, run)
+  return { ...run, stages, run_key: runKey(run), ended: !SCRIPTED && !existsSync(P.active), ...pauses(readEvents()), stale: Object.keys(gates), gates, head: SCRIPTED ? 'demo' : headCommit(ROOT) }
 }
 // Evidence is served over loopback only; the boundary matters only to a writer able to
 // put a symlink (or a swapped file) into the evidence folder. Only a regular image file
@@ -188,7 +201,7 @@ function testedView(run) {
   return { results: rows, tested: tested(run, report, rows) }
 }
 const inboxPath = run => run ? join(runDir(ROOT, run), 'inbox.json') : ''
-const diffOf = (run, file) => DEMO ? DEMO_DIFFS[file] ?? DEMO_DIFF : git('diff', '--no-renames', mergeBase(run), '--', file)
+const diffOf = (run, file) => DEMO ? DEMO_DIFFS[file] ?? DEMO_DIFF : git('diff', '--no-renames', mergeBase(run), ...(REPLAY ? [END] : []), '--', file)
 
 // The walkthrough as written for some commit, with the code it explains taken from git
 // now (never from the walkthrough itself) and the mutant outcomes per line: what a test
@@ -207,7 +220,7 @@ function walkthrough(run) {
   return {
     walkthrough: w, mutants,
     diffs: Object.fromEntries(files.map(f => [f, diffOf(run, f)])),
-    current: DEMO || w.tree === headTree(ROOT),
+    current: SCRIPTED || w.tree === headTree(ROOT),
   }
 }
 
@@ -215,9 +228,11 @@ function walkthrough(run) {
 // against it) and what this run's retro recorded, with how often each pattern recurs.
 function learned(run) {
   // The demo's ledger gets this run's line at its retro, as the real one does.
-  const entries = DEMO ? [...DEMO_LEDGER, ...(run.lessons ? [{ run: runKey(run), story: run.story, lessons: run.lessons }] : [])] : readLedger(ROOT)
+  // A replay sees the ledger as it stood: this run's own line only once its retro has ended.
+  const entries = DEMO ? [...DEMO_LEDGER, ...(run.lessons ? [{ run: runKey(run), story: run.story, lessons: run.lessons }] : [])]
+    : REPLAY ? readLedger(SRC).filter(e => e.run !== runKey(run) || run.stages?.retro?.status === 'passed') : readLedger(ROOT)
   let handled = {}
-  try { handled = DEMO ? {} : readHandled(ROOT) } catch {}
+  try { handled = DEMO ? {} : readHandled(SRC ?? ROOT) } catch {}
   const patterns = new Map()
   for (const e of entries) for (const l of e.lessons ?? []) {
     const p = patterns.get(l.pattern) ?? { pattern: l.pattern, runs: new Set(), checks: new Set(), proposal: l.proposal ?? null, stories: new Set() }
@@ -263,7 +278,7 @@ tick(() => {
   const key = JSON.stringify(list)
   if (key !== seen.changes) { seen.changes = key; broadcast({ type: 'changes', changes: list }) }
   // A new commit can make passed evidence stale without the state file changing.
-  const head = DEMO ? '' : headCommit(ROOT)
+  const head = SCRIPTED ? '' : headCommit(ROOT)
   if (head !== seen.head) { seen.head = head; broadcast({ type: 'run', run: view(run) }); broadcast({ type: 'results', ...testedView(run) }) }
 }, 5000)
 
@@ -309,6 +324,8 @@ async function explain(req, res) {
     if (file && !known.includes(file)) return text(res, 400, 'that file is not part of this change')
     const ask = question === 'custom' ? String(custom ?? '').slice(0, 500) : QUESTIONS[question]
     if (!ask) return text(res, 400, 'unknown question')
+    // The explainer reads the repo as it is today, not the code the replayed run ended on.
+    if (REPLAY) return text(res, 503, 'Explanations are off in a replay: they would read today\'s code, not this run\'s.')
     if (!DEMO && !(await signedIn())) return text(res, 503, NOT_SIGNED_IN)
     if (gone) return
     const head = DEMO ? 'demo' : headCommit(ROOT) ?? ''
@@ -418,7 +435,7 @@ createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' })
       const run = shown()
       const events = readEvents()
-      send(res, { type: 'snapshot', seq: events.length, run: view(run), graph: GRAPH, events: events.slice(-300), changes: changes(run), inbox: inbox(run), ...testedView(run), demo: DEMO })
+      send(res, { type: 'snapshot', seq: events.length, run: view(run), graph: GRAPH, events: events.slice(-300), changes: changes(run), inbox: inbox(run), ...testedView(run), demo: SCRIPTED, replay: replayState() })
       if (!clients.size) seen.events = events.length
       connected = true
       clients.add(res)
@@ -444,13 +461,14 @@ createServer(async (req, res) => {
     if (url.pathname === '/api/usage') {
       const run = shown()
       if (!run) return text(res, 404, 'no run')
+      if (REPLAY) return json(res, { usage: usage(REC.run, REC.events), transcripts: (REC.run.transcripts ?? []).length })
       return json(res, { usage: DEMO ? DEMO_USAGE : usage(run, readEvents()), transcripts: DEMO ? 2 : (run.transcripts ?? []).length })
     }
     // The diagnostic record, only for a run started with --diagnostics.
     if (url.pathname === '/api/log') {
       const run = shown()
       if (!run?.diagnostics?.enabled && !DEMO) return text(res, 404, 'this run was started without --diagnostics')
-      const { events, unreadable } = DEMO ? { events: DEMO_LOG, unreadable: 0 } : readDiag(diagDir(ROOT, run.story, runKey(run)))
+      const { events, unreadable } = DEMO ? { events: DEMO_LOG, unreadable: 0 } : readDiag(diagDir(SRC ?? ROOT, run.story, runKey(run)))
       return json(res, { events: events.slice(-3000), total: events.length, unreadable })
     }
     if (url.pathname.startsWith('/evidence/')) {
@@ -473,6 +491,12 @@ createServer(async (req, res) => {
     if (url.pathname === '/api/explain' && req.method === 'POST') return await explain(req, res)
     if (url.pathname === '/api/steer' && req.method === 'POST') return await steer(req, res)
     if (url.pathname === '/api/answer' && req.method === 'POST') return await answer(req, res)
+    if (url.pathname === '/api/replay' && req.method === 'POST' && REPLAY) {
+      if (!isJson(req)) return text(res, 415, 'json only')
+      const { action, speed } = await body(req)
+      if (!control(action, speed)) return text(res, 400, 'action is play, pause, next, back or restart')
+      return json(res, replayState())
+    }
     if (url.pathname === '/api/handover' && req.method === 'POST') {
       if (!isJson(req)) return text(res, 415, 'json only')
       return text(res, 200, deliver(ROOT, 'copied from the board') ?? '')
@@ -491,8 +515,8 @@ createServer(async (req, res) => {
   process.exit(1)
 }).on('listening', () => {
   record(ROOT, 'board.start', { port: PORT })
-  console.log(`story-loop board: http://127.0.0.1:${PORT}${DEMO ? ' (demo)' : ` · ${ROOT}`}`)
-  if (!DEMO && !existsSync(P.active)) console.log('no active run yet; the board fills in once loop.mjs init has run')
+  console.log(`story-loop board: http://127.0.0.1:${PORT}${DEMO ? ' (demo)' : REPLAY ? ` (replay of ${REPLAY}: ${REC.events.length} events from the ${REC.from})` : ` · ${ROOT}`}`)
+  if (!SCRIPTED && !existsSync(P.active)) console.log('no active run yet; the board fills in once loop.mjs init has run')
   if (OPEN_AFTER !== null) setTimeout(() => {
     if (connected) return
     const url = `http://127.0.0.1:${PORT}`
@@ -711,3 +735,74 @@ if (DEMO) {
   let i = 0
   const play = setInterval(() => { script[i++]?.(); if (i >= script.length) clearInterval(play) }, 1600)
 }
+
+// ---- replay: an ended run played back from its record, paced by the presenter
+
+// How long the replay stays on one event at 1×: a stage move long enough to read its caption.
+const PAUSE_MS = { stage: 2500, agent: 500 }
+// What a stage leaves in its folder, copied into the scratch run once that stage has ended.
+const FILES = [['results.json', 'verify'], ['evidence', 'verify'], ['walkthrough.json', 'report']]
+let cursor = 0, playing = false, speed = 1, timer = null
+
+const isMove = e => e?.kind === 'stage' && e.verb && e.stage
+function replayState() {
+  if (!REPLAY) return null
+  const move = REC.events.slice(0, cursor).findLast(isMove)
+  return {
+    story: REPLAY, from: REC.from, at: cursor, total: REC.events.length, playing, speed,
+    ts: REC.events[cursor - 1]?.ts ?? REC.run.started_at,
+    stage: move?.stage ?? null, verb: move?.verb ?? null, to: move?.to ?? null, text: move?.text ?? null,
+    verb_text: move ? VERBS[move.verb] ?? move.verb : null,
+    explain: move ? EXPLAIN[move.stage] ?? null : 'The recorded run, played back from its record. Play runs it on its own; Next stage stops at each stage move.',
+  }
+}
+// The scratch run as it stood after `cursor` events: state, feed and the files its ended stages left.
+function writeState() {
+  const { ended, ...run } = stateAt(REC.run, REC.events, cursor)
+  // The lease stays fresh while the replay is open, so the crew reads as at work, not away.
+  save(ROOT, { ...run, owner: { session: 'replay', since: REC.run.started_at, heartbeat: Date.now() + 864e5 } })
+  for (const [name, stage] of FILES) {
+    const from = join(REC.dir, name), to = join(runDir(ROOT, run), name)
+    if (ended.includes(stage) && existsSync(from) && !existsSync(to)) cpSync(from, to, { recursive: true })
+    if (!ended.includes(stage)) rmSync(to, { recursive: true, force: true })
+  }
+}
+// Forward one event: the feed gets it as recorded; a stage move rewrites the state.
+function step() {
+  const e = REC.events[cursor++]
+  appendFileSync(P.events, JSON.stringify(e) + '\n')
+  if (isMove(e)) writeState()
+  return e
+}
+// Any other position: the feed is written again from the start, and the pages reload.
+function seek(at) {
+  cursor = Math.max(0, Math.min(at, REC.events.length))
+  writeFileSync(P.events, REC.events.slice(0, cursor).map(e => JSON.stringify(e) + '\n').join(''))
+  writeState()
+}
+function schedule() {
+  clearTimeout(timer)
+  if (!playing) return
+  if (cursor >= REC.events.length) { playing = false; return broadcast({ type: 'replay', replay: replayState() }) }
+  const e = step()
+  broadcast({ type: 'replay', replay: replayState() })
+  timer = setTimeout(schedule, (PAUSE_MS[e.kind] ?? 120) / speed)
+}
+function control(action, rate) {
+  if ([1, 2, 4, 8].includes(rate)) speed = rate
+  if (action === 'play') { playing = true; schedule(); return true }
+  if (action === 'pause') { playing = false; clearTimeout(timer) }
+  // Next stage: everything up to and including the next stage move, then a stop on it.
+  else if (action === 'next') { playing = false; clearTimeout(timer); while (cursor < REC.events.length && !isMove(step())); }
+  // Back: to the stage move before the one the replay stands on.
+  else if (action === 'back') {
+    playing = false; clearTimeout(timer)
+    const moves = REC.events.slice(0, cursor).flatMap((e, i) => isMove(e) ? [i + 1] : [])
+    seek(moves.at(-2) ?? 0)
+  }
+  else if (action === 'restart') { playing = false; clearTimeout(timer); seek(0) }
+  else if (action !== 'speed') return false
+  broadcast({ type: 'replay', replay: replayState() })
+  return true
+}
+if (REPLAY) { mkdirSync(dirname(P.active), { recursive: true }); seek(0) }

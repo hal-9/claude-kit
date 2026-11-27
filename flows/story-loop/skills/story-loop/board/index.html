@@ -878,6 +878,18 @@ details.history .h-ev { display: block; font-size: 13px; color: var(--ink-3); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+/* Replay: a caption for the stage the run stands on, and the presenter's controls. */
+body.replaying .page { padding-bottom: 210px; }
+.replay { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; background: var(--surface); border-top: 1px solid var(--line-2); box-shadow: var(--shadow); }
+.replay-in { max-width: 1280px; margin: 0 auto; padding: 14px 24px 16px; display: grid; grid-template-columns: 1fr auto; gap: 8px 24px; align-items: start; }
+.rp-stage { font-size: 19px; font-weight: 640; margin: 0; }
+.rp-text { margin: 2px 0 0; color: var(--ink-2); font-family: var(--mono); font-size: 13.5px; overflow-wrap: anywhere; }
+.rp-explain { margin: 6px 0 0; font-size: 15.5px; line-height: 1.45; max-width: 75ch; }
+.rp-ctl { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.rp-ctl select { font: inherit; font-size: 14px; padding: 5px 6px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); }
+.rp-pos { grid-column: 1 / -1; display: flex; gap: 12px; align-items: center; font-size: 13px; color: var(--ink-3); }
+.rp-pos progress { flex: 1; height: 4px; accent-color: var(--accent); }
+@media (max-width: 720px) { .replay-in { grid-template-columns: 1fr; padding: 12px 16px; } .rp-ctl { justify-content: flex-start; } body.replaying .page { padding-bottom: 300px; } }
 </style>
 </head>
 <body class="no-run">
@@ -1014,6 +1026,23 @@ details.history .h-ev { display: block; font-size: 13px; color: var(--ink-3); }
     <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2"/><circle cx="8" cy="8" r="5" stroke-width="2.6" stroke-dasharray="2.1 1.83"/></symbol>
   </defs>
 </svg>
+<div class="replay" id="replay" hidden role="region" aria-label="Replay">
+  <div class="replay-in">
+    <div aria-live="polite">
+      <p class="rp-stage" id="rp-stage"></p>
+      <p class="rp-text" id="rp-text"></p>
+      <p class="rp-explain" id="rp-explain"></p>
+    </div>
+    <div class="rp-ctl">
+      <button type="button" id="rp-back" title="Previous stage (←)">← Stage</button>
+      <button type="button" class="primary" id="rp-play" title="Play or pause (space)">Play</button>
+      <button type="button" id="rp-next" title="Next stage (→)">Stage →</button>
+      <select id="rp-speed" aria-label="Speed"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select>
+      <button type="button" id="rp-restart">Restart</button>
+    </div>
+    <div class="rp-pos"><span id="rp-pos"></span><progress id="rp-progress" max="1" value="0"></progress></div>
+  </div>
+</div>
 <div class="page">
   <div class="top">
     <div class="brand"><b>story-loop</b><span class="tag" id="demo" hidden>Demo replay</span></div>
@@ -1224,7 +1253,9 @@ const fmtDur = ms => {
   const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = s % 60
   return h ? `${h}h ${String(m).padStart(2, '0')}m` : m ? `${m}m ${String(r).padStart(2, '0')}s` : `${r}s`
 }
-const since = iso => iso ? Date.now() - Date.parse(iso) : 0
+// In a replay, now is the recorded time of the event the replay stands on.
+const nowMs = () => S.replay ? Date.parse(S.replay.ts) : Date.now()
+const since = iso => iso ? nowMs() - Date.parse(iso) : 0
 const clock = iso => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) }
 const currentStage = run => run && S.graph?.stages.find(s => !['passed', 'skipped'].includes(run.stages?.[s.id]?.status))?.id
 
@@ -1896,7 +1927,7 @@ function renderHead() {
 // The clock counts the loop working: it stands still while a stage waits or is blocked,
 // and stops for good at the retro (the server sums the pauses from the stage events).
 function showElapsed(run) {
-  const end = run.paused_since ? Date.parse(run.paused_since) : Date.now()
+  const end = run.paused_since ? Date.parse(run.paused_since) : nowMs()
   $('elapsed').textContent = fmtDur(Math.max(0, end - Date.parse(run.started_at) - (run.paused_ms ?? 0)))
   $('elapsed').classList.toggle('paused', !!run.paused_since)
   $('elapsed').title = run.paused_since ? `Paused since ${clock(run.paused_since)}` : ''
@@ -2972,13 +3003,13 @@ function onSnapshot(m) {
   const graphChanged = JSON.stringify(m.graph) !== JSON.stringify(S.graph)
   if (otherStory(m.run)) resetRunScoped()
   S.seq = m.seq ?? 0
-  S.graph = m.graph; S.run = m.run; S.changes = m.changes ?? []; S.demo = !!m.demo
+  S.graph = m.graph; S.run = m.run; S.changes = m.changes ?? []; S.demo = !!m.demo; S.replay = m.replay ?? null
   S.backs = []; S.workers = new Map(); S.feed = []; attentionKey = ''; findingsKey = ''
   S.inbox = m.inbox ?? []; S.idle = false; S.results = m.results ?? []; S.tested = m.tested ?? null; testedKey = ''
   if (graphChanged) buildStages()
   for (const ev of m.events ?? []) applyEvent(ev, false)
   S.finished = false; S.allPass = undefined
-  renderRun(); renderWorkers(); renderFeed()
+  renderRun(); renderWorkers(); renderFeed(); renderReplay()
   requestAnimationFrame(() => drawEdges(false))
   S.booted = true
 }
@@ -3012,11 +3043,42 @@ function connect() {
       if (m.seq != null) S.seq = m.seq
       applyEvent(m.event, true)
     }
+    else if (m.type === 'replay') { S.replay = m.replay; renderReplay() }
     else if (m.type === 'changes') { S.changes = m.changes ?? []; renderCards() }
     else if (m.type === 'inbox') { S.inbox = m.inbox ?? []; renderNotes(); renderAttention() }
     else if (m.type === 'results') { S.results = m.results ?? []; S.tested = m.tested ?? null; renderTested(); renderCards() }
   }
 }
+// ---------- replay ----------
+function renderReplay() {
+  const r = S.replay
+  $('replay').hidden = !r
+  document.body.classList.toggle('replaying', !!r)
+  if (!r) return
+  $('demo').textContent = `Replay · ${r.story}`
+  $('rp-stage').textContent = !r.stage ? 'Ready to play' : `${label(r.stage)} ${r.verb_text}${r.verb === 'back' && r.to ? ` to ${label(r.to)}` : r.verb === 'wait' && r.to ? ` on ${r.to}` : ''}`
+  $('rp-text').textContent = r.text ?? ''
+  $('rp-text').hidden = !r.text
+  $('rp-explain').textContent = r.explain ?? ''
+  $('rp-play').textContent = r.playing ? 'Pause' : r.at >= r.total ? 'Ended' : 'Play'
+  $('rp-play').disabled = !r.playing && r.at >= r.total
+  $('rp-speed').value = String(r.speed)
+  $('rp-pos').textContent = `${clock(r.ts)} recorded · event ${r.at} of ${r.total}${r.from === 'stage times only' ? ' · stage moves only (no feed was kept)' : ''}`
+  Object.assign($('rp-progress'), { max: r.total || 1, value: r.at })
+}
+const replayDo = (action, speed) => fetch('/api/replay', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, speed }) })
+$('rp-play').addEventListener('click', () => replayDo(S.replay?.playing ? 'pause' : 'play'))
+$('rp-next').addEventListener('click', () => replayDo('next'))
+$('rp-back').addEventListener('click', () => replayDo('back'))
+$('rp-restart').addEventListener('click', () => replayDo('restart'))
+$('rp-speed').addEventListener('change', e => replayDo('speed', Number(e.target.value)))
+// Presenter keys: space plays or pauses, the arrows move a stage. Not while typing or in a dialog.
+document.addEventListener('keydown', e => {
+  if (!S.replay || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]') || e.target.closest?.('input, textarea, select, button, [contenteditable]')) return
+  const action = { ' ': S.replay.playing ? 'pause' : 'play', ArrowRight: 'next', ArrowLeft: 'back' }[e.key]
+  if (action) { e.preventDefault(); replayDo(action) }
+})
+
 let graphWidth = 0
 new ResizeObserver(([entry]) => {
   const w = Math.round(entry.contentRect.width)
